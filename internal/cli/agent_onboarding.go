@@ -30,17 +30,20 @@ type agentRoutingAccess struct {
 	apiURL string
 	scope  string
 	key    string
+	// connect also offers provider keys for an already configured router.
+	connect bool
 }
 
 type agentRouter struct {
-	ID                    string              `json:"id"`
-	Name                  string              `json:"name"`
-	ClientKey             string              `json:"client_key"`
-	IsDefault             bool                `json:"is_default"`
-	EnabledModels         []string            `json:"enabled_models"`
-	ModelProviders        map[string]string   `json:"model_providers"`
-	ModelThinkingLevels   map[string][]string `json:"model_thinking_levels"`
-	SubscriptionProviders []string            `json:"subscription_providers"`
+	ID                            string              `json:"id"`
+	Name                          string              `json:"name"`
+	ClientKey                     string              `json:"client_key"`
+	IsDefault                     bool                `json:"is_default"`
+	EnabledModels                 []string            `json:"enabled_models"`
+	ModelProviders                map[string]string   `json:"model_providers"`
+	ModelThinkingLevels           map[string][]string `json:"model_thinking_levels"`
+	SubscriptionProviders         []string            `json:"subscription_providers"`
+	SubscriptionAPIFallbackModels []string            `json:"subscription_api_fallback_models"`
 }
 
 type agentModel struct {
@@ -55,6 +58,8 @@ type agentModel struct {
 
 type agentModelCatalog struct {
 	Groups []struct {
+		Provider           string       `json:"provider"`
+		ProviderLabel      string       `json:"provider_label"`
 		SupportsManagedKey bool         `json:"supports_managed_key"`
 		Models             []agentModel `json:"models"`
 	} `json:"groups"`
@@ -71,6 +76,7 @@ type agentRouterCreateRequest struct {
 	EnabledModels                 []string            `json:"enabled_models"`
 	ModelProviders                map[string]string   `json:"model_providers"`
 	ProviderKeySources            map[string]string   `json:"provider_key_sources"`
+	ProviderCredentialIDs         map[string]string   `json:"provider_credential_ids,omitempty"`
 	ModelThinkingLevels           map[string][]string `json:"model_thinking_levels"`
 	RoutingStrategy               string              `json:"routing_strategy"`
 	SpeculativeRouting            bool                `json:"speculative_routing"`
@@ -81,11 +87,14 @@ type agentRouterCreateRequest struct {
 }
 
 type agentRouterUpdateRequest struct {
-	Name                string              `json:"name"`
-	EnabledModels       []string            `json:"enabled_models"`
-	ModelProviders      map[string]string   `json:"model_providers"`
-	ProviderKeySources  map[string]string   `json:"provider_key_sources,omitempty"`
-	ModelThinkingLevels map[string][]string `json:"model_thinking_levels"`
+	Name                  string              `json:"name"`
+	EnabledModels         []string            `json:"enabled_models"`
+	ModelProviders        map[string]string   `json:"model_providers"`
+	ProviderKeySources    map[string]string   `json:"provider_key_sources,omitempty"`
+	ProviderCredentialIDs map[string]string   `json:"provider_credential_ids,omitempty"`
+	ModelThinkingLevels   map[string][]string `json:"model_thinking_levels"`
+	// Omitted keeps the router's current API fallback models.
+	SubscriptionAPIFallbackModels []string `json:"subscription_api_fallback_models,omitempty"`
 }
 
 // Omitting subscription_api_fallback_models keeps the router's current ones.
@@ -149,6 +158,14 @@ func ensureAgentRouter(
 	if err != nil {
 		return "", err
 	}
+	// Routers set up earlier skip the model picker, so --connect offers keys
+	// for the models they already serve.
+	configured := func(routerID string) (string, error) {
+		if !access.connect {
+			return routerID, nil
+		}
+		return routerID, connectAgentProviderKeysOnRequest(ctx, client, routerID, stdin, stderr)
+	}
 	routers, err := listAgentRouters(ctx, client)
 	if err != nil {
 		return "", err
@@ -171,7 +188,7 @@ func ensureAgentRouter(
 		// cache miss; once configured, other computers skip the picker too.
 		museNeedsModels := museEnabled && !slices.Contains(slices.Collect(maps.Values(defaultRouter.ModelProviders)), museSubscription.routerProvider)
 		if len(defaultRouter.EnabledModels) > 0 && !museNeedsModels {
-			return defaultRouter.ID, nil
+			return configured(defaultRouter.ID)
 		}
 	}
 
@@ -197,9 +214,9 @@ func ensureAgentRouter(
 			if existing, found := findAgentRouter(routers, func(router agentRouter) bool {
 				return router.ClientKey == claudeManagedRouterClientKey
 			}); found {
-				return existing.ID, nil
+				return configured(existing.ID)
 			}
-			return defaultRouter.ID, nil
+			return configured(defaultRouter.ID)
 		}
 		usePersonalSubscription = resolution.enabled
 		if resolution.preferenceChanged {
@@ -218,7 +235,7 @@ func ensureAgentRouter(
 			if err := setAgentRouterSubscription(ctx, client, existing, agentSubscriptionProviders(agent), usePersonalSubscription); err != nil {
 				return "", err
 			}
-			return existing.ID, nil
+			return configured(existing.ID)
 		}
 	}
 
@@ -293,24 +310,41 @@ func ensureAgentRouter(
 	routerID := defaultRouter.ID
 	if agent != "claude" {
 		body := agentRouterUpdateBody(defaultRouter, models, choices)
+		subscribed := slices.Clone(defaultRouter.SubscriptionProviders)
+		if museEnabled {
+			subscribed = append(subscribed, museSubscription.routerProvider)
+		}
+		keys, err := chooseAgentProviderKeys(ctx, client, stdin, stderr, models, body.EnabledModels, body.ModelProviders, subscribed, agentKeepDariCredits)
+		if err != nil {
+			return "", err
+		}
+		keys.apply(body.ModelProviders, body.ProviderKeySources)
+		body.ProviderCredentialIDs = keys.credentialIDs
+		fallback := keys.fallbackModels(defaultRouter.SubscriptionAPIFallbackModels, body.EnabledModels)
 		if museEnabled && !slices.Contains(slices.Collect(maps.Values(body.ModelProviders)), museSubscription.routerProvider) {
 			return "", errors.New("a Muse Code subscription needs at least one selected model served directly by Meta")
 		}
-		if agentRouterNeedsUpdate(defaultRouter, choices) {
-			path := "/v1/organizations/current/routers/" + url.PathEscape(defaultRouter.ID)
-			// Decode into a fresh router: JSON decoding merges into existing maps,
-			// so a model the update removed would keep its old provider entry.
-			var updated agentRouter
-			if err := client.Do(ctx, http.MethodPut, path, body, &updated); err != nil {
-				return "", api.HumanError(err)
+		// API fallback models must be on subscribed providers, and a Muse plan
+		// subscribes Meta only after this update, so its fallback follows.
+		if !museEnabled {
+			body.SubscriptionAPIFallbackModels = fallback
+		}
+		if len(keys.credentialIDs) > 0 || agentRouterNeedsUpdate(defaultRouter, choices) {
+			if defaultRouter, err = putAgentRouter(ctx, client, defaultRouter.ID, body); err != nil {
+				return "", err
 			}
-			defaultRouter = updated
 		}
 		// The plan was applied before the picker, when the router may not
 		// have served any Meta model yet.
 		if museEnabled {
 			if err := setAgentRouterSubscription(ctx, client, defaultRouter, agentSubscriptionProviders(agent), true); err != nil {
 				return "", err
+			}
+			if fallback != nil {
+				body.SubscriptionAPIFallbackModels = fallback
+				if defaultRouter, err = putAgentRouter(ctx, client, defaultRouter.ID, body); err != nil {
+					return "", err
+				}
 			}
 		}
 		name := "Codex"
@@ -330,6 +364,19 @@ func ensureAgentRouter(
 			claudeClientKey,
 			usePersonalSubscription,
 		)
+		subscribed := []string{}
+		if usePersonalSubscription {
+			subscribed = append(subscribed, claudeSubscription.routerProvider)
+		}
+		keys, err := chooseAgentProviderKeys(ctx, client, stdin, stderr, models, body.EnabledModels, body.ModelProviders, subscribed, agentKeepDariCredits)
+		if err != nil {
+			return "", err
+		}
+		keys.apply(body.ModelProviders, body.ProviderKeySources)
+		body.ProviderCredentialIDs = keys.credentialIDs
+		if fallback := keys.fallbackModels(nil, body.EnabledModels); fallback != nil {
+			body.SubscriptionAPIFallbackModels = fallback
+		}
 		var created agentRouter
 		createErr := client.Do(ctx, http.MethodPost, "/v1/organizations/current/routers", body, &created)
 		if createErr == nil {
@@ -345,6 +392,13 @@ func ensureAgentRouter(
 			})
 			if !found {
 				return "", api.HumanError(createErr)
+			}
+			// Another launch created the router first; keep its models and
+			// attach the keys chosen here.
+			if len(keys.credentialIDs) > 0 {
+				if existing, err = attachAgentProviderKeys(ctx, client, existing, models, keys); err != nil {
+					return "", err
+				}
 			}
 			if err := setAgentRouterSubscription(ctx, client, existing, agentSubscriptionProviders(agent), usePersonalSubscription); err != nil {
 				return "", err
@@ -656,7 +710,7 @@ func findAgentRouter(
 	return agentRouter{}, false
 }
 
-func listAgentModels(ctx context.Context, client *api.Client) ([]agentModel, error) {
+func fetchAgentModelCatalog(ctx context.Context, client *api.Client) (agentModelCatalog, error) {
 	var catalog agentModelCatalog
 	if err := client.Do(
 		ctx,
@@ -665,7 +719,15 @@ func listAgentModels(ctx context.Context, client *api.Client) ([]agentModel, err
 		nil,
 		&catalog,
 	); err != nil {
-		return nil, api.HumanError(err)
+		return agentModelCatalog{}, api.HumanError(err)
+	}
+	return catalog, nil
+}
+
+func listAgentModels(ctx context.Context, client *api.Client) ([]agentModel, error) {
+	catalog, err := fetchAgentModelCatalog(ctx, client)
+	if err != nil {
+		return nil, err
 	}
 	models := []agentModel{}
 	for _, group := range catalog.Groups {

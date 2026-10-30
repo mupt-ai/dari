@@ -34,11 +34,11 @@ const (
 // reaches the agent untouched. Cobra only sees them when a Dari flag comes
 // first, which would be dropped, so those commands refuse to run.
 var agentLaunchers = map[string]string{
-	"claude":   "Launch Claude Code through Dari; forward all following arguments (--connect manages subscriptions)",
-	"codex":    "Launch Codex through Dari; forward all following arguments (--connect manages subscriptions)",
-	"opencode": "Launch OpenCode through Dari; forward all following arguments (--connect manages subscriptions)",
-	"pi":       "Launch Pi through Dari; forward all following arguments (--connect manages subscriptions)",
-	"muse":     "Launch Muse Code through Dari; forward all following arguments (--connect manages subscriptions)",
+	"claude":   "Launch Claude Code through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
+	"codex":    "Launch Codex through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
+	"opencode": "Launch OpenCode through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
+	"pi":       "Launch Pi through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
+	"muse":     "Launch Muse Code through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
 }
 
 // agentConnectFlag opens the subscription list before launching. Dari removes
@@ -177,6 +177,7 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 			return "", "", agents.Models{}, err
 		}
 	}
+	access.connect = launch.connect
 	routerID, err := ensureAgentRouter(ctx, launch.name, access, stdin, stderr)
 	if err != nil {
 		return "", "", agents.Models{}, err

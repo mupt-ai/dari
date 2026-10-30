@@ -144,6 +144,13 @@ func newProviderCredentialAddCmd(gf *globalFlags) *cobra.Command {
 		Short: "Save an API key, Microsoft Azure, AWS IAM, or AWS Role credential",
 		Args:  cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			gateway, err := gatewayFromEnv()
+			if err != nil {
+				return err
+			}
+			if gateway != nil {
+				return errGatewayProviderKeys
+			}
 			var explicitValue *string
 			if len(args) == 3 {
 				explicitValue = &args[2]

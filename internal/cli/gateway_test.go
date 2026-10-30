@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -295,5 +296,24 @@ func TestGatewayRequestCostsAreHostedOnly(t *testing.T) {
 	err := captureStdout(t, cmd.Execute)
 	if err == nil || !strings.Contains(err.Error(), "only available on the hosted Dari API") {
 		t.Fatalf("expected a hosted-only error, got %v", err)
+	}
+}
+
+func TestGatewayProviderCredentialsNameGatewayEnvironment(t *testing.T) {
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected gateway request %s %s", r.Method, r.URL.Path)
+	}))
+	defer gateway.Close()
+
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gateway.URL)
+
+	cmd := newRootCmd("dev")
+	cmd.SetArgs([]string{"credentials", "provider", "add", "anthropic", "Anthropic", "--value-stdin"})
+	cmd.SetIn(strings.NewReader("sk-test\n"))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); !errors.Is(err, errGatewayProviderKeys) || !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
+		t.Fatalf("provider add error = %v", err)
 	}
 }

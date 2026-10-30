@@ -63,23 +63,24 @@ func autoroutingAllowed(ctx context.Context, client *api.Client) (bool, error) {
 	return status.AutoroutingAllowed == nil || *status.AutoroutingAllowed, nil
 }
 
-// agentUsageURL is the web app's Usage page, where the Autorouting plan is
-// bought, or "" when the server does not say where the web app is.
-func agentUsageURL(ctx context.Context, client *api.Client) string {
+// agentWebAppURL is a page of the web app, such as /usage where the
+// Autorouting plan is bought, or "" when the server does not say where the
+// web app is.
+func agentWebAppURL(ctx context.Context, client *api.Client, page string) string {
 	var config struct {
 		WebAppURL string `json:"web_app_url"`
 	}
 	if err := api.New(client.BaseURL).Do(ctx, http.MethodGet, "/v1/auth/config", nil, &config); err != nil || config.WebAppURL == "" {
 		return ""
 	}
-	return strings.TrimRight(config.WebAppURL, "/") + "/usage"
+	return strings.TrimRight(config.WebAppURL, "/") + page
 }
 
 // getAutorouting opens the Usage page and waits while the user subscribes,
 // rechecking the plan until it is active or they skip. It reports whether
 // the plan is active.
 func getAutorouting(ctx context.Context, client *api.Client, stdin io.Reader, stderr io.Writer) (bool, error) {
-	usageURL := agentUsageURL(ctx, client)
+	usageURL := agentWebAppURL(ctx, client, "/usage")
 	opened := usageURL != "" && openAgentBrowser(usageURL)
 	details := []string{"  " + ansiGray + "$20/month. Dari picks the best of your router's models for each request." + ansiReset}
 	switch {

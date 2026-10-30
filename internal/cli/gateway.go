@@ -21,6 +21,12 @@ const (
 	gatewayKeyEnv = "DARI_GATEWAY_KEY"
 )
 
+// A self-hosted gateway has no saved credentials: it reads each model
+// provider's API key from the standard variable in its own environment.
+var errGatewayProviderKeys = fmt.Errorf("a gateway set by %s reads provider keys from its own environment, such as "+
+	"ANTHROPIC_API_KEY, OPENAI_API_KEY, META_API_KEY, OPENROUTER_API_KEY, or AI_GATEWAY_API_KEY for Vercel AI Gateway; "+
+	"unset %s to save keys on the hosted Dari API", gatewayURLEnv, gatewayURLEnv)
+
 type gatewayConfig struct {
 	url string
 	key string

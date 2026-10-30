@@ -66,20 +66,18 @@ type agentModelChoice struct {
 }
 
 type agentRouterCreateRequest struct {
-	Name                              string              `json:"name"`
-	ClientKey                         string              `json:"client_key"`
-	EnabledModels                     []string            `json:"enabled_models"`
-	ModelProviders                    map[string]string   `json:"model_providers"`
-	ProviderKeySources                map[string]string   `json:"provider_key_sources"`
-	ModelThinkingLevels               map[string][]string `json:"model_thinking_levels"`
-	RoutingStrategy                   string              `json:"routing_strategy"`
-	SpeculativeRouting                bool                `json:"speculative_routing"`
-	PrimaryRetries                    int                 `json:"primary_retries"`
-	ModelFallbackEnabled              bool                `json:"model_fallback_enabled"`
-	FallbackRequiresDifferentProvider bool                `json:"fallback_requires_different_provider"`
-	SubscriptionProviders             []string            `json:"subscription_providers"`
-	SubscriptionAPIFallbackModels     []string            `json:"subscription_api_fallback_models"`
-	EvalScoreImputation               bool                `json:"eval_score_imputation"`
+	Name                          string              `json:"name"`
+	ClientKey                     string              `json:"client_key"`
+	EnabledModels                 []string            `json:"enabled_models"`
+	ModelProviders                map[string]string   `json:"model_providers"`
+	ProviderKeySources            map[string]string   `json:"provider_key_sources"`
+	ModelThinkingLevels           map[string][]string `json:"model_thinking_levels"`
+	RoutingStrategy               string              `json:"routing_strategy"`
+	SpeculativeRouting            bool                `json:"speculative_routing"`
+	PrimaryRetries                int                 `json:"primary_retries"`
+	SubscriptionProviders         []string            `json:"subscription_providers"`
+	SubscriptionAPIFallbackModels []string            `json:"subscription_api_fallback_models"`
+	EvalScoreImputation           bool                `json:"eval_score_imputation"`
 }
 
 type agentRouterUpdateRequest struct {
@@ -1074,20 +1072,18 @@ func agentRouterCreateBody(
 		subscriptionProviders = append(subscriptionProviders, claudeSubscription.routerProvider)
 	}
 	return agentRouterCreateRequest{
-		Name:                              name,
-		ClientKey:                         clientKey,
-		EnabledModels:                     ids,
-		ModelProviders:                    providers,
-		ProviderKeySources:                providerSources,
-		ModelThinkingLevels:               choiceLevels(choices),
-		RoutingStrategy:                   "dari",
-		SpeculativeRouting:                true,
-		PrimaryRetries:                    3,
-		ModelFallbackEnabled:              true,
-		FallbackRequiresDifferentProvider: true,
-		SubscriptionProviders:             subscriptionProviders,
-		SubscriptionAPIFallbackModels:     []string{},
-		EvalScoreImputation:               true,
+		Name:                          name,
+		ClientKey:                     clientKey,
+		EnabledModels:                 ids,
+		ModelProviders:                providers,
+		ProviderKeySources:            providerSources,
+		ModelThinkingLevels:           choiceLevels(choices),
+		RoutingStrategy:               "dari",
+		SpeculativeRouting:            true,
+		PrimaryRetries:                3,
+		SubscriptionProviders:         subscriptionProviders,
+		SubscriptionAPIFallbackModels: []string{},
+		EvalScoreImputation:           true,
 	}
 }
 

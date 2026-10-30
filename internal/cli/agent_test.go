@@ -22,7 +22,18 @@ func TestParseAgentLaunch(t *testing.T) {
 		wantArgs []string
 		wantOK   bool
 		connect  bool
+		setup    bool
+		remove   bool
 	}{
+		{
+			name:     "--setup and --remove-setup are Dari's",
+			args:     []string{"codex", "--setup", "--remove-setup", "--", "--setup"},
+			wantName: "codex",
+			wantArgs: []string{"--", "--setup"},
+			wantOK:   true,
+			setup:    true,
+			remove:   true,
+		},
 		{
 			name:     "--connect is Dari's, but only before --",
 			args:     []string{"claude", "--connect", "--print", "--", "--connect"},
@@ -87,6 +98,9 @@ func TestParseAgentLaunch(t *testing.T) {
 			}
 			if got.connect != tt.connect {
 				t.Errorf("connect = %v, want %v", got.connect, tt.connect)
+			}
+			if got.setup != tt.setup || got.removeSetup != tt.remove {
+				t.Errorf("setup, removeSetup = %v, %v, want %v, %v", got.setup, got.removeSetup, tt.setup, tt.remove)
 			}
 			if !slices.Equal(got.args, tt.wantArgs) {
 				t.Errorf("args = %q, want %q", got.args, tt.wantArgs)

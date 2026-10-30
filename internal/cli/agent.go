@@ -34,8 +34,8 @@ const (
 // reaches the agent untouched. Cobra only sees them when a Dari flag comes
 // first, which would be dropped, so those commands refuse to run.
 var agentLaunchers = map[string]string{
-	"claude":   "Launch Claude Code through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
-	"codex":    "Launch Codex through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
+	"claude":   "Launch Claude Code through Dari; forward all following arguments (--connect manages subscriptions and provider keys, --setup configures the Claude app)",
+	"codex":    "Launch Codex through Dari; forward all following arguments (--connect manages subscriptions and provider keys, --setup configures the Codex app)",
 	"opencode": "Launch OpenCode through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
 	"pi":       "Launch Pi through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
 	"muse":     "Launch Muse Code through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
@@ -44,6 +44,14 @@ var agentLaunchers = map[string]string{
 // agentConnectFlag opens the subscription list before launching. Dari removes
 // it, so the agent never sees it.
 const agentConnectFlag = "--connect"
+
+// agentSetupFlag writes Dari into the agent's own config so its desktop app,
+// which never runs through the launcher, routes through Dari too.
+// agentRemoveSetupFlag undoes it.
+const (
+	agentSetupFlag       = "--setup"
+	agentRemoveSetupFlag = "--remove-setup"
+)
 
 func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, _ *globalFlags) {
@@ -61,9 +69,11 @@ func init() {
 }
 
 type agentLaunch struct {
-	name    string
-	args    []string
-	connect bool
+	name        string
+	args        []string
+	connect     bool
+	setup       bool
+	removeSetup bool
 }
 
 func parseAgentLaunch(args []string) (agentLaunch, bool) {
@@ -84,12 +94,27 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 			launch.connect = true
 			continue
 		}
+		if arg == agentSetupFlag {
+			launch.setup = true
+			continue
+		}
+		if arg == agentRemoveSetupFlag {
+			launch.removeSetup = true
+			continue
+		}
 		launch.args = append(launch.args, arg)
 	}
 	return launch, true
 }
 
 func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, stdout, stderr io.Writer) int {
+	if launch.setup || launch.removeSetup {
+		if err := runAgentSetup(ctx, launch, stdin, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
 	path, err := agentExecutable(launch.name)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

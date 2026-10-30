@@ -91,6 +91,22 @@ dari pi --tools read,grep,find,ls -p "Review this repository"
 
 The launcher subcommand must be the first argument. Dari-owned provider and model settings take precedence if conflicting agent flags are passed, so the process remains routed through Dari. The native agent executable must already be installed and available on `PATH`, or set `DARI_<AGENT>_PATH` (for example `DARI_OPENCODE_PATH`) to its location.
 
+### Desktop Apps
+
+The Claude and Codex desktop apps never run through the launcher, so `--setup` writes Dari into the config each app reads:
+
+```bash
+dari claude --setup
+dari codex --setup
+```
+
+Setup runs the same onboarding as a first launch, then exits without starting the agent. Restart the app to apply it. The app's model picker lists the same menu as the launcher; rerun `--setup` after changing the router's models. `--remove-setup` undoes it.
+
+- `dari claude --setup` applies a Dari gateway entry in the Claude app's third-party inference configuration (`Claude-3p/configLibrary` in the app's data directory), which signs the app in through Dari instead of claude.ai. The Claude app lists only Claude models: routing appears as **Dari Routing**, and explicit models from other families are left out. It also sets `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` in Claude Code's user settings so subagents route independently.
+- `dari codex --setup` makes Dari the default provider in `~/.codex/config.toml` (or `$CODEX_HOME`), which the Codex app and plain `codex` share. Replaced top-level keys are commented out and restored by `--remove-setup`. The model menu is written to `dari-models.json` beside it.
+
+Both apps store the Routing key in these files because desktop apps do not inherit shell environment variables.
+
 ## Self-Hosted Gateway
 
 Set `DARI_GATEWAY_URL` and `DARI_GATEWAY_KEY` to run the coding agents and subscription commands against a self-hosted Dari Gateway instead of the hosted API:

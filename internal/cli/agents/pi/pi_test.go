@@ -35,6 +35,7 @@ func TestBuildPiAgentCommandUsesTemporaryProviderExtension(t *testing.T) {
 	}
 	for _, want := range []string{
 		`pi.on("after_provider_response"`,
+		`reasoning: id !== "dari/routing"`,
 		`x-dari-selected-model`,
 		`"agent-status", "--headers"`,
 		`ctx.ui.setStatus("dari"`,

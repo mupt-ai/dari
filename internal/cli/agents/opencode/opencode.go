@@ -174,15 +174,23 @@ func openCodeConfig(baseURL, pluginDirectory string, models agents.Models) (stri
 		if model == agents.RoutingModel {
 			name = "Dari Router"
 		}
-		offeredModels[strings.TrimPrefix(model, "dari/")] = map[string]any{
+		entry := map[string]any{
 			"id":         model,
 			"name":       name,
 			"attachment": true,
-			"reasoning":  false,
+			"reasoning":  model != agents.RoutingModel,
 			"tool_call":  true,
 			"limit":      map[string]int{"context": 1_000_000, "output": 128_000},
 			"modalities": map[string][]string{"input": {"text", "image"}, "output": {"text"}},
 		}
+		if model != agents.RoutingModel {
+			variants := map[string]any{}
+			for _, effort := range []string{"low", "medium", "high"} {
+				variants[effort] = map[string]string{"reasoningEffort": effort}
+			}
+			entry["variants"] = variants
+		}
+		offeredModels[strings.TrimPrefix(model, "dari/")] = entry
 	}
 	body, err := json.Marshal(map[string]any{
 		"model":       defaultModel,

@@ -17,7 +17,7 @@ export default function (pi: any) {
     models: models.map((id: string) => ({
       id,
       name: id === "dari/routing" ? "Dari Router" : id.replace("dari/model/", ""),
-      reasoning: false,
+      reasoning: id !== "dari/routing",
       input: ["text", "image"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: 1000000,

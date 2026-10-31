@@ -11,6 +11,37 @@ import (
 	"testing"
 )
 
+func TestDirectModelsOfferThinkingVariants(t *testing.T) {
+	raw, err := openCodeConfig("http://localhost", "plugin", agents.Models{Routing: true, Enabled: []string{"openai/gpt-5.5"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config struct {
+		Provider map[string]struct {
+			Models map[string]struct {
+				Reasoning bool                         `json:"reasoning"`
+				Variants  map[string]map[string]string `json:"variants"`
+			} `json:"models"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		t.Fatal(err)
+	}
+	models := config.Provider["dari"].Models
+	if models["routing"].Reasoning || len(models["routing"].Variants) != 0 {
+		t.Fatal("router must choose its own thinking level")
+	}
+	direct := models["model/openai/gpt-5.5"]
+	if !direct.Reasoning {
+		t.Fatal("direct model does not support thinking selection")
+	}
+	for _, effort := range []string{"low", "medium", "high"} {
+		if direct.Variants[effort]["reasoningEffort"] != effort {
+			t.Fatalf("missing %s thinking variant", effort)
+		}
+	}
+}
+
 func TestBuildOpenCodeCommandInjectsSessionConfig(t *testing.T) {
 	command := launch()
 	if err := Configure(&command, "https://routing.dari.dev/router_1", agents.Models{Routing: true}); err != nil {

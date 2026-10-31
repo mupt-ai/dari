@@ -25,6 +25,20 @@ export default function (pi: any) {
     }))
   });
 
+  // Tag requests from lifecycle events, never from summarization prompt text.
+  // Pi gives summaries fresh cache IDs; keep their Activity session stable
+  // without overriding x-session-affinity or the provider's cache key.
+  let compacting = false;
+  pi.on("session_before_compact", () => { compacting = true; });
+  pi.on("session_compact", () => { compacting = false; });
+  pi.on("session_compact_failed", () => { compacting = false; });
+  pi.on("session_start", () => { compacting = false; });
+  pi.on("before_provider_headers", (event: any, ctx: any) => {
+    if (ctx.model?.provider !== "dari") return;
+    event.headers["x-pi-session-id"] = ctx.sessionManager.getSessionId();
+    event.headers["x-pi-request-kind"] = compacting ? "compaction" : "turn";
+  });
+
   let headers: Record<string, string> | undefined;
   let revision = 0;
   const render = async (ctx: any, expectedRevision: number) => {

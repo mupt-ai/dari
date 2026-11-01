@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"slices"
@@ -17,12 +16,9 @@ import (
 
 func TestLoggedInAgentConnectsMissingSubscription(t *testing.T) {
 	for _, tc := range []struct{ agent, provider, input string }{
-		{"codex", "openai_codex", "y\n\n"},
 		{"claude", "anthropic_claude_code", "y\ntest-code#test-state\n"},
-		{"pi", "openai_codex", "1\n\n"},
-		{"pi", "anthropic_claude_code", "2\ntest-code#test-state\n"},
-		{"opencode", "openai_codex", "1\n\n"},
-		{"opencode", "anthropic_claude_code", "2\ntest-code#test-state\n"},
+		{"pi", "openai_codex", "y\n\n"},
+		{"opencode", "openai_codex", "y\n\n"},
 	} {
 		t.Run(tc.agent+"/"+tc.provider, func(t *testing.T) {
 			t.Setenv("DARI_CONFIG_DIR", t.TempDir())
@@ -37,7 +33,7 @@ func TestLoggedInAgentConnectsMissingSubscription(t *testing.T) {
 				case "GET /v1/organizations/current/routers":
 					_ = json.NewEncoder(w).Encode(map[string]any{"routers": []agentRouter{
 						{ID: "default", Name: "Default", IsDefault: true, EnabledModels: []string{"openai/test", "anthropic/test"}, ModelProviders: map[string]string{"openai/test": "openai", "anthropic/test": "anthropic"}},
-						{ID: "claude", Name: "Claude", ClientKey: claudeRouterClientKey, EnabledModels: []string{"anthropic/test"}, ModelProviders: map[string]string{"anthropic/test": "anthropic"}},
+						{ID: "claude", Name: "Claude", ClientKey: ownRouterKey("claude", true), EnabledModels: []string{"anthropic/test"}, ModelProviders: map[string]string{"anthropic/test": "anthropic"}},
 					}})
 				case "GET /v1/organizations/current/credentials":
 					credentials := []agentCredential{}
@@ -121,7 +117,7 @@ func TestLoggedInAgentConnectsMissingSubscription(t *testing.T) {
 }
 
 func TestDefaultAgentSubscriptionDeclineAndEOF(t *testing.T) {
-	for _, agent := range []string{"codex", "opencode", "pi"} {
+	for _, agent := range []string{"opencode", "pi"} {
 		for _, answer := range []string{"", "decline"} {
 			t.Run(agent+"/"+answer, func(t *testing.T) {
 				useTestAPIKey(t)
@@ -137,12 +133,8 @@ func TestDefaultAgentSubscriptionDeclineAndEOF(t *testing.T) {
 				input := ""
 				if answer == "decline" {
 					input = "n\n"
-					if agent == "opencode" || agent == "pi" {
-						input = "3\n"
-					}
 				}
-				access := agentRoutingAccess{apiURL: server.URL, scope: "test"}
-				_, err := ensureDefaultAgentSubscription(context.Background(), agent, access, api.New(server.URL), agentRouter{}, strings.NewReader(input), io.Discard)
+				_, err := ensureDefaultAgentSubscription(context.Background(), agent, api.New(server.URL), agentRouter{}, strings.NewReader(input), io.Discard)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -154,7 +146,7 @@ func TestDefaultAgentSubscriptionDeclineAndEOF(t *testing.T) {
 					t.Fatalf("opted out = %v", optedOut)
 				}
 				var output strings.Builder
-				_, err = ensureDefaultAgentSubscription(context.Background(), agent, access, api.New(server.URL), agentRouter{}, strings.NewReader(""), &output)
+				_, err = ensureDefaultAgentSubscription(context.Background(), agent, api.New(server.URL), agentRouter{}, strings.NewReader(""), &output)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -168,11 +160,8 @@ func TestDefaultAgentSubscriptionDeclineAndEOF(t *testing.T) {
 
 func TestDefaultAgentSubscriptionDoesNotEnableRouterWhenAlreadyConnected(t *testing.T) {
 	for _, tc := range []struct{ agent, provider string }{
-		{"codex", "openai_codex"},
 		{"pi", "openai_codex"},
-		{"pi", "anthropic_claude_code"},
 		{"opencode", "openai_codex"},
-		{"opencode", "anthropic_claude_code"},
 	} {
 		t.Run(tc.agent+"/"+tc.provider, func(t *testing.T) {
 			useTestAPIKey(t)
@@ -192,14 +181,13 @@ func TestDefaultAgentSubscriptionDoesNotEnableRouterWhenAlreadyConnected(t *test
 				}
 			}))
 			defer server.Close()
-			access := agentRoutingAccess{apiURL: server.URL, scope: "test"}
 			router := agentRouter{
 				ID:            "default",
 				Name:          "Dari Recommended Router",
 				IsDefault:     true,
 				EnabledModels: []string{"openai/test"},
 			}
-			_, err := ensureDefaultAgentSubscription(context.Background(), tc.agent, access, api.New(server.URL), router, strings.NewReader(""), io.Discard)
+			_, err := ensureDefaultAgentSubscription(context.Background(), tc.agent, api.New(server.URL), router, strings.NewReader(""), io.Discard)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -301,7 +289,7 @@ func TestAgentSubscriptionLinesListInRoutingOrder(t *testing.T) {
 }
 
 func TestAgentConnectNeedsATerminal(t *testing.T) {
-	err := connectAgentSubscriptionsOnRequest(context.Background(), "pi", agentRoutingAccess{}, strings.NewReader(""), io.Discard)
+	_, err := connectAgentSubscriptionsOnRequest(context.Background(), "pi", agentRoutingAccess{}, strings.NewReader(""), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "interactive terminal") {
 		t.Fatalf("err = %v", err)
 	}
@@ -309,53 +297,14 @@ func TestAgentConnectNeedsATerminal(t *testing.T) {
 
 func TestAgentSubscriptionProvidersMatchTheAgent(t *testing.T) {
 	for agent, want := range map[string][]agentSubscriptionProvider{
-		"claude":   {claudeSubscription},
+		"claude":   {claudeSubscription, codexSubscription},
 		"codex":    {codexSubscription},
-		"opencode": {codexSubscription, claudeSubscription},
-		"pi":       {codexSubscription, claudeSubscription},
+		"muse":     {museSubscription},
+		"opencode": {codexSubscription},
+		"pi":       {codexSubscription},
 	} {
 		if got := agentSubscriptionProviders(agent); !slices.Equal(got, want) {
 			t.Errorf("%s: providers = %v, want %v", agent, got, want)
 		}
-	}
-}
-
-func TestAgentSubscriptionAddsSurviveAnErrorOnTheAccountsPage(t *testing.T) {
-	useTestAPIKey(t)
-	var puts int
-	server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
-			http.NotFound(w, r)
-			return
-		}
-		puts++
-		_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_default"})
-	}))
-	defer server.Close()
-	client := api.New(server.URL)
-	router := agentRouter{ID: "rtr_default", Name: "Default", EnabledModels: []string{"openai/gpt-5.6-sol"}, ModelProviders: map[string]string{"openai/gpt-5.6-sol": "openai"}}
-	pageErr := errors.New("agent onboarding canceled")
-
-	// One account was connected before Esc: it is stored, so routing must use it.
-	if err := recordAgentSubscriptionAdds(context.Background(), client, router, agentSubscriptionProviders("pi"), "pi", 1, pageErr); err != pageErr {
-		t.Fatalf("error = %v, want the page error", err)
-	}
-	if puts != 1 {
-		t.Fatalf("router updates = %d, want the router routed through the account", puts)
-	}
-	if optedOut, err := agentSubscriptionOptedOut(context.Background(), client, "pi"); err != nil || optedOut {
-		t.Fatalf("opted out = %v, err = %v; want subscriptions on", optedOut, err)
-	}
-
-	// Nothing connected and the page failed: no preference is recorded.
-	if err := recordAgentSubscriptionAdds(context.Background(), client, router, agentSubscriptionProviders("codex"), "codex", 0, pageErr); err != pageErr {
-		t.Fatalf("error = %v, want the page error", err)
-	}
-	if optedOut, err := agentSubscriptionOptedOut(context.Background(), client, "codex"); err != nil || optedOut {
-		t.Fatalf("opted out = %v, err = %v; want no preference recorded", optedOut, err)
-	}
-	if puts != 1 {
-		t.Fatalf("router updates = %d, want none for a failed page with no accounts", puts)
 	}
 }

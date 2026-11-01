@@ -15,8 +15,11 @@ func TestFreshMachineReusesConfiguredMusePlan(t *testing.T) {
 		case "/v1/organizations/current/routers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{{
 				"id": "rtr_default", "name": "Default", "is_default": true,
-				"enabled_models":         []string{"meta/muse-spark", "openai/gpt-5.6-sol"},
-				"model_providers":        map[string]string{"meta/muse-spark": "meta", "openai/gpt-5.6-sol": "openai"},
+				"enabled_models": []string{"openai/gpt-5.6-sol"},
+			}, {
+				"id": "rtr_muse", "name": "Dari Muse Code", "client_key": "dari-cli:muse-code",
+				"enabled_models":         []string{"meta/muse-spark"},
+				"model_providers":        map[string]string{"meta/muse-spark": "meta"},
 				"subscription_providers": []string{"meta"},
 			}}})
 		case "/v1/organizations/current/credentials":
@@ -34,7 +37,7 @@ func TestFreshMachineReusesConfiguredMusePlan(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if id != "rtr_default" || output.Len() != 0 {
+		if id != "rtr_muse" || output.Len() != 0 {
 			t.Fatalf("router=%q output=%q", id, output.String())
 		}
 	}

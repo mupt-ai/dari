@@ -17,12 +17,43 @@ import (
 	"github.com/mupt-ai/dari-cli/internal/auth"
 )
 
-const (
-	claudeRouterName             = "Dari Claude Code"
-	claudeManagedRouterName      = "Dari Claude Code (Managed)"
-	claudeRouterClientKey        = "dari-cli:claude-code"
-	claudeManagedRouterClientKey = "dari-cli:claude-code-managed"
-)
+// agentSetup is how dari sets up one coding agent's routing.
+type agentSetup struct {
+	label string
+	// suggestion is the model preset the model picker starts from, the same
+	// one the frontend shows.
+	suggestion string
+	// subscriptions are the personal subscriptions the agent can use, its own
+	// first: a ChatGPT plan serves OpenAI models to any client, while Claude
+	// Code and Muse Code plans serve only their own agent.
+	subscriptions []agentSubscriptionProvider
+	// routerKey names the router the agent sets up for itself; empty shares
+	// the organization's default router.
+	routerKey string
+}
+
+// agentSetups are the agents dari sets up, by launcher name.
+var agentSetups = map[string]agentSetup{
+	"claude":   {label: "Claude Code", suggestion: "claude", subscriptions: []agentSubscriptionProvider{claudeSubscription, codexSubscription}, routerKey: "dari-cli:claude-code"},
+	"codex":    {label: "Codex", suggestion: "codex", subscriptions: []agentSubscriptionProvider{codexSubscription}, routerKey: "dari-cli:codex"},
+	"muse":     {label: "Muse Code", suggestion: "muse", subscriptions: []agentSubscriptionProvider{museSubscription}, routerKey: "dari-cli:muse-code"},
+	"opencode": {label: "OpenCode", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}},
+	"pi":       {label: "Pi", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}},
+}
+
+// ownsRouter reports whether the agent sets up a router of its own.
+func (setup agentSetup) ownsRouter() bool {
+	return setup.routerKey != ""
+}
+
+// ownRouter is the agent's own router's client key and name: one serving the
+// user's personal subscriptions, or a managed one without them.
+func (setup agentSetup) ownRouter(personal bool) (clientKey, name string) {
+	if personal {
+		return setup.routerKey, "Dari " + setup.label
+	}
+	return setup.routerKey + "-managed", "Dari " + setup.label + " (Managed)"
+}
 
 var openAgentBrowser = auth.OpenBrowser
 
@@ -30,8 +61,8 @@ type agentRoutingAccess struct {
 	apiURL string
 	scope  string
 	key    string
-	// connect also offers provider keys for an already configured router.
-	connect bool
+	// keysAdded counts the API keys connected with --connect.
+	keysAdded int
 }
 
 type agentRouter struct {
@@ -44,6 +75,7 @@ type agentRouter struct {
 	ModelThinkingLevels           map[string][]string `json:"model_thinking_levels"`
 	SubscriptionProviders         []string            `json:"subscription_providers"`
 	SubscriptionAPIFallbackModels []string            `json:"subscription_api_fallback_models"`
+	SessionPinning                bool                `json:"session_pinning"`
 }
 
 type agentModel struct {
@@ -68,6 +100,9 @@ type agentModelCatalog struct {
 type agentModelChoice struct {
 	ID     string
 	Levels []string
+	// Source is where the model's requests are paid for; empty uses the
+	// model's preferred source.
+	Source agentModelSource
 }
 
 type agentRouterCreateRequest struct {
@@ -80,6 +115,7 @@ type agentRouterCreateRequest struct {
 	ModelThinkingLevels           map[string][]string `json:"model_thinking_levels"`
 	RoutingStrategy               string              `json:"routing_strategy"`
 	SpeculativeRouting            bool                `json:"speculative_routing"`
+	SessionPinning                bool                `json:"session_pinning"`
 	PrimaryRetries                int                 `json:"primary_retries"`
 	SubscriptionProviders         []string            `json:"subscription_providers"`
 	SubscriptionAPIFallbackModels []string            `json:"subscription_api_fallback_models"`
@@ -95,6 +131,7 @@ type agentRouterUpdateRequest struct {
 	ModelThinkingLevels   map[string][]string `json:"model_thinking_levels"`
 	// Omitted keeps the router's current API fallback models.
 	SubscriptionAPIFallbackModels []string `json:"subscription_api_fallback_models,omitempty"`
+	SessionPinning                bool     `json:"session_pinning"`
 }
 
 // Omitting subscription_api_fallback_models keeps the router's current ones.
@@ -121,6 +158,8 @@ type agentSubscriptionResolution struct {
 	decided           bool
 	preferenceChanged bool
 	connectedNow      bool
+	// keysAdded counts the API keys connected on the Accounts page.
+	keysAdded int
 }
 
 func resolveAgentRoutingAccess(
@@ -150,7 +189,8 @@ func ensureAgentRouter(
 	stdin io.Reader,
 	stderr io.Writer,
 ) (string, error) {
-	if agent != "claude" && agent != "codex" && agent != "opencode" && agent != "pi" && agent != "muse" {
+	setup, ok := agentSetups[agent]
+	if !ok {
 		return "default", nil
 	}
 
@@ -158,13 +198,15 @@ func ensureAgentRouter(
 	if err != nil {
 		return "", err
 	}
-	// Routers set up earlier skip the model picker, so --connect offers keys
-	// for the models they already serve.
+	// API keys connected on the Accounts page apply once the router's models
+	// are known. Routers set up earlier skip the model picker, so their
+	// current models move onto the new keys.
+	keysAdded := access.keysAdded
 	configured := func(routerID string) (string, error) {
-		if !access.connect {
+		if keysAdded == 0 {
 			return routerID, nil
 		}
-		return routerID, connectAgentProviderKeysOnRequest(ctx, client, routerID, stdin, stderr)
+		return routerID, applyAgentProviderKeys(ctx, client, routerID, stderr)
 	}
 	routers, err := listAgentRouters(ctx, client)
 	if err != nil {
@@ -177,31 +219,31 @@ func ensureAgentRouter(
 		return "", errors.New("organization has no default router")
 	}
 
-	museEnabled := false
-	if agent != "claude" {
-		museEnabled, err = ensureDefaultAgentSubscription(ctx, agent, access, client, defaultRouter, stdin, stderr)
+	if !setup.ownsRouter() {
+		accountKeys, err := ensureDefaultAgentSubscription(ctx, agent, client, defaultRouter, stdin, stderr)
 		if err != nil {
 			return "", err
 		}
-		// Reuse server configuration unless a connected Muse plan still needs
-		// a directly served Meta model. That is incomplete setup, not a local
-		// cache miss; once configured, other computers skip the picker too.
-		museNeedsModels := museEnabled && !slices.Contains(slices.Collect(maps.Values(defaultRouter.ModelProviders)), museSubscription.routerProvider)
-		if len(defaultRouter.EnabledModels) > 0 && !museNeedsModels {
+		keysAdded += accountKeys
+		// Reuse server configuration; once configured, other computers skip
+		// the picker too.
+		if len(defaultRouter.EnabledModels) > 0 {
 			return configured(defaultRouter.ID)
 		}
 	}
 
-	usePersonalSubscription := false
-	claudeClientKey := ""
-	if agent == "claude" {
+	// The personal subscriptions an agent's own router serves; none means its
+	// managed router.
+	var subscribed []agentSubscriptionProvider
+	ownClientKey := ""
+	if setup.ownsRouter() {
 		previouslyOptedOut, err := agentSubscriptionOptedOut(ctx, client, agent)
 		if err != nil {
 			return "", err
 		}
 		resolution, err := resolveAgentPersonalSubscription(
 			ctx,
-			claudeSubscription,
+			setup.subscriptions,
 			client,
 			stdin,
 			stderr,
@@ -210,53 +252,40 @@ func ensureAgentRouter(
 		if err != nil {
 			return "", err
 		}
+		keysAdded += resolution.keysAdded
 		if !resolution.decided {
+			managedKey, _ := setup.ownRouter(false)
 			if existing, found := findAgentRouter(routers, func(router agentRouter) bool {
-				return router.ClientKey == claudeManagedRouterClientKey
+				return router.ClientKey == managedKey
 			}); found {
 				return configured(existing.ID)
 			}
 			return configured(defaultRouter.ID)
 		}
-		usePersonalSubscription = resolution.enabled
 		if resolution.preferenceChanged {
-			if err := saveAgentSubscriptionOptOut(ctx, client, agent, !usePersonalSubscription); err != nil {
+			if err := saveAgentSubscriptionOptOut(ctx, client, agent, !resolution.enabled); err != nil {
 				return "", err
 			}
 		}
-		claudeClientKey = claudeManagedRouterClientKey
-		if usePersonalSubscription {
-			claudeClientKey = claudeRouterClientKey
+		if resolution.enabled {
+			if subscribed, err = connectedAgentSubscriptions(ctx, client, setup.subscriptions); err != nil {
+				return "", err
+			}
 		}
+		ownClientKey, _ = setup.ownRouter(len(subscribed) > 0)
 		existing, found := findAgentRouter(routers, func(router agentRouter) bool {
-			return router.ClientKey == claudeClientKey
+			return router.ClientKey == ownClientKey
 		})
 		if found {
-			if err := setAgentRouterSubscription(ctx, client, existing, agentSubscriptionProviders(agent), usePersonalSubscription); err != nil {
+			if err := setOwnRouterSubscriptions(ctx, client, existing, setup, subscribed); err != nil {
 				return "", err
 			}
 			return configured(existing.ID)
 		}
 	}
 
-	// Each launcher preselects the named preset the frontend also shows. Codex
-	// and Pi both configure the default router; Pi starts from its preset.
-	title := "Choose models for Codex"
-	suggestionID := agent
-	switch agent {
-	case "claude":
-		title = "Choose models for Claude Code"
-	case "pi":
-		title = "Choose models for Pi"
-		suggestionID = "default"
-	case "opencode":
-		title = "Choose models for OpenCode"
-		suggestionID = "default"
-	case "muse":
-		title = "Choose models for Muse Code"
-		suggestionID = "default"
-	}
-	suggestion, err := fetchAgentModelSuggestion(ctx, client, suggestionID)
+	title := "Choose models for " + setup.label
+	suggestion, err := fetchAgentModelSuggestion(ctx, client, setup.suggestion)
 	if err != nil {
 		return "", err
 	}
@@ -267,20 +296,25 @@ func ensureAgentRouter(
 	if err != nil {
 		return "", err
 	}
-	if agent != "claude" {
+	if !setup.ownsRouter() {
 		models = includeCurrentAgentModels(models, defaultRouter)
 	}
 	var currentLevels map[string][]string
-	if agent == "muse" && museEnabled {
-		// Add the plan's models without preselecting an unrelated shared
-		// preset over the organization's existing models or thinking levels.
-		defaultIDs = slices.Clone(defaultRouter.EnabledModels)
-		currentLevels = defaultRouter.ModelThinkingLevels
-		for _, model := range models {
-			if model.Provider == museSubscription.routerProvider && !slices.Contains(defaultIDs, model.ID) {
-				defaultIDs = append(defaultIDs, model.ID)
-			}
-		}
+	// Each model offers the subscriptions, keys, and credits that can pay for
+	// it, preferred first; the picker lets the user change any of them.
+	if !setup.ownsRouter() {
+		subscribed = slices.DeleteFunc(slices.Clone(setup.subscriptions), func(subscription agentSubscriptionProvider) bool {
+			return !slices.Contains(defaultRouter.SubscriptionProviders, subscription.routerProvider)
+		})
+	}
+	keyContext, err := loadAgentKeyContext(ctx, client, subscribed)
+	if err != nil {
+		return "", err
+	}
+	modelProviders := agentProvidersFor(models, modelIDs(models))
+	sources := map[string][]agentModelSource{}
+	for _, model := range models {
+		sources[model.ID] = keyContext.sources(model, modelProviders[model.ID])
 	}
 	var choices []agentModelChoice
 	for {
@@ -296,7 +330,7 @@ func ensureAgentRouter(
 			}
 			note = []string{"The checked models are recommended. Switch between them with /model.", offer}
 		}
-		choices, err = selectAgentModels(stdin, stderr, title, note, !routing, models, defaultIDs, currentLevels, recommendedLevels)
+		choices, err = selectAgentModels(stdin, stderr, title, note, !routing, models, defaultIDs, currentLevels, recommendedLevels, sources)
 		if !errors.Is(err, errAgentWantsAutorouting) {
 			if err != nil {
 				return "", err
@@ -307,88 +341,54 @@ func ensureAgentRouter(
 			return "", err
 		}
 	}
+	choices = keyContext.withSources(models, choices, modelProviders)
+	agentStep(stderr, "Paying with "+agentSourceSummary(models, choices))
+	keys := keyContext.keys(choices)
 	routerID := defaultRouter.ID
-	if agent != "claude" {
+	if !setup.ownsRouter() {
 		body := agentRouterUpdateBody(defaultRouter, models, choices)
-		subscribed := slices.Clone(defaultRouter.SubscriptionProviders)
-		if museEnabled {
-			subscribed = append(subscribed, museSubscription.routerProvider)
-		}
-		keys, err := chooseAgentProviderKeys(ctx, client, stdin, stderr, models, body.EnabledModels, body.ModelProviders, subscribed, agentKeepDariCredits)
-		if err != nil {
-			return "", err
-		}
 		keys.apply(body.ModelProviders, body.ProviderKeySources)
 		body.ProviderCredentialIDs = keys.credentialIDs
-		fallback := keys.fallbackModels(defaultRouter.SubscriptionAPIFallbackModels, body.EnabledModels)
-		if museEnabled && !slices.Contains(slices.Collect(maps.Values(body.ModelProviders)), museSubscription.routerProvider) {
-			return "", errors.New("a Muse Code subscription needs at least one selected model served directly by Meta")
+		body.SubscriptionAPIFallbackModels = keys.fallbackModels(defaultRouter.SubscriptionAPIFallbackModels, body.EnabledModels)
+		if body.SessionPinning, err = chooseAgentSessionPinning(stdin, stderr, defaultRouter.SessionPinning); err != nil {
+			return "", err
 		}
-		// API fallback models must be on subscribed providers, and a Muse plan
-		// subscribes Meta only after this update, so its fallback follows.
-		if !museEnabled {
-			body.SubscriptionAPIFallbackModels = fallback
-		}
-		if len(keys.credentialIDs) > 0 || agentRouterNeedsUpdate(defaultRouter, choices) {
+		if len(keys.credentialIDs) > 0 || body.SessionPinning != defaultRouter.SessionPinning || agentRouterNeedsUpdate(defaultRouter, choices) {
 			if defaultRouter, err = putAgentRouter(ctx, client, defaultRouter.ID, body); err != nil {
 				return "", err
 			}
 		}
-		// The plan was applied before the picker, when the router may not
-		// have served any Meta model yet.
-		if museEnabled {
-			if err := setAgentRouterSubscription(ctx, client, defaultRouter, agentSubscriptionProviders(agent), true); err != nil {
-				return "", err
-			}
-			if fallback != nil {
-				body.SubscriptionAPIFallbackModels = fallback
-				if defaultRouter, err = putAgentRouter(ctx, client, defaultRouter.ID, body); err != nil {
-					return "", err
-				}
-			}
-		}
-		name := "Codex"
-		switch agent {
-		case "pi":
-			name = "Pi"
-		case "opencode":
-			name = "OpenCode"
-		case "muse":
-			name = "Muse Code"
-		}
-		agentStep(stderr, name+" will use your default router")
+		agentStep(stderr, setup.label+" will use your default router")
 	} else {
-		body := agentRouterCreateBody(
-			models,
-			choices,
-			claudeClientKey,
-			usePersonalSubscription,
-		)
-		subscribed := []string{}
-		if usePersonalSubscription {
-			subscribed = append(subscribed, claudeSubscription.routerProvider)
-		}
-		keys, err := chooseAgentProviderKeys(ctx, client, stdin, stderr, models, body.EnabledModels, body.ModelProviders, subscribed, agentKeepDariCredits)
-		if err != nil {
-			return "", err
+		body := agentRouterCreateBody(setup, models, choices, subscribed)
+		// The agent's own plan must have a model to serve, or connecting it
+		// did nothing.
+		if len(subscribed) > 0 && subscribed[0] == setup.subscriptions[0] &&
+			!slices.Contains(slices.Collect(maps.Values(body.ModelProviders)), subscribed[0].routerProvider) {
+			return "", fmt.Errorf("a %s subscription needs at least one selected model served directly by %s", subscribed[0].name, subscribed[0].vendor)
 		}
 		keys.apply(body.ModelProviders, body.ProviderKeySources)
 		body.ProviderCredentialIDs = keys.credentialIDs
+		body.SubscriptionProviders = keys.subscriptionProviders
 		if fallback := keys.fallbackModels(nil, body.EnabledModels); fallback != nil {
 			body.SubscriptionAPIFallbackModels = fallback
+		}
+		body.SessionPinning, err = chooseAgentSessionPinning(stdin, stderr, false)
+		if err != nil {
+			return "", err
 		}
 		var created agentRouter
 		createErr := client.Do(ctx, http.MethodPost, "/v1/organizations/current/routers", body, &created)
 		if createErr == nil {
 			routerID = created.ID
-			agentStep(stderr, "Claude Code router created")
+			agentStep(stderr, setup.label+" router created")
 		} else if api.AsHTTPError(createErr) != nil && api.AsHTTPError(createErr).Status == http.StatusConflict {
 			routers, err := listAgentRouters(ctx, client)
 			if err != nil {
 				return "", err
 			}
 			existing, found := findAgentRouter(routers, func(router agentRouter) bool {
-				return router.ClientKey == claudeClientKey
+				return router.ClientKey == ownClientKey
 			})
 			if !found {
 				return "", api.HumanError(createErr)
@@ -400,7 +400,7 @@ func ensureAgentRouter(
 					return "", err
 				}
 			}
-			if err := setAgentRouterSubscription(ctx, client, existing, agentSubscriptionProviders(agent), usePersonalSubscription); err != nil {
+			if err := setOwnRouterSubscriptions(ctx, client, existing, setup, subscribed); err != nil {
 				return "", err
 			}
 			routerID = existing.ID
@@ -411,21 +411,48 @@ func ensureAgentRouter(
 	return routerID, nil
 }
 
+// connectedAgentSubscriptions are the providers whose personal subscription
+// the user has connected.
+func connectedAgentSubscriptions(ctx context.Context, client *api.Client, providers []agentSubscriptionProvider) ([]agentSubscriptionProvider, error) {
+	var listed agentSubscriptionStatus
+	if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &listed); err != nil {
+		return nil, api.HumanError(err)
+	}
+	return slices.DeleteFunc(slices.Clone(providers), func(provider agentSubscriptionProvider) bool {
+		return !slices.ContainsFunc(listed.Credentials, func(credential agentCredential) bool {
+			return credential.OAuthProvider == provider.id
+		})
+	}), nil
+}
+
+// setOwnRouterSubscriptions adds the connected subscriptions to an agent's
+// own router, or with none connected takes the agent's subscriptions off it.
+func setOwnRouterSubscriptions(ctx context.Context, client *api.Client, router agentRouter, setup agentSetup, subscribed []agentSubscriptionProvider) error {
+	if len(subscribed) == 0 {
+		return setAgentRouterSubscription(ctx, client, router, setup.subscriptions, false)
+	}
+	return setAgentRouterSubscription(ctx, client, router, subscribed, true)
+}
+
+// resolveAgentPersonalSubscription decides whether a launch uses the agent's
+// personal subscriptions: its own one already connected, or the ones the user
+// keeps or connects on the Accounts page. Without a terminal it asks about
+// the agent's own provider only.
 func resolveAgentPersonalSubscription(
 	ctx context.Context,
-	provider agentSubscriptionProvider,
+	providers []agentSubscriptionProvider,
 	client *api.Client,
 	stdin io.Reader,
 	stderr io.Writer,
 	previouslyOptedOut bool,
 ) (agentSubscriptionResolution, error) {
-	var listed agentSubscriptionStatus
-	if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &listed); err != nil {
-		return agentSubscriptionResolution{}, api.HumanError(err)
+	// Only the agent's own subscription decides without asking: a ChatGPT
+	// account connected for Codex does not set up Claude Code.
+	own, err := connectedAgentSubscriptions(ctx, client, providers[:1])
+	if err != nil {
+		return agentSubscriptionResolution{}, err
 	}
-	if slices.ContainsFunc(listed.Credentials, func(credential agentCredential) bool {
-		return credential.OAuthProvider == provider.id
-	}) {
+	if len(own) > 0 {
 		return agentSubscriptionResolution{enabled: true, decided: true, preferenceChanged: previouslyOptedOut}, nil
 	}
 	if previouslyOptedOut {
@@ -433,18 +460,24 @@ func resolveAgentPersonalSubscription(
 	}
 
 	if agentInputIsTerminal(stdin) {
-		added, err := manageAgentSubscriptions(ctx, client, []agentSubscriptionProvider{provider}, stdin, stderr)
+		added, keysAdded, err := manageAgentSubscriptions(ctx, client, providers, stdin, stderr)
 		if added == 0 {
 			// A failed page with nothing connected records no preference.
 			if err != nil {
 				return agentSubscriptionResolution{}, err
 			}
-			return agentSubscriptionResolution{decided: true, preferenceChanged: true}, nil
+			// Continuing with subscriptions the page already listed uses them.
+			connected, err := connectedAgentSubscriptions(ctx, client, providers)
+			if err != nil {
+				return agentSubscriptionResolution{}, err
+			}
+			return agentSubscriptionResolution{enabled: len(connected) > 0, decided: true, preferenceChanged: true, keysAdded: keysAdded}, nil
 		}
 		// Accounts connected before an error are stored, so report them as
 		// connected alongside the error.
-		return agentSubscriptionResolution{enabled: true, decided: true, preferenceChanged: true, connectedNow: true}, err
+		return agentSubscriptionResolution{enabled: true, decided: true, preferenceChanged: true, connectedNow: true, keysAdded: keysAdded}, err
 	}
+	provider := providers[0]
 	useSubscription, answered, err := confirmDefaultYes(
 		stdin,
 		stderr,
@@ -779,9 +812,10 @@ func selectAgentModels(
 	defaults []string,
 	currentLevels map[string][]string,
 	recommendedLevels map[string][]string,
+	sources map[string][]agentModelSource,
 ) ([]agentModelChoice, error) {
 	if agentInputIsTerminal(stdin) {
-		return runAgentPicker(stdin, stderr, title, note, offerAutorouting, models, defaults, currentLevels, recommendedLevels)
+		return runAgentPicker(stdin, stderr, title, note, offerAutorouting, models, defaults, currentLevels, recommendedLevels, sources)
 	}
 	return selectAgentModelsByNumber(stdin, stderr, title, note, models, defaults, currentLevels, recommendedLevels)
 }
@@ -879,6 +913,10 @@ type agentPickerRow struct {
 	recommended map[string]bool
 	checked     map[string]bool
 	selected    bool
+	// sources are where the model can be paid for, preferred first; source
+	// indexes the chosen one.
+	sources []agentModelSource
+	source  int
 }
 
 func (row *agentPickerRow) checkedLevels() []string {
@@ -930,11 +968,13 @@ func newAgentPickerState(
 	defaults []string,
 	currentLevels map[string][]string,
 	recommendedLevels map[string][]string,
+	sources map[string][]agentModelSource,
 ) *agentPickerState {
 	state := &agentPickerState{rows: make([]agentPickerRow, 0, len(models))}
 	for _, model := range models {
 		row := newAgentPickerRow(model, currentLevels[model.ID], recommendedLevels[model.ID])
 		row.selected = slices.Contains(defaults, model.ID)
+		row.sources = sources[model.ID]
 		state.rows = append(state.rows, row)
 	}
 	return state
@@ -977,13 +1017,40 @@ func (p *agentPickerState) choices() []agentModelChoice {
 	choices := make([]agentModelChoice, 0, p.selectedCount())
 	for _, row := range p.rows {
 		if row.selected {
-			choices = append(choices, agentModelChoice{
-				ID:     row.model.ID,
-				Levels: row.checkedLevels(),
-			})
+			choice := agentModelChoice{ID: row.model.ID, Levels: row.checkedLevels()}
+			if len(row.sources) > 0 {
+				choice.Source = row.sources[row.source]
+			}
+			choices = append(choices, choice)
 		}
 	}
 	return choices
+}
+
+// cycleSource moves a model to its next source. A subscription, the
+// provider's own key, and credits apply per provider on a router, so models of
+// the same provider that use one of those follow; gateway keys stay per model.
+func (p *agentPickerState) cycleSource() {
+	row := &p.rows[p.cursor]
+	if len(row.sources) < 2 {
+		return
+	}
+	row.source = (row.source + 1) % len(row.sources)
+	chosen := row.sources[row.source]
+	if !chosen.native() {
+		return
+	}
+	for i := range p.rows {
+		other := &p.rows[i]
+		if i == p.cursor || len(other.sources) == 0 || other.sources[other.source].modelProvider != chosen.modelProvider || !other.sources[other.source].native() {
+			continue
+		}
+		if index := slices.IndexFunc(other.sources, func(source agentModelSource) bool {
+			return source.kind == chosen.kind && source.provider == chosen.provider
+		}); index >= 0 {
+			other.source = index
+		}
+	}
 }
 
 func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
@@ -998,6 +1065,8 @@ func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
 		p.cursor = (p.cursor + 1) % len(p.rows)
 	case " ":
 		row.selected = !row.selected
+	case "s":
+		p.cycleSource()
 	case "right", "l":
 		if len(row.levelOpts) > 0 {
 			p.editing = true
@@ -1050,6 +1119,14 @@ func (p *agentPickerState) exitEditing() {
 		}
 	}
 	p.editing = false
+}
+
+func modelIDs(models []agentModel) []string {
+	ids := make([]string, len(models))
+	for i, model := range models {
+		ids[i] = model.ID
+	}
+	return ids
 }
 
 func choiceIDs(choices []agentModelChoice) []string {
@@ -1114,10 +1191,10 @@ func sameStringSet(a, b []string) bool {
 }
 
 func agentRouterCreateBody(
+	setup agentSetup,
 	models []agentModel,
 	choices []agentModelChoice,
-	clientKey string,
-	usePersonalSubscription bool,
+	subscribed []agentSubscriptionProvider,
 ) agentRouterCreateRequest {
 	ids := choiceIDs(choices)
 	providers := agentProvidersFor(models, ids)
@@ -1125,13 +1202,12 @@ func agentRouterCreateBody(
 	for _, provider := range providers {
 		providerSources[provider] = "managed"
 	}
-	name := claudeRouterName
-	if clientKey == claudeManagedRouterClientKey {
-		name = claudeManagedRouterName
-	}
+	clientKey, name := setup.ownRouter(len(subscribed) > 0)
 	subscriptionProviders := []string{}
-	if usePersonalSubscription && providerSources[claudeSubscription.routerProvider] != "" {
-		subscriptionProviders = append(subscriptionProviders, claudeSubscription.routerProvider)
+	for _, subscription := range subscribed {
+		if providerSources[subscription.routerProvider] != "" {
+			subscriptionProviders = append(subscriptionProviders, subscription.routerProvider)
+		}
 	}
 	return agentRouterCreateRequest{
 		Name:                          name,
@@ -1175,6 +1251,7 @@ func agentRouterUpdateBody(
 		ModelProviders:      providers,
 		ProviderKeySources:  providerSources,
 		ModelThinkingLevels: choiceLevels(choices),
+		SessionPinning:      current.SessionPinning,
 	}
 }
 
@@ -1228,4 +1305,21 @@ func fetchAgentModelSuggestion(
 	return agentModelSuggestion{}, fmt.Errorf(
 		"no %q model suggestion is configured on the backend", suggestionID,
 	)
+}
+
+// chooseAgentSessionPinning asks whether the router keeps one model for each
+// session. Without a terminal it asks nothing and keeps current, so scripts
+// leave the router's routing mode as it is.
+func chooseAgentSessionPinning(stdin io.Reader, stderr io.Writer, current bool) (bool, error) {
+	if !agentInputIsTerminal(stdin) {
+		return current, nil
+	}
+	choice, err := runAgentChoiceTUI(stdin, stderr, "When should Dari pick the model?", nil, []agentChoiceOption{
+		{label: "Every turn (default)", description: "Dari picks the best model for each request.", done: "Routing every turn"},
+		{label: "Once per session", description: "Dari picks when a session starts and keeps that model. Each subagent gets its own pick, then keeps it.", done: "Routing once per session"},
+	})
+	if err != nil {
+		return false, err
+	}
+	return choice == 1, nil
 }

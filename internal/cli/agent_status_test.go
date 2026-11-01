@@ -11,6 +11,7 @@ func TestAgentStatusCommand(t *testing.T) {
 		want string
 	}{
 		{[]string{"--headers", `{"x-dari-selected-model":"m","x-dari-thinking-level":"high","x-dari-lease-turns-remaining":"1"}`}, "m · high · lease 2 turns left"},
+		{[]string{"--headers", `{"x-dari-selected-model":"m","x-dari-thinking-level":"high","x-dari-session-pinned":"true"}`}, "m · high · pinned"},
 		{[]string{"--headers", `{"x-dari-selected-model":"m","x-request-id":"req_1"}`}, "m · https://app.dari.dev/activity/conversations/req_1"},
 		{[]string{"--headers", `{"x-dari-thinking-level":"high"}`}, ""},
 	} {

@@ -107,7 +107,7 @@ func TestSelectAgentModelsByNumberPreservesCurrentLevels(t *testing.T) {
 func TestAgentPickerTogglesModelsAndEditsLevels(t *testing.T) {
 	models := testAgentModels()
 	models[2].SupportedLevels = []string{"off", "low", "medium", "high", "xhigh", "max"}
-	p := newAgentPickerState(models, []string{"anthropic/claude-fable-5", "zai-org/GLM-5.3"}, nil, testRecommendedLevels())
+	p := newAgentPickerState(models, []string{"anthropic/claude-fable-5", "zai-org/GLM-5.3"}, nil, testRecommendedLevels(), nil)
 
 	// Sol starts with the recommended medium+xhigh set checked.
 	if got := p.rows[2].checkedLevels(); !slices.Equal(got, []string{"medium", "xhigh"}) {
@@ -173,6 +173,7 @@ func TestAgentPickerRecommendationsAreAgentSpecific(t *testing.T) {
 		[]string{"openai/gpt-5.6-sol"},
 		nil,
 		map[string][]string{"openai/gpt-5.6-sol": {"medium", "xhigh"}},
+		nil,
 	)
 	if codex.rows[0].usesRecommended() {
 		t.Fatal("Codex marked Fable as recommended")
@@ -192,6 +193,7 @@ func TestAgentPickerRecommendationsAreAgentSpecific(t *testing.T) {
 			"anthropic/claude-fable-5": {"high"},
 			"zai-org/GLM-5.3":          {"high"},
 		},
+		nil,
 	)
 	if !claude.rows[0].usesRecommended() {
 		t.Fatal("Claude Code did not mark Fable as recommended")
@@ -204,7 +206,7 @@ func TestAgentPickerRecommendationsAreAgentSpecific(t *testing.T) {
 func TestAgentPickerLevelEditingRestoresRecommendedWhenEmptied(t *testing.T) {
 	models := testAgentModels()
 	models[2].SupportedLevels = []string{"off", "low", "medium", "high", "xhigh", "max"}
-	p := newAgentPickerState(models, []string{"openai/gpt-5.6-sol"}, nil, testRecommendedLevels())
+	p := newAgentPickerState(models, []string{"openai/gpt-5.6-sol"}, nil, testRecommendedLevels(), nil)
 
 	// Open Sol's levels and uncheck everything.
 	p.handleKey("down")
@@ -276,7 +278,7 @@ func TestResolveClaudePersonalSubscriptionUsesExistingConnection(t *testing.T) {
 	var stderr strings.Builder
 	resolution, err := resolveAgentPersonalSubscription(
 		context.Background(),
-		claudeSubscription,
+		[]agentSubscriptionProvider{claudeSubscription},
 		api.New(server.URL),
 		strings.NewReader("n\n"),
 		&stderr,
@@ -313,7 +315,7 @@ func TestResolveClaudePersonalSubscriptionNeedsNoPlan(t *testing.T) {
 	var stderr strings.Builder
 	resolution, err := resolveAgentPersonalSubscription(
 		context.Background(),
-		claudeSubscription,
+		[]agentSubscriptionProvider{claudeSubscription},
 		api.New(server.URL),
 		strings.NewReader(""),
 		&stderr,
@@ -369,7 +371,7 @@ func TestResolveClaudePersonalSubscriptionDefaultsToConnect(t *testing.T) {
 	var stderr strings.Builder
 	resolution, err := resolveAgentPersonalSubscription(
 		context.Background(),
-		claudeSubscription,
+		[]agentSubscriptionProvider{claudeSubscription},
 		api.New(server.URL),
 		strings.NewReader("\ntest-code#test-state\n"),
 		&stderr,
@@ -458,7 +460,7 @@ func TestResolveClaudePersonalSubscriptionDoesNotDefaultOnEOF(t *testing.T) {
 
 	resolution, err := resolveAgentPersonalSubscription(
 		context.Background(),
-		claudeSubscription,
+		[]agentSubscriptionProvider{claudeSubscription},
 		api.New(server.URL),
 		strings.NewReader(""),
 		io.Discard,
@@ -487,7 +489,7 @@ func TestResolveClaudePersonalSubscriptionPreservesOptOut(t *testing.T) {
 	var stderr strings.Builder
 	resolution, err := resolveAgentPersonalSubscription(
 		context.Background(),
-		claudeSubscription,
+		[]agentSubscriptionProvider{claudeSubscription},
 		api.New(server.URL),
 		strings.NewReader("\n"),
 		&stderr,
@@ -517,7 +519,7 @@ func TestResolveClaudePersonalSubscriptionAllowsOptOut(t *testing.T) {
 
 	resolution, err := resolveAgentPersonalSubscription(
 		context.Background(),
-		claudeSubscription,
+		[]agentSubscriptionProvider{claudeSubscription},
 		api.New(server.URL),
 		strings.NewReader("n\n"),
 		io.Discard,
@@ -552,7 +554,7 @@ func TestEnsureClaudeAgentRouterCreatesSeparateRouter(t *testing.T) {
 				},
 				{
 					"id":   "rtr_same_name",
-					"name": claudeRouterName,
+					"name": ownRouterName("claude", true),
 				},
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
@@ -565,7 +567,7 @@ func TestEnsureClaudeAgentRouterCreatesSeparateRouter(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
 				t.Error(err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_claude", "name": claudeRouterName})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_claude", "name": ownRouterName("claude", true)})
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -588,10 +590,10 @@ func TestEnsureClaudeAgentRouterCreatesSeparateRouter(t *testing.T) {
 	if routerID != "rtr_claude" {
 		t.Fatalf("router ID = %q", routerID)
 	}
-	if got := created["name"]; got != claudeRouterName {
+	if got := created["name"]; got != ownRouterName("claude", true) {
 		t.Errorf("name = %#v", got)
 	}
-	if got := created["client_key"]; got != claudeRouterClientKey {
+	if got := created["client_key"]; got != ownRouterKey("claude", true) {
 		t.Errorf("client_key = %#v", got)
 	}
 	if got := stringSlice(created["subscription_providers"]); !slices.Equal(got, []string{"anthropic"}) {
@@ -627,73 +629,77 @@ func TestEnsureClaudeAgentRouterCreatesSeparateRouter(t *testing.T) {
 	}
 }
 
-func TestEnsureClaudeAgentRouterUsesManagedRouterAfterOptOut(t *testing.T) {
-	var created map[string]any
-	var putRequests int
-	server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers":
-			_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{
-				{
-					"id":                    "rtr_default",
-					"name":                  "Default",
-					"is_default":            true,
-					"enabled_models":        []string{"openai/gpt-5.6-sol"},
-					"model_thinking_levels": map[string][]string{"openai/gpt-5.6-sol": {"medium"}},
-				},
-				{
-					"id":                     "rtr_personal",
-					"name":                   claudeRouterName,
-					"client_key":             claudeRouterClientKey,
-					"subscription_providers": []string{"anthropic"},
-				},
-			}})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
-			_ = json.NewEncoder(w).Encode(map[string]any{"credentials": []any{}})
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers/model-catalog":
-			writeAgentModelCatalog(t, w)
-		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers/model-suggestions":
-			writeAgentModelSuggestions(t, w)
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/organizations/current/routers":
-			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
-				t.Error(err)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_managed", "name": claudeManagedRouterName})
-		case r.Method == http.MethodPut:
-			putRequests++
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			http.NotFound(w, r)
-		}
-	}))
-	defer server.Close()
+func TestOwnAgentRouterUsesManagedRouterAfterOptOut(t *testing.T) {
+	for _, agent := range []string{"claude", "codex"} {
+		t.Run(agent, func(t *testing.T) {
+			var created map[string]any
+			var putRequests int
+			server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers":
+					_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{
+						{
+							"id":                    "rtr_default",
+							"name":                  "Default",
+							"is_default":            true,
+							"enabled_models":        []string{"openai/gpt-5.6-sol"},
+							"model_thinking_levels": map[string][]string{"openai/gpt-5.6-sol": {"medium"}},
+						},
+						{
+							"id":                     "rtr_personal",
+							"name":                   ownRouterName(agent, true),
+							"client_key":             ownRouterKey(agent, true),
+							"subscription_providers": []string{"anthropic"},
+						},
+					}})
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
+					_ = json.NewEncoder(w).Encode(map[string]any{"credentials": []any{}})
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers/model-catalog":
+					writeAgentModelCatalog(t, w)
+				case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers/model-suggestions":
+					writeAgentModelSuggestions(t, w)
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/organizations/current/routers":
+					if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
+						t.Error(err)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_managed", "name": ownRouterName(agent, false)})
+				case r.Method == http.MethodPut:
+					putRequests++
+				default:
+					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
 
-	useTestAPIKey(t)
-	t.Setenv("DARI_API_URL", server.URL)
-	routerID, err := ensureAgentRouter(
-		context.Background(),
-		"claude",
-		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
-		strings.NewReader("n\n\n"),
-		io.Discard,
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if routerID != "rtr_managed" {
-		t.Fatalf("router ID = %q", routerID)
-	}
-	if putRequests != 0 {
-		t.Fatalf("PUT requests = %d, want no mutation of personal router", putRequests)
-	}
-	if got := created["client_key"]; got != claudeManagedRouterClientKey {
-		t.Errorf("client_key = %#v", got)
-	}
-	if got := created["name"]; got != claudeManagedRouterName {
-		t.Errorf("name = %#v", got)
-	}
-	if got, ok := created["subscription_providers"].([]any); !ok || len(got) != 0 {
-		t.Errorf("subscription_providers = %#v, want []", created["subscription_providers"])
+			useTestAPIKey(t)
+			t.Setenv("DARI_API_URL", server.URL)
+			routerID, err := ensureAgentRouter(
+				context.Background(),
+				agent,
+				agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+				strings.NewReader("n\n\n"),
+				io.Discard,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if routerID != "rtr_managed" {
+				t.Fatalf("router ID = %q", routerID)
+			}
+			if putRequests != 0 {
+				t.Fatalf("PUT requests = %d, want no mutation of personal router", putRequests)
+			}
+			if got := created["client_key"]; got != ownRouterKey(agent, false) {
+				t.Errorf("client_key = %#v", got)
+			}
+			if got := created["name"]; got != ownRouterName(agent, false) {
+				t.Errorf("name = %#v", got)
+			}
+			if got, ok := created["subscription_providers"].([]any); !ok || len(got) != 0 {
+				t.Errorf("subscription_providers = %#v, want []", created["subscription_providers"])
+			}
+		})
 	}
 }
 
@@ -706,8 +712,8 @@ func TestEnsureClaudeAgentRouterAvoidsPersonalRouterWithoutCredentialsOnEOF(t *t
 				{"id": "rtr_default", "name": "Default", "is_default": true},
 				{
 					"id":                     "rtr_claude",
-					"name":                   claudeRouterName,
-					"client_key":             claudeRouterClientKey,
+					"name":                   ownRouterName("claude", true),
+					"client_key":             ownRouterKey("claude", true),
 					"subscription_providers": []string{"anthropic"},
 				},
 			}})
@@ -750,9 +756,9 @@ func TestEnsureClaudeAgentRouterUsesServerManagedRouterOnEOF(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{
 				{"id": "rtr_default", "name": "Default", "is_default": true},
-				{"id": "rtr_managed_other", "client_key": claudeManagedRouterClientKey},
-				{"id": "rtr_managed_cached", "client_key": claudeManagedRouterClientKey},
-				{"id": "rtr_personal", "client_key": claudeRouterClientKey},
+				{"id": "rtr_managed_other", "client_key": ownRouterKey("claude", false)},
+				{"id": "rtr_managed_cached", "client_key": ownRouterKey("claude", false)},
+				{"id": "rtr_personal", "client_key": ownRouterKey("claude", true)},
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
 			_ = json.NewEncoder(w).Encode(map[string]any{"credentials": []any{}})
@@ -790,8 +796,8 @@ func TestEnsureClaudeAgentRouterIgnoresUnavailablePersonalRouterOnEOF(t *testing
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{
 				{"id": "rtr_default", "name": "Default", "is_default": true},
-				{"id": "rtr_managed", "client_key": claudeManagedRouterClientKey},
-				{"id": "rtr_personal", "client_key": claudeRouterClientKey},
+				{"id": "rtr_managed", "client_key": ownRouterKey("claude", false)},
+				{"id": "rtr_personal", "client_key": ownRouterKey("claude", true)},
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
 			_ = json.NewEncoder(w).Encode(map[string]any{"credentials": []any{}})
@@ -826,7 +832,7 @@ func TestEnsureClaudeAgentRouterRequiresSubscriptionAfterRename(t *testing.T) {
 				{
 					"id":                     "rtr_claude",
 					"name":                   "Renamed by user",
-					"client_key":             claudeRouterClientKey,
+					"client_key":             ownRouterKey("claude", true),
 					"enabled_models":         []string{"anthropic/claude-fable-5", "openai/gpt-5.6-sol"},
 					"model_providers":        map[string]string{"anthropic/claude-fable-5": "anthropic", "openai/gpt-5.6-sol": "openai"},
 					"model_thinking_levels":  map[string][]string{"anthropic/claude-fable-5": {"high"}, "openai/gpt-5.6-sol": {"medium"}},
@@ -887,7 +893,7 @@ func TestEnsureClaudeAgentRouterSkipsUpdateForCompliantRouter(t *testing.T) {
 				{
 					"id":                     "rtr_claude",
 					"name":                   "Renamed by user",
-					"client_key":             claudeRouterClientKey,
+					"client_key":             ownRouterKey("claude", true),
 					"subscription_providers": []string{"anthropic"},
 				},
 			}})
@@ -937,7 +943,7 @@ func TestEnsureClaudeAgentRouterRecoversFromConcurrentCreate(t *testing.T) {
 				routers = append(routers, map[string]any{
 					"id":              "rtr_other_computer",
 					"name":            "Renamed",
-					"client_key":      claudeRouterClientKey,
+					"client_key":      ownRouterKey("claude", true),
 					"enabled_models":  []string{"anthropic/claude-fable-5"},
 					"model_providers": map[string]string{"anthropic/claude-fable-5": "anthropic"},
 				})
@@ -987,7 +993,7 @@ func TestEnsureClaudeAgentRouterRecoversFromConcurrentCreate(t *testing.T) {
 	}
 }
 
-func TestEnsureCodexAgentRouterPreservesSavedDefault(t *testing.T) {
+func TestEnsurePiAgentRouterPreservesSavedDefault(t *testing.T) {
 	var putRequests int
 	server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -1032,7 +1038,7 @@ func TestEnsureCodexAgentRouterPreservesSavedDefault(t *testing.T) {
 	t.Setenv("DARI_API_URL", server.URL)
 	routerID, err := ensureAgentRouter(
 		context.Background(),
-		"codex",
+		"pi",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
 		strings.NewReader("n\n\n"),
 		io.Discard,
@@ -1239,22 +1245,36 @@ func writeAgentModelCatalog(t *testing.T, w http.ResponseWriter) {
 func writeAgentModelSuggestions(t *testing.T, w http.ResponseWriter) {
 	t.Helper()
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"suggestions": []map[string]any{{
-			"id": "claude",
-			"model_ids": []string{
-				"anthropic/claude-fable-5-1",
-				"zai-org/GLM-5.3-Flash",
-				"xai/grok-4.7",
-				"openai/gpt-5.6-sol",
-			},
-			"models": map[string]any{
-				"anthropic/claude-fable-5-1": []string{"high"},
-				"zai-org/GLM-5.3-Flash":      []string{"high"},
-				"xai/grok-4.7":               []string{"high"},
-				"openai/gpt-5.6-sol":         []string{"medium"},
-			},
-		}},
+		"suggestions": []map[string]any{agentModelSuggestionFixture("claude"), agentModelSuggestionFixture("codex")},
 	})
+}
+
+func ownRouterKey(agent string, personal bool) string {
+	key, _ := agentSetups[agent].ownRouter(personal)
+	return key
+}
+
+func ownRouterName(agent string, personal bool) string {
+	_, name := agentSetups[agent].ownRouter(personal)
+	return name
+}
+
+func agentModelSuggestionFixture(id string) map[string]any {
+	return map[string]any{
+		"id": id,
+		"model_ids": []string{
+			"anthropic/claude-fable-5-1",
+			"zai-org/GLM-5.3-Flash",
+			"xai/grok-4.7",
+			"openai/gpt-5.6-sol",
+		},
+		"models": map[string]any{
+			"anthropic/claude-fable-5-1": []string{"high"},
+			"zai-org/GLM-5.3-Flash":      []string{"high"},
+			"xai/grok-4.7":               []string{"high"},
+			"openai/gpt-5.6-sol":         []string{"medium"},
+		},
+	}
 }
 
 func stringSlice(value any) []string {
@@ -1304,7 +1324,7 @@ func testAgentModels() []agentModel {
 	}
 }
 
-func TestEnsureCodexAgentRouterSkipsPutForUnchangedSelectionInAnyOrder(t *testing.T) {
+func TestEnsurePiAgentRouterSkipsPutForUnchangedSelectionInAnyOrder(t *testing.T) {
 	var putRequests int
 	server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -1343,7 +1363,7 @@ func TestEnsureCodexAgentRouterSkipsPutForUnchangedSelectionInAnyOrder(t *testin
 	t.Setenv("DARI_API_URL", server.URL)
 	routerID, err := ensureAgentRouter(
 		context.Background(),
-		"codex",
+		"pi",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
 		strings.NewReader("n\n\n"),
 		io.Discard,
@@ -1369,7 +1389,7 @@ func TestPickerLevelOnlyChangeProducesUpdate(t *testing.T) {
 		ModelProviders:      map[string]string{"anthropic/claude-fable-5": "anthropic"},
 		ModelThinkingLevels: map[string][]string{"anthropic/claude-fable-5": {"high"}},
 	}
-	p := newAgentPickerState(models, current.EnabledModels, current.ModelThinkingLevels, current.ModelThinkingLevels)
+	p := newAgentPickerState(models, current.EnabledModels, current.ModelThinkingLevels, current.ModelThinkingLevels, nil)
 
 	// Open Fable's levels: cursor on high (index 1). Move to max, check it,
 	// move back to high, uncheck it, then leave editing.
@@ -1411,7 +1431,7 @@ func TestAgentRouterNeedsUpdateIgnoresModelOrder(t *testing.T) {
 func TestAgentPickerLinesAlignAndScroll(t *testing.T) {
 	models := testAgentModels()
 	models[0].DisplayName = "A Very Long Model Name Indeed"
-	p := newAgentPickerState(models, []string{"anthropic/claude-fable-5"}, nil, testRecommendedLevels())
+	p := newAgentPickerState(models, []string{"anthropic/claude-fable-5"}, nil, testRecommendedLevels(), nil)
 	p.handleKey("down")
 
 	// The thinking column lines up across rows regardless of name length.
@@ -1466,7 +1486,7 @@ func TestAgentPickerNeverSubmitsEmptyLevels(t *testing.T) {
 		DefaultProvider: "openai",
 		SupportedLevels: []string{"low", "medium", "high"},
 	}}
-	p := newAgentPickerState(models, []string{"openai/gpt-5.6-terra"}, nil, nil)
+	p := newAgentPickerState(models, []string{"openai/gpt-5.6-terra"}, nil, nil, nil)
 	if got := p.rows[0].checkedLevels(); !slices.Equal(got, []string{"low"}) {
 		t.Fatalf("initial levels = %q, want first supported [low]", got)
 	}
@@ -1537,7 +1557,7 @@ func TestEnsureClaudeAgentRouterIgnoresMatchingDefaultRouter(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
 				t.Error(err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_claude", "name": claudeRouterName})
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_claude", "name": ownRouterName("claude", true)})
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
@@ -1573,7 +1593,7 @@ func TestEnsureClaudeAgentRouterIgnoresMatchingDefaultRouter(t *testing.T) {
 	}
 }
 
-func TestEnsureMuseAgentRouterServesThePlanOnceMetaModelsAreAdded(t *testing.T) {
+func TestMuseCodeRouterServesThePlan(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		connected bool
@@ -1585,27 +1605,25 @@ func TestEnsureMuseAgentRouterServesThePlanOnceMetaModelsAreAdded(t *testing.T) 
 		{name: "no Meta model selected", connected: true, input: "2\n", wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var puts []map[string]any
+			var created map[string]any
+			connected := tc.connected
 			server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers":
 					_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{{
-						"id":                    "rtr_default",
-						"name":                  "Default",
-						"is_default":            true,
-						"enabled_models":        []string{"openai/gpt-5.6-sol"},
-						"model_providers":       map[string]string{"openai/gpt-5.6-sol": "openai"},
-						"model_thinking_levels": map[string][]string{"openai/gpt-5.6-sol": {"medium"}},
+						"id": "rtr_default", "name": "Default", "is_default": true,
+						"enabled_models": []string{"openai/gpt-5.6-sol"},
 					}}})
 				case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
 					credentials := []any{}
-					if tc.connected {
+					if connected {
 						credentials = append(credentials, map[string]any{"oauth_provider": museSubscription.id})
 					}
 					_ = json.NewEncoder(w).Encode(map[string]any{"credentials": credentials})
 				case r.Method == http.MethodPost && r.URL.Path == "/v1/organizations/current/credentials/oauth/sessions":
 					_ = json.NewEncoder(w).Encode(agentSubscriptionOAuthStart{SessionToken: "session", AuthorizationURL: "https://auth.meta.com/oauth/device/", UserCode: "BLXG-CHNZ"})
 				case r.Method == http.MethodPost && r.URL.Path == "/v1/organizations/current/credentials/oauth/sessions/complete":
+					connected = true
 					w.WriteHeader(http.StatusOK)
 				case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers/model-catalog":
 					_ = json.NewEncoder(w).Encode(map[string]any{"groups": []map[string]any{{
@@ -1618,19 +1636,15 @@ func TestEnsureMuseAgentRouterServesThePlanOnceMetaModelsAreAdded(t *testing.T) 
 					}}})
 				case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers/model-suggestions":
 					_ = json.NewEncoder(w).Encode(map[string]any{"suggestions": []map[string]any{{
-						"id":        "default",
-						"model_ids": []string{"openai/gpt-5.6-sol"},
-						"models":    map[string]any{"openai/gpt-5.6-sol": []string{"medium"}},
+						"id":        "muse",
+						"model_ids": []string{"meta/muse-spark"},
+						"models":    map[string]any{"meta/muse-spark": []string{"high"}},
 					}}})
-				case r.Method == http.MethodPut && r.URL.Path == "/v1/organizations/current/routers/rtr_default":
-					var body map[string]any
-					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				case r.Method == http.MethodPost && r.URL.Path == "/v1/organizations/current/routers":
+					if err := json.NewDecoder(r.Body).Decode(&created); err != nil {
 						t.Error(err)
 					}
-					puts = append(puts, body)
-					body["id"] = "rtr_default"
-					body["is_default"] = true
-					_ = json.NewEncoder(w).Encode(body)
+					_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_muse"})
 				default:
 					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 					http.NotFound(w, r)
@@ -1654,40 +1668,125 @@ func TestEnsureMuseAgentRouterServesThePlanOnceMetaModelsAreAdded(t *testing.T) 
 				if err == nil || !strings.Contains(err.Error(), "served directly by Meta") {
 					t.Fatalf("expected a Meta model selection error, got %v", err)
 				}
-				if len(puts) != 0 {
-					t.Fatalf("incomplete setup must not change server configuration: %#v", puts)
+				if created != nil {
+					t.Fatalf("incomplete setup must not create a router: %#v", created)
 				}
 				return
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if routerID != "rtr_default" {
-				t.Fatalf("router ID = %q", routerID)
+			if routerID != "rtr_muse" || created["client_key"] != "dari-cli:muse-code" || created["name"] != "Dari Muse Code" {
+				t.Fatalf("router %q created as %v (%v)", routerID, created["name"], created["client_key"])
 			}
-			if len(puts) == 0 {
-				t.Fatal("router was never updated")
-			}
-			if got := stringSlice(puts[len(puts)-1]["subscription_providers"]); !slices.Equal(got, []string{"meta"}) {
-				t.Fatalf("subscription_providers = %q, want [meta]; updates: %#v", got, puts)
-			}
-			last := puts[len(puts)-1]
-			if got := stringSlice(last["enabled_models"]); !slices.Contains(got, "openai/gpt-5.6-sol") || !slices.Contains(got, "meta/muse-spark") {
-				t.Fatalf("plan setup must add Meta without removing existing models: %q", got)
-			}
-			levels := last["model_thinking_levels"].(map[string]any)
-			if got := stringSlice(levels["openai/gpt-5.6-sol"]); !slices.Equal(got, []string{"medium"}) {
-				t.Fatalf("existing thinking levels changed: %q", got)
-			}
-			providers, _ := last["model_providers"].(map[string]any)
-			var providerIDs []string
-			for id := range providers {
-				providerIDs = append(providerIDs, id)
-			}
-			slices.Sort(providerIDs)
-			if got := stringSlice(last["enabled_models"]); !sameStringSet(providerIDs, got) {
-				t.Fatalf("model_providers keys = %q, want exactly enabled_models %q", providerIDs, got)
+			if got := stringSlice(created["subscription_providers"]); !slices.Equal(got, []string{"meta"}) {
+				t.Fatalf("subscription_providers = %q, want [meta]", got)
 			}
 		})
+	}
+}
+
+func TestAgentSessionPinningKeepsTheRoutersModeWithoutTerminal(t *testing.T) {
+	for _, current := range []bool{false, true} {
+		var stderr strings.Builder
+		pinned, err := chooseAgentSessionPinning(strings.NewReader("1\n"), &stderr, current)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if pinned != current || stderr.Len() != 0 {
+			t.Errorf("current %v: pinned = %v, stderr = %q", current, pinned, stderr.String())
+		}
+	}
+}
+
+func TestAgentRouterUpdateKeepsTheRoutersSessionPinning(t *testing.T) {
+	body := agentRouterUpdateBody(agentRouter{Name: "Default", SessionPinning: true}, nil, nil)
+	encoded, _ := json.Marshal(body)
+	if !strings.Contains(string(encoded), `"session_pinning":true`) {
+		t.Errorf("payload drops session_pinning: %s", encoded)
+	}
+}
+
+func TestSecretDisplayMasksTheKey(t *testing.T) {
+	if got := secretDisplay("sk-secret", 80); strings.Contains(got, "sk-secret") || strings.Count(got, "•") != len("sk-secret") {
+		t.Errorf("secretDisplay = %q", got)
+	}
+	if got := secretDisplay(strings.Repeat("x", 200), 40); strings.Count(got, "•") != 34 {
+		t.Errorf("long secret shows %d bullets", strings.Count(got, "•"))
+	}
+}
+
+func TestClaudeCodeRouterServesChatGPTAlongsideClaudeCode(t *testing.T) {
+	models, choices := providerKeysTestModels()
+	body := agentRouterCreateBody(agentSetups["claude"], models, choices, []agentSubscriptionProvider{claudeSubscription, codexSubscription})
+	if body.Name != "Dari Claude Code" || body.ClientKey != "dari-cli:claude-code" {
+		t.Errorf("router = %q (%q)", body.Name, body.ClientKey)
+	}
+	if want := []string{"anthropic", "openai"}; !slices.Equal(body.SubscriptionProviders, want) {
+		t.Errorf("subscription_providers = %v, want %v", body.SubscriptionProviders, want)
+	}
+	managed := agentRouterCreateBody(agentSetups["codex"], models, choices, nil)
+	if managed.Name != "Dari Codex (Managed)" || managed.ClientKey != "dari-cli:codex-managed" || len(managed.SubscriptionProviders) != 0 {
+		t.Errorf("managed router = %q (%q) %v", managed.Name, managed.ClientKey, managed.SubscriptionProviders)
+	}
+}
+
+func TestChatGPTForCodexDoesNotSetUpClaudeCode(t *testing.T) {
+	server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"credentials": []map[string]any{
+			{"oauth_provider": codexSubscription.id, "credential_scope": "user"},
+		}})
+	}))
+	defer server.Close()
+
+	for _, optedOut := range []bool{false, true} {
+		var stderr strings.Builder
+		resolution, err := resolveAgentPersonalSubscription(
+			context.Background(),
+			agentSubscriptionProviders("claude"),
+			api.New(server.URL),
+			strings.NewReader(""),
+			&stderr,
+			optedOut,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolution.enabled {
+			t.Errorf("opted out %v: a ChatGPT account enabled Claude Code's subscription: %#v", optedOut, resolution)
+		}
+		if !optedOut && !strings.Contains(stderr.String(), "Use your Claude Code personal subscription?") {
+			t.Errorf("stderr = %q, want the Claude Code question", stderr.String())
+		}
+	}
+}
+
+func TestAgentPickerPaymentFollowsTheProviderExceptGateways(t *testing.T) {
+	native := func(kind, provider, label string) agentModelSource {
+		return agentModelSource{kind: kind, provider: provider, modelProvider: provider, label: label}
+	}
+	vercel := agentModelSource{kind: "key", provider: "vercel-ai-gateway", modelProvider: "anthropic", credentialID: "cred_v", label: "Vercel AI Gateway key"}
+	anthropic := []agentModelSource{native("subscription", "anthropic", "Claude Code subscription"), vercel, native("managed", "anthropic", "Dari credits")}
+	models := []agentModel{{ID: "anthropic/opus", Provider: "anthropic"}, {ID: "anthropic/sonnet", Provider: "anthropic"}}
+	p := newAgentPickerState(models, []string{"anthropic/opus", "anthropic/sonnet"}, nil, nil, map[string][]agentModelSource{
+		"anthropic/opus": anthropic, "anthropic/sonnet": anthropic,
+	})
+
+	// A gateway key is per model.
+	p.handleKey("s")
+	if got := []string{p.rows[0].sources[p.rows[0].source].label, p.rows[1].sources[p.rows[1].source].label}; !slices.Equal(got, []string{"Vercel AI Gateway key", "Claude Code subscription"}) {
+		t.Fatalf("after gateway: %q", got)
+	}
+	// Credits apply to the provider, so Sonnet follows Opus off the subscription.
+	p.handleKey("s")
+	choices := p.choices()
+	if choices[0].Source.kind != "managed" || choices[1].Source.kind != "managed" {
+		t.Fatalf("after credits: %+v", choices)
+	}
+}
+
+func TestAgentPickerKeysIncludePaymentCycling(t *testing.T) {
+	if got := parseAgentPickerKeys([]byte("\x1b[Bs\r")); !slices.Equal(got, []string{"down", "s", "enter"}) {
+		t.Fatalf("keys = %q", got)
 	}
 }

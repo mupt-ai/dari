@@ -162,7 +162,7 @@ dari opencode run "Explain this repository"
 dari pi -p "Review this repository"
 ```
 
-All four launchers show the serving model, thinking level, routing lease turns, and prompt-cache warmth (warm when the last response read cache within five minutes) using shared formatting. OpenCode and Pi use the default router and can connect either a ChatGPT or Claude Code subscription. OpenCode gets session-local config through `OPENCODE_CONFIG_CONTENT` and a private `--standalone` server, so `--server` and `pair` are rejected; use `dari opencode serve` for other clients. Codex 0.162.1+ uses a session-local loopback bridge for interactive sessions: status changes only UI display state, never saved session names. Resume with `dari codex resume`, not the temporary remote URL Codex prints on exit. Set `DARI_CODEX_STATUS=0` to disable the bridge; explicit `--remote` or `--profile`/`-p` and non-interactive commands bypass it.
+All four launchers show the serving model, thinking level, routing lease turns (or `pinned` on session-pinned routers), and prompt-cache warmth (warm when the last response read cache within five minutes) using shared formatting. OpenCode and Pi use the default router and can connect either a ChatGPT or Claude Code subscription. OpenCode gets session-local config through `OPENCODE_CONFIG_CONTENT` and a private `--standalone` server, so `--server` and `pair` are rejected; use `dari opencode serve` for other clients. Codex 0.162.1+ uses a session-local loopback bridge for interactive sessions: status changes only UI display state, never saved session names. Resume with `dari codex resume`, not the temporary remote URL Codex prints on exit. Set `DARI_CODEX_STATUS=0` to disable the bridge; explicit `--remote` or `--profile`/`-p` and non-interactive commands bypass it.
 
 ## Inspect, Update, Delete
 
@@ -172,6 +172,8 @@ dari router get <router-id-or-endpoint>
 dari router update <router-id-or-endpoint> --model openai/gpt-5.6-sol
 dari router delete <router-id-or-endpoint>
 ```
+
+Set `session_pinning: true` in `router.yml`, or pass `--session-pinning` to `dari router create` or `dari router update`, to route once per session and keep that model for the whole session; each subagent is routed once when it starts. It is off by default; `--session-pinning=false` turns it off on update.
 
 ## Examples
 

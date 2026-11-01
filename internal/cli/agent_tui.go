@@ -1,11 +1,14 @@
 package cli
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"golang.org/x/term"
 )
@@ -23,6 +26,7 @@ const (
 	ansiCyan  = "\033[38;5;117m"
 	ansiGreen = "\033[38;5;114m"
 	ansiGray  = "\033[38;5;245m"
+	ansiRed   = "\033[38;5;203m"
 )
 
 func agentInputIsTerminal(stream any) bool {
@@ -33,10 +37,64 @@ func agentInputIsTerminal(stream any) bool {
 // agentStep reports a finished onboarding step.
 func agentStep(stderr io.Writer, text string) {
 	if agentInputIsTerminal(stderr) {
-		fmt.Fprintln(stderr, ansiGreen+"✓"+ansiReset+" "+text)
+		agentPrintln(stderr, ansiGreen+"✓"+ansiReset+" "+text)
 		return
 	}
-	fmt.Fprintln(stderr, text)
+	agentPrintln(stderr, text)
+}
+
+// agentScreen keeps onboarding on the alternate screen from its first page to
+// its last once held, so answering one prompt never flashes the normal
+// screen before the next page draws. Lines printed meanwhile wait until the
+// screen is released.
+var agentScreen struct {
+	held    bool
+	active  bool
+	stderr  io.Writer
+	lines   []string
+	signals chan os.Signal
+}
+
+// holdAgentScreen keeps the alternate screen between pages until
+// releaseAgentScreen. Between pages the terminal is back in normal mode, so
+// an interrupt there releases the screen before the process exits.
+func holdAgentScreen() {
+	agentScreen.held = true
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	agentScreen.signals = signals
+	go func() {
+		if _, ok := <-signals; ok {
+			releaseAgentScreen()
+			os.Exit(130)
+		}
+	}()
+}
+
+// releaseAgentScreen returns to the normal screen and prints the lines held
+// for it.
+func releaseAgentScreen() {
+	if agentScreen.signals != nil {
+		signal.Stop(agentScreen.signals)
+		close(agentScreen.signals)
+	}
+	if agentScreen.active {
+		fmt.Fprint(agentScreen.stderr, "\033[?25h\033[?1049l")
+		for _, line := range agentScreen.lines {
+			fmt.Fprintln(agentScreen.stderr, line)
+		}
+	}
+	agentScreen.held, agentScreen.active, agentScreen.stderr, agentScreen.lines, agentScreen.signals = false, false, nil, nil, nil
+}
+
+// agentPrintln prints an onboarding line, or holds it while the alternate
+// screen is showing.
+func agentPrintln(stderr io.Writer, line string) {
+	if agentScreen.active {
+		agentScreen.lines = append(agentScreen.lines, line)
+		return
+	}
+	fmt.Fprintln(stderr, line)
 }
 
 func agentPromptLine(prompt string) string {
@@ -78,18 +136,26 @@ func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, 
 	if err != nil {
 		return nil, fmt.Errorf("enter interactive mode: %w", err)
 	}
+	discardAgentInput(fd)
 	session := &agentTUISession{file: file, stderr: stderr, oldState: oldState}
 	if w, h, err := term.GetSize(fd); err == nil {
 		session.width, session.height = w-len(agentPageMargin), h-6
 	}
-	fmt.Fprint(stderr, "\033[?1049h\033[?25l")
+	if !agentScreen.active {
+		fmt.Fprint(stderr, "\033[?1049h")
+		agentScreen.active, agentScreen.stderr = true, stderr
+	}
+	fmt.Fprint(stderr, "\033[?25l")
 	return session, nil
 }
 
-// Close returns to the normal screen so the caller can print its summary.
+// Close returns to the normal screen so the caller can print its summary,
+// unless onboarding holds the screen for its next page.
 func (session *agentTUISession) Close() {
 	_ = term.Restore(int(session.file.Fd()), session.oldState)
-	fmt.Fprint(session.stderr, "\033[?25h\033[?1049l")
+	if !agentScreen.held {
+		releaseAgentScreen()
+	}
 }
 
 // agentPageHeader is the welcome box at the top of every onboarding page.
@@ -198,7 +264,7 @@ func parseAgentPickerKeys(raw []byte) []string {
 			keys = append(keys, " ")
 		case 'q', 'Q', 0x03:
 			keys = append(keys, "quit")
-		case 'k', 'j', 'h', 'l', 'a', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		case 'k', 'j', 'h', 'l', 'a', 's', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 			keys = append(keys, string(raw[i]))
 		}
 		i++
@@ -209,6 +275,8 @@ func parseAgentPickerKeys(raw []byte) []string {
 type agentChoiceOption struct {
 	label string
 	note  string
+	// description explains the option on its own line below it.
+	description string
 	// done replaces the prompt once this option is chosen; empty prints
 	// nothing.
 	done string
@@ -271,6 +339,9 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 			line += "  " + ansiGreen + option.note + ansiReset
 		}
 		lines = append(lines, line)
+		if option.description != "" {
+			lines = append(lines, "     "+ansiGray+option.description+ansiReset)
+		}
 	}
 	return append(lines, agentHintLine("↑↓ move", "enter confirm", "esc cancel"))
 }
@@ -405,6 +476,65 @@ func runAgentDeviceCodeTUI(
 	}
 }
 
+// runAgentSecretInputTUI is a page that reads a secret without showing it.
+// Enter passes it to submit, whose error is shown on the page for another
+// try; esc leaves without one. It reports whether submit succeeded.
+func runAgentSecretInputTUI(stdin io.Reader, stderr io.Writer, title string, details []string, submit func(string) error) (bool, error) {
+	session, err := startAgentTUISession(stdin, stderr)
+	if err != nil {
+		return false, err
+	}
+	defer session.Close()
+
+	input := agentCodeInputState{}
+	status := ""
+	buf := make([]byte, 4096)
+	for {
+		lines := append([]string{agentPromptLine(title)}, details...)
+		if len(details) > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, agentCursor(true)+secretDisplay(input.value, session.width))
+		if status != "" {
+			lines = append(lines, "  "+ansiRed+status+ansiReset)
+		}
+		session.render(append(lines, agentHintLine("enter save", "esc back")))
+		n, readErr := session.file.Read(buf)
+		// A lone escape byte is the esc key; arrows and other keys arrive as
+		// longer sequences in one read.
+		if n == 1 && buf[0] == 0x1b {
+			return false, nil
+		}
+		submitted, canceled := input.update(buf[:n])
+		if canceled {
+			return false, nil
+		}
+		if submitted {
+			value := strings.TrimSpace(input.value)
+			if value == "" {
+				status = "Paste a key, or press esc to go back."
+				continue
+			}
+			if err := submit(value); err != nil {
+				status = err.Error()
+				continue
+			}
+			return true, nil
+		}
+		if readErr != nil {
+			return false, readErr
+		}
+	}
+}
+
+// secretDisplay masks a secret, keeping its length visible up to the width.
+func secretDisplay(value string, width int) string {
+	if value == "" {
+		return ansiDim + "Paste your API key" + ansiReset
+	}
+	return ansiCyan + strings.Repeat("•", min(len(value), max(width-6, 8))) + ansiReset
+}
+
 type agentCodeInputState struct {
 	value  string
 	escape bool
@@ -482,8 +612,9 @@ func runAgentPicker(
 	defaults []string,
 	currentLevels map[string][]string,
 	recommendedLevels map[string][]string,
+	sources map[string][]agentModelSource,
 ) ([]agentModelChoice, error) {
-	p := newAgentPickerState(models, defaults, currentLevels, recommendedLevels)
+	p := newAgentPickerState(models, defaults, currentLevels, recommendedLevels, sources)
 	if len(p.rows) == 0 {
 		return nil, errors.New("no managed-key models are available")
 	}
@@ -556,9 +687,10 @@ func agentPickerLines(title string, note []string, p *agentPickerState, visible 
 		p.offset = p.cursor - visible + 1
 	}
 	end := min(p.offset+visible, len(p.rows))
-	nameWidth := 0
+	nameWidth, levelWidth := 0, 0
 	for _, row := range p.rows {
 		nameWidth = max(nameWidth, len(row.model.DisplayName))
+		levelWidth = max(levelWidth, len(cmp.Or(strings.Join(row.checkedLevels(), ", "), "default")))
 	}
 	if p.offset > 0 {
 		lines = append(lines, "  "+ansiGray+fmt.Sprintf("↑ %d more", p.offset)+ansiReset)
@@ -577,11 +709,19 @@ func agentPickerLines(title string, note []string, p *agentPickerState, visible 
 		if levels == "" {
 			levels = "default"
 		}
+		levels = fmt.Sprintf("%-*s", levelWidth, levels)
+		source := ""
+		if len(row.sources) > 0 {
+			source = "  " + row.sources[row.source].label
+			if !row.selected {
+				source = "  " + ansiGray + row.sources[row.source].label + ansiReset
+			}
+		}
 		note := ""
 		if row.usesRecommended() {
 			note = "  " + ansiGreen + "recommended" + ansiReset
 		}
-		lines = append(lines, agentCursor(active)+agentCheckbox(row.selected)+" "+name+"  "+ansiCyan+levels+ansiReset+note)
+		lines = append(lines, agentCursor(active)+agentCheckbox(row.selected)+" "+name+"  "+ansiCyan+levels+ansiReset+source+note)
 		if p.editing && i == p.cursor {
 			for j, level := range row.levelOpts {
 				rec := ""
@@ -602,7 +742,7 @@ func agentPickerLines(title string, note []string, p *agentPickerState, visible 
 	if p.editing {
 		return append(lines, agentHintLine("↑↓ move", "space toggle thinking level", "← done"))
 	}
-	return append(lines, agentHintLine("↑↓ move", "space toggle", "→ thinking levels", "enter confirm", "esc cancel"))
+	return append(lines, agentHintLine("↑↓ move", "space toggle", "→ thinking levels", "s payment", "enter confirm", "esc cancel"))
 }
 
 func agentCheckbox(checked bool) string {

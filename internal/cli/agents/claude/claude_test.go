@@ -128,6 +128,15 @@ func TestClaudeStatusLineReadsDariRouting(t *testing.T) {
 		{[]map[string]any{assistant("xai/grok-4.6", "req_1")}, "xai/grok-4.6 · high · lease 2 turns left · https://app.dari.dev/activity/conversations/req_1"},
 		// The last assistant entry wins, so a model switch shows the new turn's link.
 		{[]map[string]any{assistant("xai/grok-4.6", "req_1"), assistant("openai/gpt-5.5", "req_2")}, "openai/gpt-5.5 · high · lease 2 turns left · https://app.dari.dev/activity/conversations/req_2"},
+		{[]map[string]any{{"type": "assistant", "message": map[string]any{
+			"model": "openai/gpt-5.5",
+			"dari_routing": map[string]any{
+				"selected_model":   "openai/gpt-5.5",
+				"reasoning_effort": "high",
+				"session_pinned":   true,
+				"request_id":       "req_3",
+			},
+		}}}, "openai/gpt-5.5 · high · pinned · https://app.dari.dev/activity/conversations/req_3"},
 	} {
 		writeTranscript(tc.lines...)
 		if got := render(stdin); got != tc.want {

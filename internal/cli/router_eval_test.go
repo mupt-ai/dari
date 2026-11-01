@@ -271,6 +271,47 @@ func TestRouterCreateSendsEvalScoreImputationOnlyWhenSet(t *testing.T) {
 	}
 }
 
+func TestRouterCreateSendsSessionPinning(t *testing.T) {
+	manifestPath := filepath.Join(t.TempDir(), "router.yml")
+	manifest := "name: Manifest Router\nenabled_models:\n  - openai/gpt-5.5\nprovider_key_sources:\n  openai: managed\nsession_pinning: true\n"
+	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	tests := []struct {
+		name string
+		args []string
+		want any // nil means the field is omitted
+	}{
+		{name: "flag omitted", args: []string{"router", "create", "Flag Router", "--model", "openai/gpt-5.5", "--managed-key", "openai"}},
+		{name: "flag set", args: []string{"router", "create", "Flag Router", "--model", "openai/gpt-5.5", "--managed-key", "openai", "--session-pinning"}, want: true},
+		{name: "manifest", args: []string{"router", "create", "--from-file", manifestPath}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_new"})
+			}))
+			defer srv.Close()
+			useTestAPIKey(t)
+
+			cmd := newRootCmd("dev")
+			cmd.SetArgs(append([]string{"--api-url", srv.URL}, tt.args...))
+			if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
+				t.Fatalf("dari router create: %v", err)
+			}
+			if got := body["session_pinning"]; got != tt.want {
+				t.Fatalf("session_pinning = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRouterCreateFromManifestRejectsLegacyEvalIDs(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "router.yml")
@@ -930,6 +971,7 @@ func TestRouterUpdateOverlaysCurrentConfig(t *testing.T) {
 		"--managed-key", "fireworks",
 		"--allow-long-context=false",
 		"--eval-score-imputation=false",
+		"--session-pinning",
 	})
 	if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
 		t.Fatalf("dari router update: %v", err)
@@ -941,6 +983,7 @@ func TestRouterUpdateOverlaysCurrentConfig(t *testing.T) {
 		"provider_key_sources":  map[string]any{"fireworks": "managed"},
 		"allow_long_context":    false,
 		"eval_score_imputation": false,
+		"session_pinning":       true,
 	}
 	if !reflect.DeepEqual(body, want) {
 		t.Fatalf("update body = %#v, want %#v", body, want)

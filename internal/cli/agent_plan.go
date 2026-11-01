@@ -2,13 +2,14 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/mupt-ai/dari-cli/internal/api"
-	"github.com/mupt-ai/dari-cli/internal/auth"
 	"github.com/mupt-ai/dari-cli/internal/cli/agents"
 )
 
@@ -17,38 +18,40 @@ type agentSubscriptionStatus struct {
 	AutoroutingAllowed *bool             `json:"autorouting_allowed"`
 }
 
-// agentModels builds the model menu for a launch: every model enabled on the
-// router, plus dari/routing when the organization has the Autorouting plan.
-// Without the plan the launch starts on the router's first model and says so.
-func agentModels(ctx context.Context, agent string, access agentRoutingAccess, routerID string, stderr io.Writer) (agents.Models, error) {
-	client, err := auth.OrgKeyClient(access.apiURL)
+// routerModels builds a launch's model menu from the router's /v1/models at
+// baseURL, the same list in hosted and gateway mode: dari/routing when the
+// router may autoroute, then every enabled model.
+func routerModels(ctx context.Context, baseURL, key string) (agents.Models, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/models", nil)
 	if err != nil {
 		return agents.Models{}, err
 	}
-	return routerModels(ctx, client, agent, routerID, stderr)
-}
-
-func routerModels(ctx context.Context, client *api.Client, agent, routerID string, stderr io.Writer) (agents.Models, error) {
-	routers, err := listAgentRouters(ctx, client)
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return agents.Models{}, err
+		return agents.Models{}, fmt.Errorf("list router models: %w", err)
 	}
-	router, ok := findAgentRouter(routers, func(router agentRouter) bool {
-		if routerID == "default" {
-			return router.IsDefault
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return agents.Models{}, fmt.Errorf("list router models: HTTP %d", resp.StatusCode)
+	}
+	var catalog struct {
+		Models []struct {
+			Slug string `json:"slug"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
+		return agents.Models{}, fmt.Errorf("decode router models: %w", err)
+	}
+	models := agents.Models{}
+	for _, model := range catalog.Models {
+		if model.Slug == agents.RoutingModel {
+			models.Routing = true
+		} else if id, ok := strings.CutPrefix(model.Slug, agents.ExplicitModelPrefix); ok {
+			models.Enabled = append(models.Enabled, id)
 		}
-		return router.ID == routerID
-	})
-	if !ok {
-		return agents.Models{Routing: true}, nil
-	}
-	routing, err := autoroutingAllowed(ctx, client)
-	if err != nil {
-		return agents.Models{}, err
-	}
-	models := agents.Models{Routing: routing, Enabled: router.EnabledModels}
-	if !models.Routing && len(models.Enabled) > 0 {
-		fmt.Fprintf(stderr, "Starting on %s. Switch models with /model, or run `dari %s --connect` to get auto-routing.\n", models.Default(), agent)
 	}
 	return models, nil
 }

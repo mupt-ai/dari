@@ -30,6 +30,26 @@ func TestStatusFromHeaders(t *testing.T) {
 	}
 }
 
+func TestStatusSessionPinned(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("x-dari-selected-model", "anthropic/claude-opus-5-5")
+	headers.Set("x-dari-thinking-level", "high")
+	headers.Set("x-dari-session-pinned", "true")
+	headers.Set("x-request-id", "req_1")
+	status := StatusFromHeaders(headers)
+	if !status.Pinned {
+		t.Fatal("pinned header not read")
+	}
+	if got := status.String(); got != "anthropic/claude-opus-5-5 · high · pinned · https://app.dari.dev/activity/conversations/req_1" {
+		t.Fatal(got)
+	}
+	// Pinning replaces the lease part even if a lease count is present.
+	headers.Set("x-dari-lease-turns-remaining", "3")
+	if got := StatusFromHeaders(headers).String(); got != "anthropic/claude-opus-5-5 · high · pinned · https://app.dari.dev/activity/conversations/req_1" {
+		t.Fatal(got)
+	}
+}
+
 func TestStatusDashboardLink(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("x-dari-selected-model", "m")

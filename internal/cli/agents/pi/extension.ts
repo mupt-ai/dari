@@ -57,7 +57,7 @@ export default function (pi: any) {
   pi.on("after_provider_response", async (event: any, ctx: any) => {
     if (!ctx.hasUI || !event.headers?.["x-dari-selected-model"]) return;
     headers = Object.fromEntries([
-      "x-dari-selected-model", "x-dari-thinking-level", "x-dari-lease-turns-remaining", "x-request-id"
+      "x-dari-selected-model", "x-dari-thinking-level", "x-dari-lease-turns-remaining", "x-dari-session-pinned", "x-request-id"
     ].filter(name => event.headers[name] !== undefined).map(name => [name, event.headers[name]]));
     await render(ctx, ++revision);
   });

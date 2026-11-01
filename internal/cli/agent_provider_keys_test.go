@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"maps"
 	"net/http"
 	"slices"
@@ -77,12 +78,19 @@ func providerKeysTestServer(t *testing.T, credentials []map[string]any, saved *[
 	return api.New(server.URL)
 }
 
-func TestAgentProviderKeysDefaultKeepsDariCredits(t *testing.T) {
-	models, choices := providerKeysTestModels()
-	client := providerKeysTestServer(t, nil, nil)
-	body := agentRouterCreateBody(models, choices, claudeManagedRouterClientKey, false)
+func agentKeyCredential(id, provider, label string) map[string]any {
+	return map[string]any{"id": id, "provider": provider, "credential_scope": "organization", "auth_scheme": "api_key", "label": label}
+}
 
-	keys, err := configureAgentProviderKeys(context.Background(), client, strings.NewReader(""), &strings.Builder{}, 0, models, body.EnabledModels, body.ModelProviders, nil)
+func TestAgentProviderKeysWithoutKeysKeepDariCredits(t *testing.T) {
+	models, choices := providerKeysTestModels()
+	client := providerKeysTestServer(t, []map[string]any{
+		{"id": "cred_sub", "oauth_provider": "anthropic_claude_code", "credential_scope": "user"},
+	}, nil)
+	body := agentRouterCreateBody(agentSetups["claude"], models, choices, nil)
+
+	var stderr strings.Builder
+	keys, err := agentProviderKeysFor(context.Background(), client, &stderr, models, body.EnabledModels, body.ModelProviders, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,31 +101,26 @@ func TestAgentProviderKeysDefaultKeepsDariCredits(t *testing.T) {
 		t.Errorf("provider_key_sources = %v, want %v", body.ProviderKeySources, want)
 	}
 	encoded, _ := json.Marshal(body)
-	if strings.Contains(string(encoded), "provider_credential_ids") {
-		t.Errorf("payload has provider_credential_ids: %s", encoded)
+	if strings.Contains(string(encoded), "provider_credential_ids") || !strings.Contains(stderr.String(), "Dari credits for Fable 5.1, Sol, GLM") {
+		t.Errorf("payload = %s, stderr = %q", encoded, stderr.String())
 	}
 }
 
 func TestAgentProviderKeysGatewayServesWhatItCan(t *testing.T) {
 	models, choices := providerKeysTestModels()
-	var saved []map[string]any
-	client := providerKeysTestServer(t, nil, &saved)
-	body := agentRouterCreateBody(models, choices, claudeManagedRouterClientKey, false)
+	client := providerKeysTestServer(t, []map[string]any{
+		agentKeyCredential("cred_team", "vercel-ai-gateway", "Team gateway"),
+	}, nil)
+	body := agentRouterCreateBody(agentSetups["claude"], models, choices, nil)
 
 	var stderr strings.Builder
-	keys, err := configureAgentProviderKeys(context.Background(), client, strings.NewReader("vk-test\n"), &stderr, 1, models, body.EnabledModels, body.ModelProviders, nil)
+	keys, err := agentProviderKeysFor(context.Background(), client, &stderr, models, body.EnabledModels, body.ModelProviders, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	keys.apply(body.ModelProviders, body.ProviderKeySources)
 	body.ProviderCredentialIDs = keys.credentialIDs
 
-	if len(saved) != 1 || saved[0]["provider"] != "vercel-ai-gateway" {
-		t.Fatalf("saved credentials = %v", saved)
-	}
-	if auth, _ := saved[0]["auth"].(map[string]any); auth["type"] != "api_key" || auth["api_key"] != "vk-test" {
-		t.Errorf("saved auth = %v", saved[0]["auth"])
-	}
 	if want := map[string]string{
 		"anthropic/claude-fable-5-1": "vercel-ai-gateway",
 		"openai/gpt-5.6-sol":         "vercel-ai-gateway",
@@ -128,53 +131,50 @@ func TestAgentProviderKeysGatewayServesWhatItCan(t *testing.T) {
 	if want := map[string]string{"vercel-ai-gateway": "user", "fireworks": "managed"}; !maps.Equal(body.ProviderKeySources, want) {
 		t.Errorf("provider_key_sources = %v, want %v", body.ProviderKeySources, want)
 	}
-	if want := map[string]string{"vercel-ai-gateway": "cred_new"}; !maps.Equal(body.ProviderCredentialIDs, want) {
+	if want := map[string]string{"vercel-ai-gateway": "cred_team"}; !maps.Equal(body.ProviderCredentialIDs, want) {
 		t.Errorf("provider_credential_ids = %v, want %v", body.ProviderCredentialIDs, want)
 	}
-	if !strings.Contains(stderr.String(), "Vercel AI Gateway does not serve these, so they stay on Dari credits: GLM") {
+	if !strings.Contains(stderr.String(), "Vercel AI Gateway key for Fable 5.1, Sol; Dari credits for GLM") {
 		t.Errorf("stderr = %q", stderr.String())
-	}
-	if strings.Contains(stderr.String(), "vk-test") {
-		t.Errorf("stderr shows the key: %q", stderr.String())
 	}
 }
 
-func TestAgentProviderKeysReusesSavedCredential(t *testing.T) {
+func TestAgentProviderKeysPreferDirectKeysOverGateways(t *testing.T) {
 	models, choices := providerKeysTestModels()
 	client := providerKeysTestServer(t, []map[string]any{
-		{"id": "cred_sub", "oauth_provider": "anthropic_claude_code", "credential_scope": "user"},
-		{"id": "cred_router", "provider": "openrouter", "credential_scope": "organization", "auth_scheme": "api_key", "label": "Router"},
-		{"id": "cred_team", "provider": "vercel-ai-gateway", "credential_scope": "organization", "auth_scheme": "api_key", "label": "Team gateway"},
+		agentKeyCredential("cred_router", "openrouter", "Router"),
+		agentKeyCredential("cred_anthropic", "anthropic", "Anthropic"),
 	}, nil)
-	body := agentRouterUpdateBody(agentRouter{Name: "Default"}, models, choices)
+	body := agentRouterCreateBody(agentSetups["claude"], models, choices, nil)
 
-	var stderr strings.Builder
-	keys, err := configureAgentProviderKeys(context.Background(), client, strings.NewReader("\n"), &stderr, 1, models, body.EnabledModels, body.ModelProviders, nil)
+	keys, err := agentProviderKeysFor(context.Background(), client, io.Discard, models, body.EnabledModels, body.ModelProviders, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	keys.apply(body.ModelProviders, body.ProviderKeySources)
-	body.ProviderCredentialIDs = keys.credentialIDs
 
-	if want := map[string]string{"vercel-ai-gateway": "cred_team"}; !maps.Equal(body.ProviderCredentialIDs, want) {
-		t.Errorf("provider_credential_ids = %v, want %v", body.ProviderCredentialIDs, want)
+	// OpenRouter serves only Fable in the test catalog, and Fable has a direct key.
+	if want := map[string]string{
+		"anthropic/claude-fable-5-1": "anthropic",
+		"openai/gpt-5.6-sol":         "openai",
+		"zai-org/GLM-5.3":            "fireworks",
+	}; !maps.Equal(body.ModelProviders, want) {
+		t.Errorf("model_providers = %v, want %v", body.ModelProviders, want)
 	}
-	if body.ProviderKeySources["vercel-ai-gateway"] != "user" {
-		t.Errorf("provider_key_sources = %v", body.ProviderKeySources)
-	}
-	if !strings.Contains(stderr.String(), `Use your saved Vercel AI Gateway key "Team gateway"?`) {
-		t.Errorf("stderr = %q", stderr.String())
+	if want := map[string]string{"anthropic": "cred_anthropic"}; !maps.Equal(keys.credentialIDs, want) {
+		t.Errorf("credential IDs = %v, want %v", keys.credentialIDs, want)
 	}
 }
 
-func TestAgentProviderKeysGatewayKeepsSubscriptionModels(t *testing.T) {
+func TestAgentProviderKeysKeepSubscriptionModels(t *testing.T) {
 	models, choices := providerKeysTestModels()
-	var saved []map[string]any
-	client := providerKeysTestServer(t, nil, &saved)
-	body := agentRouterCreateBody(models, choices, claudeRouterClientKey, true)
+	client := providerKeysTestServer(t, []map[string]any{
+		agentKeyCredential("cred_team", "vercel-ai-gateway", "Team gateway"),
+		agentKeyCredential("cred_anthropic", "anthropic", "Anthropic"),
+	}, nil)
+	body := agentRouterCreateBody(agentSetups["claude"], models, choices, []agentSubscriptionProvider{claudeSubscription})
 
-	var stderr strings.Builder
-	keys, err := configureAgentProviderKeys(context.Background(), client, strings.NewReader("vk-test\n"), &stderr, 1, models, body.EnabledModels, body.ModelProviders, []string{"anthropic"})
+	keys, err := agentProviderKeysFor(context.Background(), client, io.Discard, models, body.EnabledModels, body.ModelProviders, []agentSubscriptionProvider{claudeSubscription})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,55 +183,9 @@ func TestAgentProviderKeysGatewayKeepsSubscriptionModels(t *testing.T) {
 	if body.ModelProviders["anthropic/claude-fable-5-1"] != "anthropic" || body.ModelProviders["openai/gpt-5.6-sol"] != "vercel-ai-gateway" {
 		t.Errorf("model_providers = %v", body.ModelProviders)
 	}
-	if body.ProviderKeySources["anthropic"] != "managed" || len(body.SubscriptionProviders) != 1 {
-		t.Errorf("provider_key_sources = %v, subscription_providers = %v", body.ProviderKeySources, body.SubscriptionProviders)
-	}
-	if !strings.Contains(stderr.String(), "Staying on your personal subscription: Fable 5.1") {
-		t.Errorf("stderr = %q", stderr.String())
-	}
-}
-
-func TestAgentProviderKeysDirectAsksPerProvider(t *testing.T) {
-	models, choices := providerKeysTestModels()
-	var saved []map[string]any
-	client := providerKeysTestServer(t, nil, &saved)
-	body := agentRouterCreateBody(models, choices, claudeManagedRouterClientKey, false)
-
-	var stderr strings.Builder
-	keys, err := configureAgentProviderKeys(context.Background(), client, strings.NewReader("y\nsk-test\nn\n\n"), &stderr, 3, models, body.EnabledModels, body.ModelProviders, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keys.apply(body.ModelProviders, body.ProviderKeySources)
-
-	if len(saved) != 1 || saved[0]["provider"] != "anthropic" || saved[0]["label"] != "Anthropic" {
-		t.Fatalf("saved credentials = %v", saved)
-	}
-	if want := map[string]string{"anthropic": "user", "openai": "managed", "fireworks": "managed"}; !maps.Equal(body.ProviderKeySources, want) {
-		t.Errorf("provider_key_sources = %v, want %v", body.ProviderKeySources, want)
-	}
-	if want := map[string]string{"anthropic": "cred_new"}; !maps.Equal(keys.credentialIDs, want) {
-		t.Errorf("credential IDs = %v, want %v", keys.credentialIDs, want)
-	}
-	for _, prompt := range []string{"Use your own Anthropic key? [y/N]", "Use your own OpenAI key? [y/N]", "Use your own Fireworks key? [y/N]"} {
-		if !strings.Contains(stderr.String(), prompt) {
-			t.Errorf("stderr is missing %q: %q", prompt, stderr.String())
-		}
-	}
-}
-
-func TestAgentProviderKeysSkipsWithoutTerminal(t *testing.T) {
-	models, choices := providerKeysTestModels()
-	client := providerKeysTestServer(t, nil, nil)
-	body := agentRouterCreateBody(models, choices, claudeManagedRouterClientKey, false)
-
-	var stderr strings.Builder
-	keys, err := chooseAgentProviderKeys(context.Background(), client, strings.NewReader("2\nvk-test\n"), &stderr, models, body.EnabledModels, body.ModelProviders, nil, agentKeepDariCredits)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(keys.modelProviders) != 0 || len(keys.credentialIDs) != 0 || stderr.Len() != 0 {
-		t.Errorf("keys = %+v, stderr = %q", keys, stderr.String())
+	// The Anthropic key only takes over while the subscription is unavailable.
+	if want := []string{"anthropic/claude-fable-5-1"}; !slices.Equal(keys.apiFallbackModels, want) {
+		t.Errorf("api fallback models = %v, want %v", keys.apiFallbackModels, want)
 	}
 }
 
@@ -282,12 +236,11 @@ func TestAttachAgentProviderKeysKeepsTheRoutersModels(t *testing.T) {
 
 func TestAgentProviderKeysDirectKeyOnSubscriptionBecomesAPIFallback(t *testing.T) {
 	models, choices := providerKeysTestModels()
-	var saved []map[string]any
-	client := providerKeysTestServer(t, nil, &saved)
-	body := agentRouterCreateBody(models, choices, claudeRouterClientKey, true)
+	client := providerKeysTestServer(t, []map[string]any{agentKeyCredential("cred_anthropic", "anthropic", "Anthropic")}, nil)
+	body := agentRouterCreateBody(agentSetups["claude"], models, choices, []agentSubscriptionProvider{claudeSubscription})
 
 	var stderr strings.Builder
-	keys, err := configureAgentProviderKeys(context.Background(), client, strings.NewReader("y\nsk-test\nn\nn\n"), &stderr, 3, models, body.EnabledModels, body.ModelProviders, []string{"anthropic"})
+	keys, err := agentProviderKeysFor(context.Background(), client, &stderr, models, body.EnabledModels, body.ModelProviders, []agentSubscriptionProvider{claudeSubscription})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +251,7 @@ func TestAgentProviderKeysDirectKeyOnSubscriptionBecomesAPIFallback(t *testing.T
 	if got := keys.fallbackModels([]string{"zai-org/GLM-5.3", "removed/model"}, body.EnabledModels); !slices.Equal(got, []string{"zai-org/GLM-5.3", "anthropic/claude-fable-5-1"}) {
 		t.Fatalf("merged API fallback models = %v", got)
 	}
-	if !strings.Contains(stderr.String(), "Using your Anthropic key when your subscription is unavailable") {
+	if !strings.Contains(stderr.String(), "Claude Code subscription for Fable 5.1") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 	// Without a direct key on a subscribed provider, the router's API

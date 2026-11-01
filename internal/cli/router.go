@@ -100,6 +100,7 @@ type routerCustomConfig struct {
 type routerCreateRequest struct {
 	AllowLongContext      bool                `json:"allow_long_context,omitempty"`
 	EvalScoreImputation   *bool               `json:"eval_score_imputation,omitempty"`
+	SessionPinning        bool                `json:"session_pinning,omitempty"`
 	Name                  string              `json:"name"`
 	EnabledModels         []string            `json:"enabled_models"`
 	ModelProviders        map[string]string   `json:"model_providers,omitempty"`
@@ -119,6 +120,7 @@ type routerCreateRequest struct {
 type routerUpdateRequest struct {
 	AllowLongContext      *bool             `json:"allow_long_context,omitempty"`
 	EvalScoreImputation   *bool             `json:"eval_score_imputation,omitempty"`
+	SessionPinning        *bool             `json:"session_pinning,omitempty"`
 	Name                  string            `json:"name"`
 	EnabledModels         []string          `json:"enabled_models"`
 	ProviderKeys          map[string]string `json:"provider_keys,omitempty"`
@@ -139,6 +141,7 @@ type routerCurrent struct {
 type routerCreateManifest struct {
 	AllowLongContext              bool                `yaml:"allow_long_context"`
 	EvalScoreImputation           *bool               `yaml:"eval_score_imputation"`
+	SessionPinning                bool                `yaml:"session_pinning"`
 	Name                          string              `yaml:"name"`
 	EnabledModels                 []string            `yaml:"enabled_models"`
 	ModelProviders                map[string]string   `yaml:"model_providers"`
@@ -157,6 +160,7 @@ type routerCreateManifest struct {
 type routerConfigFlags struct {
 	allowLongContext      bool
 	evalScoreImputation   bool
+	sessionPinning        bool
 	models                []string
 	subscriptionProviders []string
 	apiFallbackModels     []string
@@ -183,6 +187,7 @@ func (rf *routerConfigFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&rf.strategy, name("strategy"), "", "Routing strategy: dari; use a manifest for custom rules")
 	cmd.Flags().BoolVar(&rf.allowLongContext, name("allow-long-context"), false, "Allow provider long-context surcharges (off by default)")
 	cmd.Flags().BoolVar(&rf.evalScoreImputation, name("eval-score-imputation"), true, "Estimate missing eval scores for a model and thinking level from related measured scores (on by default)")
+	cmd.Flags().BoolVar(&rf.sessionPinning, name("session-pinning"), false, "Route once when a session starts and keep that model for the whole session; each subagent is routed once when it starts (off by default)")
 	cmd.Flags().StringSliceVar(&rf.subscriptionProviders, name("subscription"), nil, "Serve this provider's models from the attributed user's personal subscription: openai, anthropic, or meta (repeatable or comma-separated). The provider's --provider-credential or --managed-key choice becomes its API fallback credential. On update this replaces the list; an empty value clears it")
 	cmd.Flags().StringSliceVar(&rf.apiFallbackModels, name("api-fallback"), nil, "Keep this subscription model running on the provider's API credential while the subscription is unavailable; models without it pause until the subscription is back (repeatable or comma-separated). On update this replaces the list; an empty value clears it")
 }
@@ -306,6 +311,7 @@ func newRouterCreateCmd(gf *globalFlags) *cobra.Command {
 			}
 			body := routerCreateRequest{
 				AllowLongContext: rf.allowLongContext,
+				SessionPinning:   rf.sessionPinning,
 				Name:             strings.TrimSpace(args[0]),
 				EnabledModels:    rf.models,
 			}
@@ -406,6 +412,9 @@ func newRouterUpdateCmd(gf *globalFlags) *cobra.Command {
 			}
 			if cmd.Flags().Changed("eval-score-imputation") {
 				body.EvalScoreImputation = &rf.evalScoreImputation
+			}
+			if cmd.Flags().Changed("session-pinning") {
+				body.SessionPinning = &rf.sessionPinning
 			}
 			if body.SubscriptionProviders, body.SubscriptionAPIFallbackModels, err = rf.subscriptionSettings(cmd); err != nil {
 				return err
@@ -698,6 +707,7 @@ func (manifest routerCreateManifest) createRequest(path string, resolveCatalogDe
 		Name:                name,
 		AllowLongContext:    manifest.AllowLongContext,
 		EvalScoreImputation: manifest.EvalScoreImputation,
+		SessionPinning:      manifest.SessionPinning,
 		EnabledModels:       models,
 		ModelProviders:      modelProviders,
 	}

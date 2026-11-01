@@ -160,23 +160,23 @@ func TestGatewayLaunchesMakeNoHostedCalls(t *testing.T) {
 		wantGateway []string
 		check       func(t *testing.T, env map[string]string, args []string)
 	}{
-		{"claude", nil, func(t *testing.T, env map[string]string, _ []string) {
+		{"claude", []string{"GET /v1/models"}, func(t *testing.T, env map[string]string, _ []string) {
 			if env["ANTHROPIC_BASE_URL"] != gateway.URL || env["ANTHROPIC_AUTH_TOKEN"] != gatewayTestKey {
 				t.Errorf("Claude env = %q, %q", env["ANTHROPIC_BASE_URL"], env["ANTHROPIC_AUTH_TOKEN"])
 			}
 		}},
-		{"codex", []string{"GET /v1/models"}, func(t *testing.T, _ map[string]string, args []string) {
+		{"codex", []string{"GET /v1/models", "GET /v1/models"}, func(t *testing.T, _ map[string]string, args []string) {
 			want := `model_providers.dari.base_url="` + gateway.URL + `/v1"`
 			if !slices.Contains(args, want) {
 				t.Errorf("Codex args missing %s: %q", want, args)
 			}
 		}},
-		{"opencode", nil, func(t *testing.T, env map[string]string, _ []string) {
+		{"opencode", []string{"GET /v1/models"}, func(t *testing.T, env map[string]string, _ []string) {
 			if !strings.Contains(env["OPENCODE_CONFIG_CONTENT"], `"baseURL":"`+gateway.URL+`/v1"`) {
 				t.Errorf("OpenCode config does not use the gateway: %q", env["OPENCODE_CONFIG_CONTENT"])
 			}
 		}},
-		{"pi", nil, func(t *testing.T, env map[string]string, _ []string) {
+		{"pi", []string{"GET /v1/models"}, func(t *testing.T, env map[string]string, _ []string) {
 			if env["DARI_ROUTING_BASE_URL"] != gateway.URL {
 				t.Errorf("Pi base URL = %q", env["DARI_ROUTING_BASE_URL"])
 			}
@@ -315,5 +315,20 @@ func TestGatewayProviderCredentialsNameGatewayEnvironment(t *testing.T) {
 	cmd.SetErr(io.Discard)
 	if err := cmd.Execute(); !errors.Is(err, errGatewayProviderKeys) || !strings.Contains(err.Error(), "ANTHROPIC_API_KEY") {
 		t.Fatalf("provider add error = %v", err)
+	}
+}
+
+func TestGatewayModelsListTheGatewaysRouter(t *testing.T) {
+	gateway := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/routing"},{"slug":"dari/model/anthropic/claude-opus-5-5"},{"slug":"dari/model/vercel-ai-gateway/openai/gpt-6.1-sol"}]}`))
+	})))
+	defer gateway.Close()
+
+	models, err := routerModels(context.Background(), gateway.URL, gatewayTestKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"dari/routing", "dari/model/anthropic/claude-opus-5-5", "dari/model/vercel-ai-gateway/openai/gpt-6.1-sol"}; !slices.Equal(models.Menu(), want) {
+		t.Errorf("menu = %q, want %q", models.Menu(), want)
 	}
 }

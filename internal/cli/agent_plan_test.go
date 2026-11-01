@@ -5,50 +5,37 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 
-	"github.com/mupt-ai/dari-cli/internal/api"
 	"github.com/mupt-ai/dari-cli/internal/cli/agents"
 )
 
-func TestRouterModelsOffersRoutingOnlyWithThePlan(t *testing.T) {
+func TestRouterModelsFollowTheRoutersCatalog(t *testing.T) {
 	for _, tc := range []struct {
-		allowed    any
-		want       agents.Models
-		wantNotice bool
+		name  string
+		slugs []string
+		want  agents.Models
 	}{
-		{true, agents.Models{Routing: true, Enabled: []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-5"}}, false},
-		{nil, agents.Models{Routing: true, Enabled: []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-5"}}, false},
-		{false, agents.Models{Enabled: []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-5"}}, true},
+		{"autorouting", []string{"dari/routing", "dari/model/openai/gpt-5.6-sol", "dari/model/anthropic/claude-opus-5"}, agents.Models{Routing: true, Enabled: []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-5"}}},
+		{"no autorouting", []string{"dari/model/openai/gpt-5.6-sol", "dari/model/anthropic/claude-opus-5"}, agents.Models{Enabled: []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-5"}}},
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/v1/organizations/current/routers":
-				_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{
-					{"id": "rtr_other", "enabled_models": []string{"x/y"}},
-					{"id": "rtr_default", "is_default": true, "enabled_models": []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-5"}},
-				}})
-			case "/v1/organizations/current/credentials":
-				_ = json.NewEncoder(w).Encode(map[string]any{"credentials": []any{}, "autorouting_allowed": tc.allowed})
-			case "/v1/auth/config":
-				_ = json.NewEncoder(w).Encode(map[string]any{"web_app_url": "https://app.example.test/"})
-			default:
-				t.Fatalf("unexpected request %s", r.URL.Path)
+			if r.URL.Path != "/rtr_1/v1/models" || r.Header.Get("Authorization") != "Bearer dak_routing" {
+				t.Fatalf("unexpected request %s with %q", r.URL.Path, r.Header.Get("Authorization"))
 			}
+			models := []map[string]string{}
+			for _, slug := range tc.slugs {
+				models = append(models, map[string]string{"slug": slug})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"models": models})
 		}))
-		var stderr strings.Builder
-		got, err := routerModels(t.Context(), api.New(server.URL), "claude", "default", &stderr)
+		got, err := routerModels(t.Context(), server.URL+"/rtr_1", "dak_routing")
 		server.Close()
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(got, tc.want) {
-			t.Errorf("allowed=%v: models = %+v, want %+v", tc.allowed, got, tc.want)
-		}
-		if notice := strings.Contains(stderr.String(), "Starting on dari/model/openai/gpt-5.6-sol.") &&
-			strings.Contains(stderr.String(), "run `dari claude --connect` to get auto-routing"); notice != tc.wantNotice {
-			t.Errorf("allowed=%v: notice %q", tc.allowed, stderr.String())
+			t.Errorf("%s: models = %+v, want %+v", tc.name, got, tc.want)
 		}
 	}
 }

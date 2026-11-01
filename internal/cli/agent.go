@@ -180,7 +180,7 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 }
 
 // resolveAgentRouting returns the key and base URL a launch routes through. In
-// gateway mode it makes no hosted calls and uses the gateway's default model.
+// gateway mode it makes no hosted calls and offers the gateway's models.
 // Otherwise it signs in, sets up the agent's router, and uses that router.
 func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reader, stderr io.Writer) (string, string, agents.Models, error) {
 	gateway, err := gatewayFromEnv()
@@ -191,27 +191,40 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 		if launch.connect {
 			return "", "", agents.Models{}, fmt.Errorf("--connect manages hosted accounts and is not available with %s; use `dari credentials subscription connect`", gatewayURLEnv)
 		}
-		return gateway.key, gateway.url, agents.Models{}, nil
+		models, err := routerModels(ctx, gateway.url, gateway.key)
+		if err != nil {
+			return "", "", agents.Models{}, err
+		}
+		return gateway.key, gateway.url, models, nil
 	}
+	// Onboarding pages follow one another on the alternate screen; their
+	// summary prints once setup is done.
+	holdAgentScreen()
+	defer releaseAgentScreen()
 	access, err := resolveAgentRoutingAccess(ctx, stdin, stderr)
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
 	if launch.connect {
-		if err := connectAgentSubscriptionsOnRequest(ctx, launch.name, access, stdin, stderr); err != nil {
+		if access.keysAdded, err = connectAgentSubscriptionsOnRequest(ctx, launch.name, access, stdin, stderr); err != nil {
 			return "", "", agents.Models{}, err
 		}
 	}
-	access.connect = launch.connect
 	routerID, err := ensureAgentRouter(ctx, launch.name, access, stdin, stderr)
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
-	models, err := agentModels(ctx, launch.name, access, routerID, stderr)
+	baseURL := agentRoutingBaseURL(routerID)
+	models, err := routerModels(ctx, baseURL, access.key)
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
-	return access.key, agentRoutingBaseURL(routerID), models, nil
+	// Without the Autorouting plan the launch starts on the router's first
+	// model; --connect is where the plan is bought.
+	if !models.Routing && len(models.Enabled) > 0 {
+		agentPrintln(stderr, fmt.Sprintf("Starting on %s. Switch models with /model, or run `dari %s --connect` to get auto-routing.", models.Default(), launch.name))
+	}
+	return access.key, baseURL, models, nil
 }
 
 func agentExecutable(name string) (string, error) {

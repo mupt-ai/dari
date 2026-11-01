@@ -1,10 +1,13 @@
 package cli
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -24,101 +27,22 @@ type agentSubscriptionProvider struct {
 var (
 	claudeSubscription = agentSubscriptionProvider{"anthropic_claude_code", "Claude Code", "anthropic", "Anthropic", false}
 	codexSubscription  = agentSubscriptionProvider{"openai_codex", "ChatGPT", "openai", "OpenAI", true}
-	// Muse Code subscriptions serve only Muse Code, so no agent launcher offers one.
+	// Muse Code subscriptions serve only Muse Code.
 	museSubscription = agentSubscriptionProvider{"meta_muse", "Muse Code", "meta", "Meta", true}
 )
 
-// Codex, OpenCode, Pi, and Muse use the organization's default router, but
-// their subscription decision is per user and launcher, not implied by a
-// cached router or login. It reports whether the Muse plan is enabled for this
-// launch, so the router serves it once the model picker adds Meta models.
-func ensureDefaultAgentSubscription(ctx context.Context, agent string, access agentRoutingAccess, client *api.Client, router agentRouter, stdin io.Reader, stderr io.Writer) (bool, error) {
+// OpenCode and Pi use the organization's default router, but their
+// subscription decision is per user and launcher, not implied by a cached
+// router or login. It reports how many API keys the Accounts page connected.
+func ensureDefaultAgentSubscription(ctx context.Context, agent string, client *api.Client, router agentRouter, stdin io.Reader, stderr io.Writer) (int, error) {
 	optedOut, err := agentSubscriptionOptedOut(ctx, client, agent)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
-	if agent == "muse" {
-		// Only Muse Code can use a Muse subscription, so the launch asks for it.
-		resolution, resolveErr := resolveAgentPersonalSubscription(ctx, museSubscription, client, stdin, stderr, optedOut)
-		if resolution.preferenceChanged {
-			if err := saveAgentSubscriptionOptOut(ctx, client, agent, !resolution.enabled); err != nil {
-				return false, err
-			}
-		}
-		// Muse Code is launched only to use its plan, so an enabled plan is
-		// served whether it was just connected or connected earlier.
-		if resolution.enabled {
-			if err := setAgentRouterSubscription(ctx, client, router, agentSubscriptionProviders(agent), true); err != nil {
-				return false, err
-			}
-		}
-		return resolution.enabled, resolveErr
-	}
-	err = ensureCodexAgentSubscription(ctx, agent, optedOut, client, router, stdin, stderr)
-	return false, err
-}
-
-func ensureCodexAgentSubscription(ctx context.Context, agent string, optedOut bool, client *api.Client, router agentRouter, stdin io.Reader, stderr io.Writer) error {
-	provider := codexSubscription
-	if agent == "opencode" || agent == "pi" {
-		// Reuse either supported subscription before asking which one to connect.
-		var listed agentSubscriptionStatus
-		if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &listed); err != nil {
-			return api.HumanError(err)
-		}
-		connected := slices.ContainsFunc(listed.Credentials, func(c agentCredential) bool {
-			return c.OAuthProvider == codexSubscription.id || c.OAuthProvider == claudeSubscription.id
-		})
-		// A stored credential is not a request to turn the shared default router
-		// back on. Later launches must leave the router's subscription toggle alone.
-		if connected {
-			return nil
-		}
-		if optedOut {
-			return nil
-		}
-		if agentInputIsTerminal(stdin) {
-			providers := agentSubscriptionProviders(agent)
-			added, manageErr := manageAgentSubscriptions(ctx, client, providers, stdin, stderr)
-			return recordAgentSubscriptionAdds(ctx, client, router, providers, agent, added, manageErr)
-		}
-		choice := 0
-		fmt.Fprint(stderr, "Connect a subscription: [1] ChatGPT [2] Claude Code [3] Dari managed billing: ")
-		answer, err := readAgentLine(stdin)
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		switch strings.TrimSpace(answer) {
-		case "", "1":
-			choice = 0
-		case "2":
-			choice = 1
-		case "3":
-			choice = 2
-		default:
-			return fmt.Errorf("expected 1, 2, or 3")
-		}
-		if choice == 2 {
-			return saveAgentSubscriptionOptOut(ctx, client, agent, true)
-		}
-		if choice == 1 {
-			provider = claudeSubscription
-		}
-		if err := connectAgentPersonalSubscription(ctx, provider, client, stdin, stderr, ""); err != nil {
-			return err
-		}
-		if err := saveAgentSubscriptionOptOut(ctx, client, agent, false); err != nil {
-			return err
-		}
-		return setAgentRouterSubscription(ctx, client, router, agentSubscriptionProviders(agent), true)
-	}
-	resolution, resolveErr := resolveAgentPersonalSubscription(ctx, provider, client, stdin, stderr, optedOut)
+	resolution, resolveErr := resolveAgentPersonalSubscription(ctx, agentSubscriptionProviders(agent), client, stdin, stderr, optedOut)
 	if resolution.preferenceChanged {
 		if err := saveAgentSubscriptionOptOut(ctx, client, agent, !resolution.enabled); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	// Enable the shared router only when this launch newly connected a
@@ -127,111 +51,97 @@ func ensureCodexAgentSubscription(ctx context.Context, agent string, optedOut bo
 	// before an error are stored, so route through them before reporting it.
 	if resolution.connectedNow {
 		if err := setAgentRouterSubscription(ctx, client, router, agentSubscriptionProviders(agent), true); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return resolveErr
+	return resolution.keysAdded, resolveErr
 }
 
 // connectAgentSubscriptionsOnRequest handles `dari <agent> --connect`: it
-// opens the subscription list, and once one is added, routes this agent
-// through subscriptions again even if it was set to managed billing.
-func connectAgentSubscriptionsOnRequest(ctx context.Context, agent string, access agentRoutingAccess, stdin io.Reader, stderr io.Writer) error {
+// opens the Accounts page, and once a subscription is added, routes this
+// agent through subscriptions again even if it was set to managed billing.
+// It reports how many API keys the page connected.
+func connectAgentSubscriptionsOnRequest(ctx context.Context, agent string, access agentRoutingAccess, stdin io.Reader, stderr io.Writer) (int, error) {
 	if !agentInputIsTerminal(stdin) {
-		return errors.New("--connect needs an interactive terminal; use `dari credentials subscription connect` instead")
+		return 0, errors.New("--connect needs an interactive terminal; use `dari credentials subscription connect` instead")
 	}
 	client, err := auth.OrgKeyClient(access.apiURL)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	added, manageErr := manageAgentSubscriptions(ctx, client, agentSubscriptionProviders(agent), stdin, stderr)
+	added, keys, manageErr := manageAgentSubscriptions(ctx, client, agentSubscriptionProviders(agent), stdin, stderr)
 	if added == 0 {
-		return manageErr
+		return keys, manageErr
 	}
 	if err := saveAgentSubscriptionOptOut(ctx, client, agent, false); err != nil {
-		return err
+		return keys, err
 	}
-	// Claude Code picks its subscription router during setup; the others share
-	// the default router.
-	if agent == "claude" {
-		return manageErr
+	// Agents with their own router pick its subscriptions during setup; the
+	// others share the default router.
+	if agentSetups[agent].ownsRouter() {
+		return keys, manageErr
 	}
 	routers, err := listAgentRouters(ctx, client)
 	if err != nil {
-		return err
+		return keys, err
 	}
 	router, ok := findAgentRouter(routers, func(router agentRouter) bool { return router.IsDefault })
 	if !ok {
-		return errors.New("organization has no default router")
+		return keys, errors.New("organization has no default router")
 	}
 	if err := setAgentRouterSubscription(ctx, client, router, agentSubscriptionProviders(agent), true); err != nil {
-		return err
+		return keys, err
 	}
-	return manageErr
+	return keys, manageErr
 }
 
-// agentSubscriptionProviders are the subscriptions an agent can use: Claude
-// Code only its own, Codex only ChatGPT, and OpenCode and Pi either.
+// agentSubscriptionProviders are the subscriptions an agent can use, its own
+// first.
 func agentSubscriptionProviders(agent string) []agentSubscriptionProvider {
-	switch agent {
-	case "claude":
-		return []agentSubscriptionProvider{claudeSubscription}
-	case "codex":
-		return []agentSubscriptionProvider{codexSubscription}
-	case "muse":
-		return []agentSubscriptionProvider{museSubscription}
-	}
-	return []agentSubscriptionProvider{codexSubscription, claudeSubscription}
-}
-
-// recordAgentSubscriptionAdds makes the agent's routing match the accounts
-// manageAgentSubscriptions connected, even when it then ended with an error.
-// Connected accounts stay stored, and later launches skip setup, so the router
-// must be routed through them now. With none connected, managed billing is
-// recorded unless the page failed.
-func recordAgentSubscriptionAdds(ctx context.Context, client *api.Client, router agentRouter, subscriptions []agentSubscriptionProvider, agent string, added int, manageErr error) error {
-	if added == 0 {
-		if manageErr != nil {
-			return manageErr
-		}
-		return saveAgentSubscriptionOptOut(ctx, client, agent, true)
-	}
-	if err := saveAgentSubscriptionOptOut(ctx, client, agent, false); err != nil {
-		return err
-	}
-	if err := setAgentRouterSubscription(ctx, client, router, subscriptions, true); err != nil {
-		return err
-	}
-	return manageErr
+	return agentSetups[agent].subscriptions
 }
 
 // manageAgentSubscriptions is the Accounts page: the user's subscriptions
-// from providers, with options to connect more. With none connected it offers
-// Dari managed billing instead of continuing. It reports how many it
-// connected.
-func manageAgentSubscriptions(ctx context.Context, client *api.Client, providers []agentSubscriptionProvider, stdin io.Reader, stderr io.Writer) (int, error) {
-	added := 0
+// from providers and the organization's API keys, with options to connect
+// more. Each connection returns to the page. With nothing connected it offers
+// Dari managed billing instead of continuing. It reports how many
+// subscriptions and API keys it connected; the router's models move onto the
+// keys once they are known.
+func manageAgentSubscriptions(ctx context.Context, client *api.Client, providers []agentSubscriptionProvider, stdin io.Reader, stderr io.Writer) (int, int, error) {
+	added, keysAdded := 0, 0
 	for {
+		var raw json.RawMessage
+		if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &raw); err != nil {
+			return added, keysAdded, api.HumanError(err)
+		}
 		var listed struct {
 			Credentials []subscriptionCredential `json:"credentials"`
 		}
-		if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &listed); err != nil {
-			return added, api.HumanError(err)
+		var listedKeys struct {
+			Credentials []agentProviderCredential `json:"credentials"`
+		}
+		if err := json.Unmarshal(raw, &listed); err != nil {
+			return added, keysAdded, err
+		}
+		if err := json.Unmarshal(raw, &listedKeys); err != nil {
+			return added, keysAdded, err
 		}
 		subscriptions := slices.DeleteFunc(personalSubscriptions(listed.Credentials), func(c subscriptionCredential) bool {
 			return !slices.ContainsFunc(providers, func(p agentSubscriptionProvider) bool { return p.id == c.OAuthProvider })
 		})
+		keys := agentAPIKeys(listedKeys.Credentials)
+		connected := len(subscriptions) > 0 || len(keys) > 0
 		routing, err := autoroutingAllowed(ctx, client)
 		if err != nil {
-			return added, err
+			return added, keysAdded, err
 		}
-		// Each option is a connect for one provider, Get Autorouting, or the
-		// option that leaves the page.
+		// Each option is a connect for one provider, an API key, Get
+		// Autorouting, or the option that leaves the page.
 		options := []agentChoiceOption{}
 		connects := map[int]agentSubscriptionProvider{}
 		finish := agentChoiceOption{label: "Use Dari managed billing", done: "Using Dari managed billing"}
-		if len(subscriptions) > 0 {
-			finish = agentChoiceOption{label: "Continue", done: fmt.Sprintf("Accounts: %d connected", len(subscriptions))}
+		if connected {
+			finish = agentChoiceOption{label: "Continue", done: fmt.Sprintf("Accounts: %d connected", len(subscriptions)+len(keys))}
 			options = append(options, finish)
 		}
 		for _, provider := range providers {
@@ -242,33 +152,67 @@ func manageAgentSubscriptions(ctx context.Context, client *api.Client, providers
 			connects[len(options)] = provider
 			options = append(options, agentChoiceOption{label: label})
 		}
+		apiKey := len(options)
+		if len(keys) == 0 {
+			options = append(options, agentChoiceOption{label: "Connect an API key"})
+		} else {
+			options = append(options, agentChoiceOption{label: "Connect another API key"})
+		}
 		autorouting := -1
 		if !routing {
 			autorouting = len(options)
 			options = append(options, agentChoiceOption{label: "Get auto-routing"})
 		}
-		if len(subscriptions) == 0 {
+		if !connected {
 			options = append(options, finish)
 		}
-		choice, err := runAgentChoiceTUI(stdin, stderr, "Accounts", agentSubscriptionLines(subscriptions, len(providers) > 1), options)
+		lines := agentAccountLines(subscriptions, keys, len(providers) > 1)
+		choice, err := runAgentChoiceTUI(stdin, stderr, "Accounts", lines, options)
 		if err != nil {
-			return added, err
+			return added, keysAdded, err
+		}
+		if choice == apiKey {
+			saved, err := connectAgentAPIKey(ctx, client, stdin, stderr, keys)
+			if err != nil {
+				return added, keysAdded, err
+			}
+			if saved {
+				keysAdded++
+			}
+			continue
 		}
 		if choice == autorouting {
 			if _, err := getAutorouting(ctx, client, stdin, stderr); err != nil {
-				return added, err
+				return added, keysAdded, err
 			}
 			continue
 		}
 		provider, connect := connects[choice]
 		if !connect {
-			return added, nil
+			return added, keysAdded, nil
 		}
 		if err := connectAgentPersonalSubscription(ctx, provider, client, stdin, stderr, ""); err != nil {
-			return added, err
+			return added, keysAdded, err
 		}
 		added++
 	}
+}
+
+// agentAccountLines lists the connected subscriptions, then API keys.
+func agentAccountLines(subscriptions []subscriptionCredential, keys map[string]agentProviderCredential, showProvider bool) []string {
+	if len(keys) == 0 {
+		return agentSubscriptionLines(subscriptions, showProvider)
+	}
+	lines := []string{}
+	if len(subscriptions) > 0 {
+		lines = agentSubscriptionLines(subscriptions, showProvider)
+		lines = lines[:len(lines)-1]
+	}
+	for _, provider := range slices.Sorted(maps.Keys(keys)) {
+		key := keys[provider]
+		lines = append(lines, "  "+cmp.Or(key.Label, key.Name, provider)+"  "+ansiGray+"API key"+ansiReset)
+	}
+	return append(lines, "")
 }
 
 // agentSubscriptionLines lists subscriptions in the order routing uses them,

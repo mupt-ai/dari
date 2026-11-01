@@ -1,7 +1,7 @@
 import { renameSync, writeFileSync } from "node:fs"
 
 const statusFile = new URL("../status.json", import.meta.url)
-const headerNames = ["x-dari-selected-model", "x-dari-thinking-level", "x-dari-lease-turns-remaining", "x-request-id"]
+const headerNames = ["x-dari-selected-model", "x-dari-thinking-level", "x-dari-lease-turns-remaining", "x-dari-session-pinned", "x-request-id"]
 
 // The server half of OpenCode's Dari status. It tags each request with its
 // kind and agent, reads each Dari response's routing headers, and writes the

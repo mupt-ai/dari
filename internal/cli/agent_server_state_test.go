@@ -14,10 +14,16 @@ func TestFreshMachineReusesConfiguredDefaultRouter(t *testing.T) {
 	for _, agent := range []string{"claude", "pi", "codex", "opencode", "muse"} {
 		t.Run(agent, func(t *testing.T) {
 			useTestAPIKey(t)
+			// Claude Code and Codex reuse their own managed router; the others
+			// the default router.
+			clientKey := ""
+			if agentSetups[agent].ownsRouter() {
+				clientKey = ownRouterKey(agent, false)
+			}
 			server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/v1/organizations/current/routers":
-					_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{{"id": "rtr_existing", "client_key": claudeManagedRouterClientKey, "is_default": true, "enabled_models": []string{"openai/gpt-5.6-sol"}}}})
+					_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{{"id": "rtr_existing", "client_key": clientKey, "is_default": true, "enabled_models": []string{"openai/gpt-5.6-sol"}}}})
 				case "/v1/organizations/current/credentials":
 					_ = json.NewEncoder(w).Encode(map[string]any{"credentials": []any{}, "personal_subscriptions_allowed": true})
 				case "/v1/auth/config":

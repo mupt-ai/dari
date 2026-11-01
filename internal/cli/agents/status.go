@@ -11,12 +11,14 @@ import (
 )
 
 // Status is the common display contract. Remaining counts turns after the
-// current response; the display includes the current turn. RequestID is the
-// last response's routing request, which opens its conversation in Activity.
+// current response; the display includes the current turn. Pinned marks a
+// session-pinned decision, which replaces the lease. RequestID is the last
+// response's routing request, which opens its conversation in Activity.
 type Status struct {
 	Model     string `json:"selected_model"`
 	Thinking  string `json:"reasoning_effort"`
 	Remaining *int   `json:"lease_turns_remaining"`
+	Pinned    bool   `json:"session_pinned"`
 	RequestID string `json:"request_id"`
 }
 
@@ -32,7 +34,9 @@ func (s Status) String() string {
 	if thinking := statusLabel(s.Thinking); thinking != "" && thinking != "off" {
 		parts = append(parts, thinking)
 	}
-	if s.Remaining != nil && *s.Remaining >= 0 && *s.Remaining < 1_000_000 {
+	if s.Pinned {
+		parts = append(parts, "pinned")
+	} else if s.Remaining != nil && *s.Remaining >= 0 && *s.Remaining < 1_000_000 {
 		turns := *s.Remaining + 1
 		unit := "turns"
 		if turns == 1 {
@@ -61,6 +65,7 @@ func StatusFromHeaders(headers http.Header) Status {
 	status := Status{
 		Model:     headers.Get("x-dari-selected-model"),
 		Thinking:  headers.Get("x-dari-thinking-level"),
+		Pinned:    headers.Get("x-dari-session-pinned") == "true",
 		RequestID: headers.Get("x-request-id"),
 	}
 	if remaining, err := strconv.Atoi(headers.Get("x-dari-lease-turns-remaining")); err == nil {

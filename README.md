@@ -72,7 +72,7 @@ Launchers fetch router configuration from the server on every launch; machine-lo
 
 Subscription decisions are also server-owned. Old machine-local opt-outs are no longer used; a user who previously declined subscriptions may need to make that choice once to save it on the server.
 
-Dari then supplies the appropriate router endpoint and `dari/routing` model without overwriting the agent's own configuration. Later launches reuse setup while checking for a connected subscription. Set `DARI_ROUTING_API_KEY` to use an existing Routing key instead. Pi's footer, Claude Code's status line, Codex's footer, and OpenCode's prompt footer show the model serving each turn, its thinking level, turns left on the current routing lease, and a link to that turn's conversation in the Dari Activity dashboard. All four use the same status formatter.
+Dari then supplies the appropriate router endpoint and `dari/routing` model without overwriting the agent's own configuration. Later launches reuse setup while checking for a connected subscription. Set `DARI_ROUTING_API_KEY` to use an existing Routing key instead. Pi's footer, Claude Code's status line, Codex's footer, and OpenCode's prompt footer show the model serving each turn, its thinking level, turns left on the current routing lease (or `pinned` when the router pins the model per session), and a link to that turn's conversation in the Dari Activity dashboard. All four use the same status formatter.
 
 Codex's footer requires Codex 0.162.1 or newer. Interactive launches use a session-local bridge that reads Dari response headers and updates only the UI's thread-name display; saved session names, resume lists, and routing requests are unchanged. This also affects other thread-name displays in the active UI, such as its terminal title. The bridge uses loopback-only listeners, requires the routing bearer key for HTTP and a separate capability for UI connections, streams responses without buffering, and stops with the launcher. UI reconnects preserve the local app server and active turns. Codex prints its standard remote-disconnect message on exit; its suggested direct reconnect URL expires when Dari exits, so resume with `dari codex resume` instead. Closing the launcher stops its local app server; it does not leave work running in a shared Codex daemon.
 
@@ -117,7 +117,7 @@ export DARI_GATEWAY_KEY="your-gateway-key"
 dari claude
 ```
 
-In gateway mode, `dari claude`, `dari codex`, `dari opencode`, and `dari pi` make no hosted API calls. They skip sign-in, router setup, and plan checks, then launch the agent against the gateway with `DARI_GATEWAY_KEY` as its routing key. The URL may end in `/v1`. Agents start on the gateway's `dari/routing` model. `--connect` manages hosted accounts, so it is rejected in gateway mode. `dari credentials subscription list`, `connect`, `rename`, `mark-available`, and `disconnect` also use the gateway, which stores connected subscriptions in its own database. `dari credentials subscription auto-reset` and `dari router request-costs` are hosted-only and fail in gateway mode. Other commands, such as `dari router`, still use the hosted API.
+In gateway mode, `dari claude`, `dari codex`, `dari opencode`, and `dari pi` make no hosted API calls. They skip sign-in, router setup, and plan checks, then launch the agent against the gateway with `DARI_GATEWAY_KEY` as its routing key. The URL may end in `/v1`. Agents start on the gateway's `dari/routing` model, and their model pickers list the gateway router's models, read from its `/v1/models`. `--connect` manages hosted accounts, so it is rejected in gateway mode. `dari credentials subscription list`, `connect`, `rename`, `mark-available`, and `disconnect` also use the gateway, which stores connected subscriptions in its own database. `dari credentials subscription auto-reset` and `dari router request-costs` are hosted-only and fail in gateway mode. Other commands, such as `dari router`, still use the hosted API.
 
 ## Common Workflows
 
@@ -179,6 +179,8 @@ dari router delete <router_id_or_endpoint> --yes
 ```
 
 Dari automatically picks the relevant evals for each request from your organization's evals and Public Evals. Use `dari eval` to manage your organization's eval scorecards; router configuration no longer selects them. Eval score imputation estimates a missing eval score for a model and thinking level from related measured scores; measured scores are never changed. It is on by default for new routers. Pass `--eval-score-imputation=false` to `dari router create` or `dari router update`, or set `eval_score_imputation: false` in `router.yml`, to turn it off; omitting the flag on update keeps the router's current setting.
+
+Session pinning routes once when a session starts and keeps that model and thinking level for the whole session; each subagent is routed on its own when it starts, then keeps its model. Speculative routing and leases do not apply while it is on. It is off by default. Pass `--session-pinning` to `dari router create` or `dari router update`, or set `session_pinning: true` in `router.yml`; pass `--session-pinning=false` on update to turn it off.
 
 Inspect activity and evals:
 

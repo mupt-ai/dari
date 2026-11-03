@@ -30,6 +30,7 @@ func init() {
 			newRouterRequestCostsCmd(),
 			newRouterCreateCmd(gf),
 			newRouterUpdateCmd(gf),
+			newRouterAssignAgentCmd(gf),
 			newRouterDeleteCmd(gf),
 		)
 		root.AddCommand(cmd)
@@ -475,6 +476,43 @@ func validateProviderCredentialSelections(keys, credentialIDs, sources map[strin
 		}
 	}
 	return nil
+}
+
+func newRouterAssignAgentCmd(gf *globalFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "assign-agent <router_id_or_endpoint> <agent>",
+		Short: "Make a coding agent launched by dari use this router",
+		Long: "Make a coding agent launched by dari use this router. Agents are " +
+			strings.Join(codingAgentNames(), ", ") +
+			". Assign an agent to the default router to undo; `dari router list` shows each router's coding_agents.",
+		Args: cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			routerID, err := normalizeRouterID(args[0])
+			if err != nil {
+				return err
+			}
+			setup, ok := agentSetups[args[1]]
+			if !ok {
+				return fmt.Errorf("unknown coding agent %q; use one of %s", args[1], strings.Join(codingAgentNames(), ", "))
+			}
+			path := "/v1/organizations/current/routers/" + url.PathEscape(routerID) + "/coding-agents/" + url.PathEscape(setup.codingAgent)
+			var resp map[string]any
+			if err := orgKeyRequest(cmd, gf, http.MethodPut, path, nil, &resp); err != nil {
+				return err
+			}
+			return printJSON(resp)
+		},
+	}
+}
+
+// codingAgentNames are the launcher names of the agents dari sets up.
+func codingAgentNames() []string {
+	names := make([]string, 0, len(agentSetups))
+	for name := range agentSetups {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	return names
 }
 
 func newRouterDeleteCmd(gf *globalFlags) *cobra.Command {

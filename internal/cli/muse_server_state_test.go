@@ -17,7 +17,7 @@ func TestFreshMachineReusesConfiguredMusePlan(t *testing.T) {
 				"id": "rtr_default", "name": "Default", "is_default": true,
 				"enabled_models": []string{"openai/gpt-5.6-sol"},
 			}, {
-				"id": "rtr_muse", "name": "Dari Muse Code", "client_key": "dari-cli:muse-code",
+				"id": "rtr_muse", "name": "Dari Muse Code", "client_key": "dari-cli:muse-code", "coding_agents": []string{"muse_code"},
 				"enabled_models":         []string{"meta/muse-spark"},
 				"model_providers":        map[string]string{"meta/muse-spark": "meta"},
 				"subscription_providers": []string{"meta"},

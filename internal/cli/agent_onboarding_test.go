@@ -596,6 +596,9 @@ func TestEnsureClaudeAgentRouterCreatesSeparateRouter(t *testing.T) {
 	if got := created["client_key"]; got != ownRouterKey("claude", true) {
 		t.Errorf("client_key = %#v", got)
 	}
+	if got := created["coding_agent"]; got != "claude_code" {
+		t.Errorf("coding_agent = %#v", got)
+	}
 	if got := stringSlice(created["subscription_providers"]); !slices.Equal(got, []string{"anthropic"}) {
 		t.Errorf("subscription_providers = %q", got)
 	}
@@ -756,7 +759,7 @@ func TestEnsureClaudeAgentRouterUsesServerManagedRouterOnEOF(t *testing.T) {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{
 				{"id": "rtr_default", "name": "Default", "is_default": true},
-				{"id": "rtr_managed_other", "client_key": ownRouterKey("claude", false)},
+				{"id": "rtr_managed_other", "client_key": ownRouterKey("claude", false), "coding_agents": []string{"claude_code"}},
 				{"id": "rtr_managed_cached", "client_key": ownRouterKey("claude", false)},
 				{"id": "rtr_personal", "client_key": ownRouterKey("claude", true)},
 			}})
@@ -796,7 +799,7 @@ func TestEnsureClaudeAgentRouterIgnoresUnavailablePersonalRouterOnEOF(t *testing
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers":
 			_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{
 				{"id": "rtr_default", "name": "Default", "is_default": true},
-				{"id": "rtr_managed", "client_key": ownRouterKey("claude", false)},
+				{"id": "rtr_managed", "client_key": ownRouterKey("claude", false), "coding_agents": []string{"claude_code"}},
 				{"id": "rtr_personal", "client_key": ownRouterKey("claude", true)},
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
@@ -833,6 +836,7 @@ func TestEnsureClaudeAgentRouterRequiresSubscriptionAfterRename(t *testing.T) {
 					"id":                     "rtr_claude",
 					"name":                   "Renamed by user",
 					"client_key":             ownRouterKey("claude", true),
+					"coding_agents":          []string{"claude_code"},
 					"enabled_models":         []string{"anthropic/claude-fable-5", "openai/gpt-5.6-sol"},
 					"model_providers":        map[string]string{"anthropic/claude-fable-5": "anthropic", "openai/gpt-5.6-sol": "openai"},
 					"model_thinking_levels":  map[string][]string{"anthropic/claude-fable-5": {"high"}, "openai/gpt-5.6-sol": {"medium"}},
@@ -894,6 +898,7 @@ func TestEnsureClaudeAgentRouterSkipsUpdateForCompliantRouter(t *testing.T) {
 					"id":                     "rtr_claude",
 					"name":                   "Renamed by user",
 					"client_key":             ownRouterKey("claude", true),
+					"coding_agents":          []string{"claude_code"},
 					"subscription_providers": []string{"anthropic"},
 				},
 			}})

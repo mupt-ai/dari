@@ -33,7 +33,7 @@ func TestLoggedInAgentConnectsMissingSubscription(t *testing.T) {
 				case "GET /v1/organizations/current/routers":
 					_ = json.NewEncoder(w).Encode(map[string]any{"routers": []agentRouter{
 						{ID: "default", Name: "Default", IsDefault: true, EnabledModels: []string{"openai/test", "anthropic/test"}, ModelProviders: map[string]string{"openai/test": "openai", "anthropic/test": "anthropic"}},
-						{ID: "claude", Name: "Claude", ClientKey: ownRouterKey("claude", true), EnabledModels: []string{"anthropic/test"}, ModelProviders: map[string]string{"anthropic/test": "anthropic"}},
+						{ID: "claude", Name: "Claude", ClientKey: ownRouterKey("claude", true), CodingAgents: []string{"claude_code"}, EnabledModels: []string{"anthropic/test"}, ModelProviders: map[string]string{"anthropic/test": "anthropic"}},
 					}})
 				case "GET /v1/organizations/current/credentials":
 					credentials := []agentCredential{}

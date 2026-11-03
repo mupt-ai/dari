@@ -30,20 +30,52 @@ type agentSetup struct {
 	// routerKey names the router the agent sets up for itself; empty shares
 	// the organization's default router.
 	routerKey string
+	// codingAgent identifies the agent in the organization's router
+	// assignments.
+	codingAgent string
 }
 
 // agentSetups are the agents dari sets up, by launcher name.
 var agentSetups = map[string]agentSetup{
-	"claude":   {label: "Claude Code", suggestion: "claude", subscriptions: []agentSubscriptionProvider{claudeSubscription, codexSubscription}, routerKey: "dari-cli:claude-code"},
-	"codex":    {label: "Codex", suggestion: "codex", subscriptions: []agentSubscriptionProvider{codexSubscription}, routerKey: "dari-cli:codex"},
-	"muse":     {label: "Muse Code", suggestion: "muse", subscriptions: []agentSubscriptionProvider{museSubscription}, routerKey: "dari-cli:muse-code"},
-	"opencode": {label: "OpenCode", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}},
-	"pi":       {label: "Pi", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}},
+	"claude":   {label: "Claude Code", suggestion: "claude", subscriptions: []agentSubscriptionProvider{claudeSubscription, codexSubscription}, routerKey: "dari-cli:claude-code", codingAgent: "claude_code"},
+	"codex":    {label: "Codex", suggestion: "codex", subscriptions: []agentSubscriptionProvider{codexSubscription}, routerKey: "dari-cli:codex", codingAgent: "codex"},
+	"muse":     {label: "Muse Code", suggestion: "muse", subscriptions: []agentSubscriptionProvider{museSubscription}, routerKey: "dari-cli:muse-code", codingAgent: "muse_code"},
+	"opencode": {label: "OpenCode", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}, codingAgent: "opencode"},
+	"pi":       {label: "Pi", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}, codingAgent: "pi"},
 }
 
 // ownsRouter reports whether the agent sets up a router of its own.
 func (setup agentSetup) ownsRouter() bool {
 	return setup.routerKey != ""
+}
+
+// isOwnRouter reports whether router is one dari set up for this agent.
+func (setup agentSetup) isOwnRouter(router agentRouter) bool {
+	return setup.ownsRouter() &&
+		(router.ClientKey == setup.routerKey || router.ClientKey == setup.routerKey+"-managed")
+}
+
+// assignedAgentRouter is the router the organization assigned to this agent,
+// unless dari's own setup decides it: the agent's own routers keep following
+// its subscriptions, and a shared agent on the default router keeps the
+// default router's setup.
+func (setup agentSetup) assignedAgentRouter(routers []agentRouter) (agentRouter, bool) {
+	assigned, ok := findAgentRouter(routers, func(router agentRouter) bool {
+		return slices.Contains(router.CodingAgents, setup.codingAgent)
+	})
+	if !ok || setup.isOwnRouter(assigned) || (assigned.IsDefault && !setup.ownsRouter()) {
+		return agentRouter{}, false
+	}
+	return assigned, true
+}
+
+// assignAgentRouter moves a coding agent onto a router.
+func assignAgentRouter(ctx context.Context, client *api.Client, routerID, codingAgent string) error {
+	path := "/v1/organizations/current/routers/" + url.PathEscape(routerID) + "/coding-agents/" + url.PathEscape(codingAgent)
+	if err := client.Do(ctx, http.MethodPut, path, nil, nil); err != nil {
+		return api.HumanError(err)
+	}
+	return nil
 }
 
 // ownRouter is the agent's own router's client key and name: one serving the
@@ -70,6 +102,7 @@ type agentRouter struct {
 	Name                          string              `json:"name"`
 	ClientKey                     string              `json:"client_key"`
 	IsDefault                     bool                `json:"is_default"`
+	CodingAgents                  []string            `json:"coding_agents"`
 	EnabledModels                 []string            `json:"enabled_models"`
 	ModelProviders                map[string]string   `json:"model_providers"`
 	ModelThinkingLevels           map[string][]string `json:"model_thinking_levels"`
@@ -108,6 +141,7 @@ type agentModelChoice struct {
 type agentRouterCreateRequest struct {
 	Name                          string              `json:"name"`
 	ClientKey                     string              `json:"client_key"`
+	CodingAgent                   string              `json:"coding_agent"`
 	EnabledModels                 []string            `json:"enabled_models"`
 	ModelProviders                map[string]string   `json:"model_providers"`
 	ProviderKeySources            map[string]string   `json:"provider_key_sources"`
@@ -218,6 +252,18 @@ func ensureAgentRouter(
 	if !ok {
 		return "", errors.New("organization has no default router")
 	}
+	if assigned, ok := setup.assignedAgentRouter(routers); ok {
+		return configured(assigned.ID)
+	}
+	// The agent's own router, once chosen, is the one it is assigned.
+	ownRouter := func(router agentRouter) (string, error) {
+		if !slices.Contains(router.CodingAgents, setup.codingAgent) {
+			if err := assignAgentRouter(ctx, client, router.ID, setup.codingAgent); err != nil {
+				return "", err
+			}
+		}
+		return configured(router.ID)
+	}
 
 	if !setup.ownsRouter() {
 		accountKeys, err := ensureDefaultAgentSubscription(ctx, agent, client, defaultRouter, stdin, stderr)
@@ -258,7 +304,7 @@ func ensureAgentRouter(
 			if existing, found := findAgentRouter(routers, func(router agentRouter) bool {
 				return router.ClientKey == managedKey
 			}); found {
-				return configured(existing.ID)
+				return ownRouter(existing)
 			}
 			return configured(defaultRouter.ID)
 		}
@@ -280,7 +326,7 @@ func ensureAgentRouter(
 			if err := setOwnRouterSubscriptions(ctx, client, existing, setup, subscribed); err != nil {
 				return "", err
 			}
-			return configured(existing.ID)
+			return ownRouter(existing)
 		}
 	}
 
@@ -1212,6 +1258,7 @@ func agentRouterCreateBody(
 	return agentRouterCreateRequest{
 		Name:                          name,
 		ClientKey:                     clientKey,
+		CodingAgent:                   setup.codingAgent,
 		EnabledModels:                 ids,
 		ModelProviders:                providers,
 		ProviderKeySources:            providerSources,

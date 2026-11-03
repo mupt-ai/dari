@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -64,14 +63,12 @@ func Configure(command *agents.Command, baseURL string, models agents.Models) er
 	if err != nil {
 		return err
 	}
-	directory, err := writeOpenCodeStatusPlugin()
+	pluginDirectory, err := writeOpenCodeStatusPlugin()
 	if err != nil {
 		return err
 	}
-	command.Cleanup = func() { _ = os.RemoveAll(directory) }
-	config, err := openCodeConfig(baseURL, filepath.Join(directory, "plugin"), models)
+	config, err := openCodeConfig(baseURL, pluginDirectory, models)
 	if err != nil {
-		command.Cleanup()
 		return err
 	}
 	status["OPENCODE_CONFIG_CONTENT"] = config
@@ -218,28 +215,20 @@ func openCodeConfig(baseURL, pluginDirectory string, models agents.Models) (stri
 	return string(body), nil
 }
 
-func writeOpenCodeStatusPlugin() (directory string, err error) {
-	directory, err = os.MkdirTemp("", "dari-opencode-*")
-	if err != nil {
-		return "", fmt.Errorf("create temporary OpenCode plugin: %w", err)
-	}
-	defer func() {
-		if err != nil {
-			_ = os.RemoveAll(directory)
-		}
-	}()
-	plugin := filepath.Join(directory, "plugin")
-	if err = os.Mkdir(plugin, 0o700); err != nil {
-		return "", fmt.Errorf("create temporary OpenCode plugin: %w", err)
-	}
+// writeOpenCodeStatusPlugin writes the status plugin into Dari's cache and
+// returns the plugin directory OpenCode loads it from.
+func writeOpenCodeStatusPlugin() (string, error) {
 	files := map[string]string{
 		"server.ts": serverPlugin,
 		"tui.tsx":   tuiPlugin,
 	}
+	var directory string
 	for name, content := range files {
-		if err = os.WriteFile(filepath.Join(plugin, name), []byte(content), 0o600); err != nil {
+		path, err := agents.WriteCacheFile("opencode/plugin/"+name, content)
+		if err != nil {
 			return "", fmt.Errorf("write OpenCode plugin: %w", err)
 		}
+		directory = filepath.Dir(path)
 	}
 	return directory, nil
 }

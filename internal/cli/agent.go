@@ -169,6 +169,17 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 			return 1
 		}
 	}
+	if command.CanReplace() && inheritsStdio(stdin, stdout, stderr) {
+		// The agent takes the launcher's place, so the pane's foreground process
+		// is the agent itself. Environ dedupes the variables as os/exec would,
+		// and a failed exec reports exactly what a failed start does.
+		argv := append([]string{command.Path}, command.Args...)
+		env := (&exec.Cmd{Env: command.Env}).Environ()
+		if err := agents.ReplaceProcess(command.Path, argv, env); err != nil {
+			fmt.Fprintf(stderr, "start %s: %v\n", launch.name, &os.PathError{Op: "fork/exec", Path: command.Path, Err: err})
+			return 1
+		}
+	}
 	cmd := exec.CommandContext(ctx, command.Path, command.Args...)
 	cmd.Env = command.Env
 	cmd.Stdin = stdin
@@ -187,6 +198,12 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		return 1
 	}
 	return 0
+}
+
+// inheritsStdio reports whether the agent would use the launcher's own
+// standard streams, which only a process replacement hands over as they are.
+func inheritsStdio(stdin io.Reader, stdout, stderr io.Writer) bool {
+	return stdin == os.Stdin && stdout == os.Stdout && stderr == os.Stderr
 }
 
 // resolveAgentRouting returns the key and base URL a launch routes through. In

@@ -8,13 +8,18 @@ import (
 	"testing"
 )
 
-func TestBuildPiAgentCommandUsesTemporaryProviderExtension(t *testing.T) {
+func TestBuildPiAgentCommandWritesCachedProviderExtension(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// os.UserCacheDir prefers XDG_CACHE_HOME on Linux.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	command := agents.Command{Path: "/pi", Args: []string{"-p", "review"}, Env: []string{agents.RoutingAPIKeyEnv + "=dari_route"}}
 	if err := Configure(&command, "https://routing.test/rtr_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
-	if command.Cleanup == nil {
-		t.Fatal("Pi command has no cleanup")
+	// The extension sits at a stable cache path, so the launch needs no cleanup
+	// and can hand its process to Pi.
+	if command.Cleanup != nil {
+		t.Fatal("Pi command should not need cleanup: its extension is cached")
 	}
 	if got := agents.EnvironmentValue(command.Env, "DARI_ROUTING_BASE_URL"); got != "https://routing.test/rtr_1" {
 		t.Fatalf("DARI_ROUTING_BASE_URL = %q", got)
@@ -56,19 +61,16 @@ func TestBuildPiAgentCommandUsesTemporaryProviderExtension(t *testing.T) {
 	if agents.EnvironmentValue(command.Env, "DARI_STATUS_EXECUTABLE") == "" {
 		t.Errorf("status environment = %q", agents.EnvironmentValue(command.Env, "DARI_STATUS_EXECUTABLE"))
 	}
-
-	command.Cleanup()
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("temporary extension still exists: %v", err)
-	}
 }
 
 func TestPiScopesModelPickerToTheRouter(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// os.UserCacheDir prefers XDG_CACHE_HOME on Linux.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	command := agents.Command{Path: "/pi"}
 	if err := Configure(&command, "https://routing.dari.dev", agents.Models{Enabled: []string{"openai/gpt-6-luna", "anthropic/claude-sonnet-5-5"}}); err != nil {
 		t.Fatal(err)
 	}
-	defer command.Cleanup()
 	index := slices.Index(command.Args, "--models")
 	if index < 0 || command.Args[index+1] != "dari/dari/model/openai/gpt-6-luna,dari/dari/model/anthropic/claude-sonnet-5-5" {
 		t.Fatalf("args = %q, want the router's models scoped", command.Args)
@@ -79,7 +81,6 @@ func TestPiScopesModelPickerToTheRouter(t *testing.T) {
 	if err := Configure(&command, "https://routing.dari.dev", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
-	defer command.Cleanup()
 	if strings.Count(strings.Join(command.Args, " "), "--models") != 1 {
 		t.Fatalf("args = %q, want the user's --models only", command.Args)
 	}

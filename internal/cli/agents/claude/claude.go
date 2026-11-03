@@ -55,16 +55,15 @@ func pickerOptions(models agents.Models) []map[string]string {
 	return options
 }
 
+// injectSettings passes the status line and model picker to Claude Code. Where
+// the launcher can hand its process over, they go inline, so no file is left
+// behind. Elsewhere they go in a temporary file: an npm claude.cmd shim does not
+// pass an inline JSON argument through intact.
 func injectSettings(command *agents.Command, models agents.Models) error {
 	executable, err := agents.StatusExecutable()
 	if err != nil {
 		return err
 	}
-	settings, err := os.CreateTemp("", "dari-claude-settings-*.json")
-	if err != nil {
-		return fmt.Errorf("create temporary Claude settings: %w", err)
-	}
-	path := settings.Name()
 	body, err := json.Marshal(map[string]any{
 		"statusLine": map[string]any{
 			"type":    "command",
@@ -73,20 +72,38 @@ func injectSettings(command *agents.Command, models agents.Models) error {
 		// Replace Claude Code's built-in lineup: only the router's models appear.
 		"modelPicker": map[string]any{"options": pickerOptions(models), "replaceBuiltInOptions": true},
 	})
-	if err == nil {
-		_, err = settings.Write(body)
+	if err != nil {
+		return fmt.Errorf("encode Claude status settings: %w", err)
 	}
+	if agents.CanReplaceProcess {
+		command.Args = agents.InsertBeforeDoubleDash(command.Args, []string{"--settings", string(body)})
+		return nil
+	}
+	path, err := writeSettingsFile(body)
+	if err != nil {
+		return err
+	}
+	command.Cleanup = func() { _ = os.Remove(path) }
+	command.Args = agents.InsertBeforeDoubleDash(command.Args, []string{"--settings", path})
+	return nil
+}
+
+func writeSettingsFile(body []byte) (string, error) {
+	settings, err := os.CreateTemp("", "dari-claude-settings-*.json")
+	if err != nil {
+		return "", fmt.Errorf("create temporary Claude settings: %w", err)
+	}
+	path := settings.Name()
+	_, err = settings.Write(body)
 	closeErr := settings.Close()
 	if err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		_ = os.Remove(path)
-		return fmt.Errorf("write Claude status settings: %w", err)
+		return "", fmt.Errorf("write Claude status settings: %w", err)
 	}
-	command.Cleanup = func() { _ = os.Remove(path) }
-	command.Args = agents.InsertBeforeDoubleDash(command.Args, []string{"--settings", path})
-	return nil
+	return path, nil
 }
 
 // TranscriptStatus renders the status line from the status-line input Claude

@@ -43,12 +43,17 @@ func TestDirectModelsOfferThinkingVariants(t *testing.T) {
 }
 
 func TestBuildOpenCodeCommandInjectsSessionConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// os.UserCacheDir prefers XDG_CACHE_HOME on Linux.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	command := launch()
 	if err := Configure(&command, "https://routing.dari.dev/router_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
-	if command.Cleanup == nil {
-		t.Fatal("OpenCode command has no cleanup")
+	// The plugin sits at a stable cache path, so the launch needs no cleanup and
+	// can hand its process to OpenCode.
+	if command.Cleanup != nil {
+		t.Fatal("OpenCode command should not need cleanup: its plugin is cached")
 	}
 	if !slices.Equal(command.Args, []string{"--standalone"}) {
 		t.Fatalf("args = %q", command.Args)
@@ -142,13 +147,12 @@ func TestBuildOpenCodeCommandInjectsSessionConfig(t *testing.T) {
 		t.Errorf("TUI plugin does not show routing status: %s", tui)
 	}
 
-	command.Cleanup()
-	if _, err := os.Stat(filepath.Dir(plugin)); !os.IsNotExist(err) {
-		t.Fatalf("temporary plugin still exists: %v", err)
-	}
 }
 
 func TestBuildOpenCodeCommandArguments(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	// os.UserCacheDir prefers XDG_CACHE_HOME on Linux.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	tests := []struct {
 		name string
 		args []string
@@ -177,7 +181,6 @@ func TestBuildOpenCodeCommandArguments(t *testing.T) {
 			if err := Configure(&command, "https://routing.dari.dev", agents.Models{Routing: true}); err != nil {
 				t.Fatal(err)
 			}
-			defer command.Cleanup()
 			if !slices.Equal(command.Args, tt.want) {
 				t.Fatalf("args = %q, want %q", command.Args, tt.want)
 			}
@@ -195,7 +198,7 @@ func TestBuildOpenCodeManagementCommandsGetNoDariConfig(t *testing.T) {
 			t.Fatal(err)
 		}
 		if command.Cleanup != nil {
-			t.Errorf("%q wrote a temporary plugin", args)
+			t.Errorf("%q needs cleanup for a plugin it did not write", args)
 		}
 		if !slices.Equal(command.Args, args) {
 			t.Errorf("args = %q, want %q", command.Args, args)

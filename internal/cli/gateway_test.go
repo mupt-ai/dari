@@ -25,6 +25,10 @@ const gatewayCatalog = `{"models":[{"slug":"dari/routing","context_window":27200
 func setGatewayEnv(t *testing.T, gatewayURL string) {
 	t.Helper()
 	t.Setenv("DARI_CONFIG_DIR", t.TempDir())
+	// Launches cache the Pi and OpenCode files under the home directory.
+	t.Setenv("HOME", t.TempDir())
+	// os.UserCacheDir prefers XDG_CACHE_HOME on Linux.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("DARI_API_KEY", "")
 	t.Setenv("DARI_GATEWAY_URL", gatewayURL)
 	t.Setenv("DARI_GATEWAY_KEY", gatewayTestKey)
@@ -56,7 +60,8 @@ func requireGatewayKey(t *testing.T, next http.Handler) http.Handler {
 }
 
 // fakeAgentExecutable installs a shell script as the agent. It records its
-// environment and arguments in the returned file. The launcher must not
+// environment, its process ID as DARI_TEST_PID, and its arguments in the
+// returned file. The launcher must not
 // know about the script, so it is found through DARI_<AGENT>_PATH.
 func fakeAgentExecutable(t *testing.T, agent string) string {
 	t.Helper()
@@ -68,6 +73,7 @@ func fakeAgentExecutable(t *testing.T, agent string) string {
 	script := filepath.Join(dir, agent)
 	body := `#!/bin/sh
 env > "$DARI_TEST_AGENT_OUT"
+printf 'DARI_TEST_PID=%s\n' "$$" >> "$DARI_TEST_AGENT_OUT"
 for arg in "$@"; do printf 'ARG %s\n' "$arg" >> "$DARI_TEST_AGENT_OUT"; done
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {

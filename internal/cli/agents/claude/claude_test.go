@@ -10,24 +10,24 @@ import (
 	"testing"
 )
 
-func TestBuildClaudeAgentCommandUsesTemporaryStatusLine(t *testing.T) {
+func TestBuildClaudeAgentCommandPassesStatusLineInline(t *testing.T) {
+	if !agents.CanReplaceProcess {
+		t.Skip("settings go in a temporary file where the launcher cannot hand over its process")
+	}
 	command := agents.Command{Path: "/claude", Args: []string{"--print", "review"}}
 	if err := Configure(&command, "dari_route", "https://routing.dari.dev", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
-	if command.Cleanup == nil {
-		t.Fatal("Claude command has no cleanup")
+	// Inline settings leave no file behind, so the launcher has nothing to clean up.
+	if command.Cleanup != nil {
+		t.Fatal("Claude command should not need cleanup: its settings are inline")
 	}
 
 	settingsIndex := slices.Index(command.Args, "--settings")
 	if settingsIndex < 0 || settingsIndex+1 >= len(command.Args) {
 		t.Fatalf("args do not contain --settings: %q", command.Args)
 	}
-	settingsPath := command.Args[settingsIndex+1]
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	data := command.Args[settingsIndex+1]
 	var settings struct {
 		StatusLine struct {
 			Type            string `json:"type"`
@@ -39,8 +39,8 @@ func TestBuildClaudeAgentCommandUsesTemporaryStatusLine(t *testing.T) {
 			ReplaceBuiltInOptions bool                `json:"replaceBuiltInOptions"`
 		} `json:"modelPicker"`
 	}
-	if err := json.Unmarshal(data, &settings); err != nil {
-		t.Fatal(err)
+	if err := json.Unmarshal([]byte(data), &settings); err != nil {
+		t.Fatalf("--settings is not inline JSON: %v", err)
 	}
 	for _, name := range []string{"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"} {
 		if got := agents.EnvironmentValue(command.Env, name); got != agents.RoutingModel {
@@ -57,13 +57,8 @@ func TestBuildClaudeAgentCommandUsesTemporaryStatusLine(t *testing.T) {
 	if !strings.Contains(settings.StatusLine.Command, " agent-status --claude") {
 		t.Fatalf("status command = %q", settings.StatusLine.Command)
 	}
-	if strings.Contains(string(data), "dari_route") {
+	if strings.Contains(data, "dari_route") {
 		t.Fatal("Claude status settings contain the secret key")
-	}
-
-	command.Cleanup()
-	if _, err := os.Stat(settingsPath); !os.IsNotExist(err) {
-		t.Fatalf("temporary settings still exist: %v", err)
 	}
 }
 

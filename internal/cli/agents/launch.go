@@ -58,6 +58,13 @@ type Command struct {
 	Run     func(*exec.Cmd) error
 }
 
+// CanReplace reports whether the launcher can hand its process over to the
+// agent: the launch keeps no state in the launcher, such as a cleanup for its
+// files or a proxy it serves, and nothing wraps the process.
+func (c Command) CanReplace() bool {
+	return CanReplaceProcess && c.Cleanup == nil && c.Run == nil
+}
+
 // InsertBeforeDoubleDash adds arguments before any `--`, so they are read as
 // options rather than passed through to a prompt.
 func InsertBeforeDoubleDash(args, inserted []string) []string {

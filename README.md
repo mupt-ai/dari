@@ -242,6 +242,10 @@ go build ./cmd/dari
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for contributor guidance.
 
+## License
+
+[Apache-2.0](LICENSE) © 2026 Mupt AI.
+
 ---
 
 <p align="center">

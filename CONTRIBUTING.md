@@ -16,5 +16,4 @@ Keep pull requests focused and include tests when behavior changes.
 
 ## License
 
-No standalone license file is included here yet. Until one is added, public
-visibility does not grant open-source license rights.
+Contributions are licensed under [Apache-2.0](LICENSE).

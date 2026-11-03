@@ -322,7 +322,7 @@ func TestRootHelpListsAgentLaunchers(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"claude", "codex", "opencode", "pi"} {
+	for _, name := range []string{"claude", "codex", "opencode", "pi", "muse", "openclaw", "hermes"} {
 		if !strings.Contains(output.String(), "  "+name+" ") {
 			t.Errorf("help does not list %s", name)
 		}

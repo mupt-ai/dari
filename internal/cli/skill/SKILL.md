@@ -144,16 +144,18 @@ The response is OpenAI-compatible and includes `dari_routing` metadata with the 
 
 ## Launch A Coding Agent
 
-Use an installed local coding agent through Dari without editing the agent's configuration:
+Use an installed local coding agent through Dari:
 
 ```bash
 dari claude
 dari codex
 dari opencode
 dari pi
+dari openclaw
+dari hermes
 ```
 
-Launchers use server-owned router configuration and per-user subscription preferences, not a machine-local setup marker. Codex, Pi, OpenCode, and Muse reuse the organization's configured default router; only an empty default router opens the model picker. Claude discovers its existing personal or managed router by its server-side client key and opens model setup only if that profile is absent. Model changes belong in the dashboard or `dari router update`; moving to another computer must not replace models with launcher presets. Set `DARI_ROUTING_API_KEY` to supply the key explicitly. Set `DARI_GATEWAY_URL` and `DARI_GATEWAY_KEY` to launch through a self-hosted gateway instead; the launch then makes no hosted API calls. Every following argument is forwarded to the selected agent, and Dari's provider/model settings take precedence:
+Launchers use server-owned router configuration and per-user subscription preferences, not a machine-local setup marker. Codex, Pi, OpenCode, OpenClaw, Hermes Agent, and Muse reuse the organization's configured default router; only an empty default router opens the model picker. Claude discovers its existing personal or managed router by its server-side client key and opens model setup only if that profile is absent. Model changes belong in the dashboard or `dari router update`; moving to another computer must not replace models with launcher presets. Set `DARI_ROUTING_API_KEY` to supply the key explicitly. Set `DARI_GATEWAY_URL` and `DARI_GATEWAY_KEY` to launch through a self-hosted gateway instead; the launch then makes no hosted API calls. Every following argument is forwarded to the selected agent, and Dari's provider/model settings take precedence:
 
 ```bash
 dari claude --print "Review this diff"
@@ -162,7 +164,7 @@ dari opencode run "Explain this repository"
 dari pi -p "Review this repository"
 ```
 
-All four launchers show the serving model, thinking level, routing lease turns (or `pinned` on session-pinned routers), and prompt-cache warmth (warm when the last response read cache within five minutes) using shared formatting. OpenCode and Pi use the default router and can connect either a ChatGPT or Claude Code subscription. OpenCode gets session-local config through `OPENCODE_CONFIG_CONTENT` and a private `--standalone` server, so `--server` and `pair` are rejected; use `dari opencode serve` for other clients. Codex 0.162.1+ uses a session-local loopback bridge for interactive sessions: status changes only UI display state, never saved session names. Resume with `dari codex resume`, not the temporary remote URL Codex prints on exit. Set `DARI_CODEX_STATUS=0` to disable the bridge; explicit `--remote` or `--profile`/`-p` and non-interactive commands bypass it.
+All four launchers show the serving model, thinking level, routing lease turns (or `pinned` on session-pinned routers), and prompt-cache warmth (warm when the last response read cache within five minutes) using shared formatting. OpenCode and Pi use the default router and can connect either a ChatGPT or Claude Code subscription. OpenCode gets session-local config through `OPENCODE_CONFIG_CONTENT` and a private `--standalone` server, so `--server` and `pair` are rejected; use `dari opencode serve` for other clients. Codex 0.162.1+ uses a session-local loopback bridge for interactive sessions: status changes only UI display state, never saved session names. Resume with `dari codex resume`, not the temporary remote URL Codex prints on exit. Set `DARI_CODEX_STATUS=0` to disable the bridge; explicit `--remote` or `--profile`/`-p` and non-interactive commands bypass it. OpenClaw and Hermes Agent run every session through a long-lived gateway, so `dari openclaw` and `dari hermes` write Dari into the agent's own config (as `--setup` does) before launching; `--remove-setup` restores the previous default model.
 
 ## Inspect, Update, Delete
 

@@ -31,9 +31,9 @@ var (
 	museSubscription = agentSubscriptionProvider{"meta_muse", "Muse Code", "meta", "Meta", true}
 )
 
-// OpenCode and Pi use the organization's default router, but their
-// subscription decision is per user and launcher, not implied by a cached
-// router or login. It reports how many API keys the Accounts page connected.
+// OpenCode, Pi, OpenClaw, and Hermes Agent use the organization's default
+// router, but their subscription decision is per user and launcher, not
+// implied by a cached router or login. It reports how many API keys the Accounts page connected.
 func ensureDefaultAgentSubscription(ctx context.Context, agent string, client *api.Client, router agentRouter, stdin io.Reader, stderr io.Writer) (int, error) {
 	optedOut, err := agentSubscriptionOptedOut(ctx, client, agent)
 	if err != nil {

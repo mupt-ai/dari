@@ -42,6 +42,8 @@ var agentSetups = map[string]agentSetup{
 	"muse":     {label: "Muse Code", suggestion: "muse", subscriptions: []agentSubscriptionProvider{museSubscription}, routerKey: "dari-cli:muse-code", codingAgent: "muse_code"},
 	"opencode": {label: "OpenCode", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}, codingAgent: "opencode"},
 	"pi":       {label: "Pi", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}, codingAgent: "pi"},
+	"openclaw": {label: "OpenClaw", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}, codingAgent: "openclaw"},
+	"hermes":   {label: "Hermes Agent", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}, codingAgent: "hermes"},
 }
 
 // ownsRouter reports whether the agent sets up a router of its own.

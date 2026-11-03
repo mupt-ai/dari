@@ -100,7 +100,7 @@ func TestRouterAssignAgentCommand(t *testing.T) {
 	cmd.SetArgs([]string{"--api-url", server.URL, "router", "assign-agent", "rtr_123", "cursor"})
 	cmd.SetErr(io.Discard)
 	err := captureStdout(t, func() error { return cmd.Execute() })
-	if err == nil || !strings.Contains(err.Error(), "claude, codex, muse, opencode, pi") {
+	if err == nil || !strings.Contains(err.Error(), "claude, codex, hermes, muse, openclaw, opencode, pi") {
 		t.Fatalf("unknown agent error = %v", err)
 	}
 }

@@ -332,3 +332,55 @@ func TestGatewayModelsListTheGatewaysRouter(t *testing.T) {
 		t.Errorf("menu = %q, want %q", models.Menu(), want)
 	}
 }
+
+// Hermes runs every session in a shared gateway, so a launch writes Dari into
+// Hermes's own config before starting it, and forwards its arguments as is.
+func TestGatewayHermesLaunchWritesSetupBeforeStarting(t *testing.T) {
+	gateway := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(gatewayCatalog))
+	})))
+	defer gateway.Close()
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gateway.URL)
+	if runtime.GOOS == "windows" {
+		t.Skip("fake agent executable is a shell script")
+	}
+	dir := t.TempDir()
+	config := filepath.Join(dir, "config.yaml")
+	record := filepath.Join(dir, "launch.txt")
+	script := filepath.Join(dir, "hermes")
+	body := `#!/bin/sh
+if [ "$1 $2" = "config path" ]; then echo "` + config + `"; exit 0; fi
+[ -f "` + config + `" ] && echo configured > "` + record + `"
+for arg in "$@"; do printf 'ARG %s\n' "$arg" >> "` + record + `"; done
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DARI_HERMES_PATH", script)
+
+	var stderr strings.Builder
+	code := runAgentLaunch(context.Background(), agentLaunch{name: "hermes", args: []string{"chat", "-q", "hello"}}, strings.NewReader(""), io.Discard, &stderr)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	data, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"provider: dari", "base_url: " + gateway.URL + "/v1", "api_key: " + gatewayTestKey} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("Hermes config missing %q:\n%s", want, data)
+		}
+	}
+	launched, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "configured\nARG chat\nARG -q\nARG hello\n"; string(launched) != want {
+		t.Fatalf("launch = %q, want %q", launched, want)
+	}
+	if !strings.Contains(stderr.String(), "`dari hermes --remove-setup` undoes it") {
+		t.Errorf("launch does not say it set Hermes up: %q", stderr.String())
+	}
+}

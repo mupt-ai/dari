@@ -39,6 +39,8 @@ var agentLaunchers = map[string]string{
 	"opencode": "Launch OpenCode through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
 	"pi":       "Launch Pi through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
 	"muse":     "Launch Muse Code through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
+	"openclaw": "Set OpenClaw up to route through Dari, then launch it; forward all following arguments (--connect manages subscriptions and provider keys, --setup only sets up, --remove-setup undoes it)",
+	"hermes":   "Set Hermes Agent up to route through Dari, then launch it; forward all following arguments (--connect manages subscriptions and provider keys, --setup only sets up, --remove-setup undoes it)",
 }
 
 // agentConnectFlag opens the subscription list before launching. Dari removes
@@ -130,6 +132,14 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
+	}
+
+	if launchSetsUpAgent[launch.name] && !agents.OnlyRequestsInfo(launch.args) {
+		if err := applyAgentSetup(ctx, launch.name, key, baseURL, models); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		agentStep(stderr, fmt.Sprintf("%s routes through Dari, starting on %s; `dari %s %s` undoes it", agentApps[launch.name].name, models.Default(), launch.name, agentRemoveSetupFlag))
 	}
 
 	command, err := buildAgentCommand(path, launch, key, baseURL, models)
@@ -393,6 +403,8 @@ func buildAgentCommand(path string, launch agentLaunch, key, baseURL string, mod
 		}
 	case "muse":
 		muse.Configure(&command, key, models)
+	case "openclaw", "hermes":
+		// Launches run on the setup written into the agent's own config.
 	default:
 		return agents.Command{}, fmt.Errorf("unsupported coding agent %q", launch.name)
 	}

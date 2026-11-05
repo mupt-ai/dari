@@ -21,7 +21,6 @@ func Configure(command *agents.Command, key, baseURL string, models agents.Model
 		"ANTHROPIC_BASE_URL":               baseURL,
 		"ANTHROPIC_AUTH_TOKEN":             key,
 		"ANTHROPIC_API_KEY":                "",
-		"CLAUDE_CODE_EFFORT_LEVEL":         "auto",
 		"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":   "1000000",
 		"CLAUDE_CODE_SUBAGENT_MODEL":       models.Default(),

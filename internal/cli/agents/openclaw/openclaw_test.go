@@ -80,7 +80,8 @@ func TestSetupMakesDariTheDefaultAndRemoveRestoresIt(t *testing.T) {
 	if dari.BaseURL != "https://routing.dari.dev/rtr_1/v1" || dari.APIKey != "dari_key" || dari.API != "openai-completions" {
 		t.Fatalf("provider = %+v", dari)
 	}
-	if len(dari.Models) != 2 || dari.Models[0].ID != "dari/routing" || dari.Models[0].Reasoning || !dari.Models[1].Reasoning || !dari.Models[0].Compat["sendSessionAffinityHeaders"] {
+	if len(dari.Models) != 2 || dari.Models[0].ID != "dari/routing" || dari.Models[0].Reasoning || !dari.Models[1].Reasoning || !dari.Models[0].Compat["sendSessionAffinityHeaders"] ||
+		dari.Models[0].Compat["supportsReasoningEffort"] || !dari.Models[1].Compat["supportsReasoningEffort"] {
 		t.Fatalf("models = %+v", dari.Models)
 	}
 	// Only the primary changes, so fallbacks the user configured remain.

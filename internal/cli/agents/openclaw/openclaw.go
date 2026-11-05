@@ -99,14 +99,21 @@ func provider(baseURL, key string, models agents.Models) map[string]any {
 		if model == agents.RoutingModel {
 			name = "Dari Router"
 		}
+		reasoning := model != agents.RoutingModel
 		offered = append(offered, map[string]any{
 			"id":            model,
 			"name":          name,
-			"reasoning":     model != agents.RoutingModel,
+			"reasoning":     reasoning,
 			"input":         []string{"text", "image"},
 			"contextWindow": 1_000_000,
 			"maxTokens":     128_000,
-			"compat":        map[string]bool{"supportsPromptCacheKey": true, "sendSessionAffinityHeaders": true},
+			// OpenClaw sends a chosen thinking level only to a model that
+			// claims reasoning_effort support; the router picks it for routing.
+			"compat": map[string]bool{
+				"supportsPromptCacheKey":     true,
+				"sendSessionAffinityHeaders": true,
+				"supportsReasoningEffort":    reasoning,
+			},
 		})
 	}
 	return map[string]any{

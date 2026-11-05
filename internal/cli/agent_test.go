@@ -152,7 +152,6 @@ func TestBuildAgentCommandKeepsDariSettingsLast(t *testing.T) {
 				"ANTHROPIC_BASE_URL":               routingBaseURL,
 				"ANTHROPIC_AUTH_TOKEN":             "dari_route",
 				"ANTHROPIC_API_KEY":                "",
-				"CLAUDE_CODE_EFFORT_LEVEL":         "auto",
 				"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
 				"CLAUDE_CODE_MAX_CONTEXT_TOKENS":   "1000000",
 				"CLAUDE_CODE_SUBAGENT_MODEL":       agents.RoutingModel,

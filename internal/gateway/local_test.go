@@ -12,13 +12,16 @@ import (
 	"testing"
 )
 
-// The local gateway serves with the settings' keys over anything in the
-// launching shell, from its own directory, and with a config file only once
-// the models commands wrote one.
+// The local gateway serves only the settings' keys, never a provider key or
+// gateway setting from the launching shell, from its own directory, and with a
+// config file only once the models commands wrote one.
 func TestCommandEnvironment(t *testing.T) {
 	t.Setenv("DARI_CONFIG_DIR", t.TempDir())
+	t.Setenv("PATH", "/usr/bin")
 	t.Setenv("ANTHROPIC_API_KEY", "from-shell")
 	t.Setenv("OPENAI_API_KEY", "from-shell")
+	t.Setenv("OPENROUTER_API_KEY", "from-shell")
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "from-shell")
 	t.Setenv("DARI_GATEWAY_CONFIG", "/elsewhere/dari-gateway.yaml")
 	t.Setenv("DARI_AUTO_ROUTING_API_KEY", "from-shell")
 	settings := Settings{Mode: ModeLocal, LocalKey: "gw-key", ProviderKeys: map[string]string{"ANTHROPIC_API_KEY": "saved"}}
@@ -28,12 +31,15 @@ func TestCommandEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir, _ := Dir()
-	for _, want := range []string{"DARI_GATEWAY_KEYS=gw-key", "ANTHROPIC_API_KEY=saved", "OPENAI_API_KEY=from-shell", "PORT=7340"} {
+	for _, want := range []string{"DARI_GATEWAY_KEYS=gw-key", "ANTHROPIC_API_KEY=saved", "PATH=/usr/bin", "PORT=7340"} {
 		if !slices.Contains(cmd.Env, want) {
 			t.Errorf("env missing %s", want)
 		}
 	}
-	for _, unwanted := range []string{"ANTHROPIC_API_KEY=from-shell", "DARI_GATEWAY_CONFIG=/elsewhere/dari-gateway.yaml", "DARI_AUTO_ROUTING_API_KEY=from-shell"} {
+	for _, unwanted := range []string{
+		"ANTHROPIC_API_KEY=from-shell", "OPENAI_API_KEY=from-shell", "OPENROUTER_API_KEY=from-shell",
+		"ANTHROPIC_AUTH_TOKEN=from-shell", "DARI_GATEWAY_CONFIG=/elsewhere/dari-gateway.yaml", "DARI_AUTO_ROUTING_API_KEY=from-shell",
+	} {
 		if slices.Contains(cmd.Env, unwanted) {
 			t.Errorf("env has %s", unwanted)
 		}

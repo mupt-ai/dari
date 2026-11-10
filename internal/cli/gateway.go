@@ -25,11 +25,12 @@ const (
 	gatewayKeyEnv = "DARI_GATEWAY_KEY"
 )
 
-// A gateway has no saved credentials: it reads each model provider's API key
-// from the standard variable in its own environment.
-var errGatewayProviderKeys = fmt.Errorf("a gateway reads provider keys from its own environment, such as " +
+// A self-hosted gateway reads each model provider's API key from the standard
+// variable in its own environment; the local gateway serves only the keys
+// saved on its Accounts page, never ones exported in the shell.
+var errGatewayProviderKeys = fmt.Errorf("a self-hosted gateway reads provider keys from its own environment, such as " +
 	"ANTHROPIC_API_KEY, OPENAI_API_KEY, META_API_KEY, OPENROUTER_API_KEY, or AI_GATEWAY_API_KEY for Vercel AI Gateway; " +
-	"for the local gateway, export them and run `dari gateway restart`, or run `dari gateway setup` to save keys on the hosted Dari API")
+	"for the local gateway, save them on the Accounts page (`dari claude --connect`), or run `dari gateway setup` to save keys on the hosted Dari API")
 
 type gatewayConfig struct {
 	url string

@@ -30,9 +30,19 @@ func LocalURL() string {
 	return "http://127.0.0.1:" + strconv.Itoa(LocalPort)
 }
 
-// launchedAgentEnv are variables a Dari launch sets for Claude Code to reach
-// Dari, which the gateway would read as Anthropic credentials.
-var launchedAgentEnv = []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"}
+// inheritedEnv are the only variables a local gateway takes from the shell
+// that starts it: what a process needs to run and reach the network. Provider
+// credentials are never among them, so a key exported in the shell for some
+// other tool is never billed; the local gateway serves only the keys saved in
+// its settings and its connected subscriptions. Names are matched
+// case-insensitively, as Windows treats them.
+var inheritedEnv = []string{
+	"PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "TZ",
+	"SSL_CERT_FILE", "SSL_CERT_DIR", "NODE_EXTRA_CA_CERTS",
+	"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+	"SYSTEMROOT", "WINDIR", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA",
+	"DARI_AUTO_ROUTING_URL",
+}
 
 type localPaths struct {
 	binary, db, config, log, pid string
@@ -206,19 +216,12 @@ func Command(settings Settings, out io.Writer) (*exec.Cmd, error) {
 		env[name] = value
 	}
 	cmd := exec.Command(p.binary)
-	// Provider API keys come from the environment the gateway starts in. A
-	// shell inside a Dari-launched agent also carries the agent's routing
-	// variables, which point at Dari rather than the provider.
-	insideLaunch := os.Getenv("DARI_ROUTING_API_KEY_FROM_LAUNCH") != ""
+	cmd.Env = []string{}
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
-		if _, set := env[name]; set || name == "DARI_GATEWAY_CONFIG" || name == "DARI_AUTO_ROUTING_API_KEY" {
-			continue
+		if slices.Contains(inheritedEnv, strings.ToUpper(name)) {
+			cmd.Env = append(cmd.Env, entry)
 		}
-		if insideLaunch && slices.Contains(launchedAgentEnv, name) {
-			continue
-		}
-		cmd.Env = append(cmd.Env, entry)
 	}
 	for name, value := range env {
 		cmd.Env = append(cmd.Env, name+"="+value)

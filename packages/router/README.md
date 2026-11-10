@@ -160,7 +160,7 @@ const router = createRouter({
 });
 ```
 
-- It requires a Dari API key with billing enabled. Each selection call is billed to your organization.
+- It requires a Dari API key with billing enabled. Each selection call costs $0.01, billed to your organization.
 - The selection request sends the conversation and eligible candidates to Dari. Provider credentials, request metadata, and user identity are not sent. Readable message content, tool arguments and results, and readable reasoning may be. Review this before enabling it for sensitive traffic.
 - Provider calls still happen in your process, with your credentials.
 

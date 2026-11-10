@@ -22,7 +22,8 @@ type Status struct {
 	RequestID string `json:"request_id"`
 }
 
-// A self-hosted gateway (GatewayURLEnv) has no Activity dashboard to link to.
+// Requests through a gateway (NoActivityLinkEnv, or GatewayURLEnv from
+// launches before it) never reach the Activity dashboard, so they get no link.
 const dashboardBaseURL = "https://app.dari.dev"
 
 func (s Status) String() string {
@@ -44,7 +45,7 @@ func (s Status) String() string {
 		}
 		parts = append(parts, fmt.Sprintf("lease %d %s left", turns, unit))
 	}
-	if requestID := statusLabel(s.RequestID); requestID != "" && os.Getenv(GatewayURLEnv) == "" {
+	if requestID := statusLabel(s.RequestID); requestID != "" && os.Getenv(NoActivityLinkEnv) == "" && os.Getenv(GatewayURLEnv) == "" {
 		parts = append(parts, dashboardBaseURL+"/activity/conversations/"+url.PathEscape(requestID))
 	}
 	return strings.Join(parts, " · ")

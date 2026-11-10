@@ -29,7 +29,7 @@ func TestRouterModelsFollowTheRoutersCatalog(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"models": models})
 		}))
-		got, err := routerModels(t.Context(), server.URL+"/rtr_1", "dak_routing")
+		got, err := routerModels(t.Context(), server.URL+"/rtr_1", "dak_routing", "")
 		server.Close()
 		if err != nil {
 			t.Fatal(err)

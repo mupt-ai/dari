@@ -13,7 +13,9 @@ test("Muse Code lists Dari Routing and the router's models, routing as the defau
 });
 
 test("without the Autorouting plan the list starts on the router's first model", () => {
-  expect(museCodeModelsResponse({ enabled_models: ["meta/muse-spark-1.3"], autorouting_enabled: false })).toEqual({
-    data: [{ id: "dari/model/meta/muse-spark-1.3", display_label: "meta/muse-spark-1.3", is_default: true }],
-  });
+  for (const off of [{ autorouting_enabled: false }, { routing_listed: false }]) {
+    expect(museCodeModelsResponse({ enabled_models: ["meta/muse-spark-1.3"], ...off })).toEqual({
+      data: [{ id: "dari/model/meta/muse-spark-1.3", display_label: "meta/muse-spark-1.3", is_default: true }],
+    });
+  }
 });

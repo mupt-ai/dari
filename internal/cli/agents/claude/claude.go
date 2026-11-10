@@ -51,6 +51,13 @@ func pickerOptions(models agents.Models) []map[string]string {
 		}
 		options = append(options, map[string]string{"model": model, "label": label})
 	}
+	for _, id := range models.Unavailable {
+		provider, _, _ := strings.Cut(id, "/")
+		options = append(options, map[string]string{
+			"model": agents.ExplicitModelPrefix + id,
+			"label": id + " · needs an account or API key for " + provider,
+		})
+	}
 	return options
 }
 

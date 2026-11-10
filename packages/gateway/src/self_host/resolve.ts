@@ -36,6 +36,9 @@ export type SelfHostedResolverDeps = {
   }) => RouterPrefixHit[];
   // The provider's API key from its standard environment variable.
   providerApiKey: (provider: string) => Promise<string | undefined>;
+  // Dari Auto Routing chooses among models. Without it `dari/routing` serves
+  // the first available model, so model lists leave it out.
+  autoRouting: boolean;
   env: Record<string, string | undefined>;
   fetch: OAuthFetch;
 };
@@ -102,6 +105,7 @@ export async function resolveSelfHostedRouter(
     api_key_id: `gateway_key_${keyIndex + 1}`,
     attributed_user_id: SELF_HOSTED_USER_ID,
     enabled_models: models.map((model) => model.id),
+    routing_listed: deps.autoRouting,
     provider_keys: {},
     provider_key_sources: {},
     subscription_credential_ids: {},

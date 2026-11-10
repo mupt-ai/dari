@@ -5,6 +5,7 @@ import (
 	"github.com/mupt-ai/dari/internal/cli/agents"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -137,5 +138,26 @@ func TestClaudeStatusLineReadsDariRouting(t *testing.T) {
 		if got := render(stdin); got != tc.want {
 			t.Errorf("status = %q, want %q", got, tc.want)
 		}
+	}
+}
+
+// Claude Code's /model lists every model the user chose: ones no account or
+// API key serves yet come last, labeled with what they need, and never become
+// the default.
+func TestPickerListsEveryChosenModel(t *testing.T) {
+	models := agents.Models{
+		Enabled:     []string{"anthropic/claude-sonnet-5-5"},
+		Unavailable: []string{"openai/gpt-6.1-sol"},
+	}
+	got := pickerOptions(models)
+	want := []map[string]string{
+		{"model": "dari/model/anthropic/claude-sonnet-5-5", "label": "anthropic/claude-sonnet-5-5"},
+		{"model": "dari/model/openai/gpt-6.1-sol", "label": "openai/gpt-6.1-sol · needs an account or API key for openai"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pickerOptions = %v, want %v", got, want)
+	}
+	if models.Default() != "dari/model/anthropic/claude-sonnet-5-5" {
+		t.Fatalf("default = %q", models.Default())
 	}
 }

@@ -92,6 +92,15 @@ test("chat completions route to the first model with the configured endpoint key
   ]);
 });
 
+// Without Dari Auto Routing the model list offers only real models, while a
+// client still configured for dari/routing keeps being served (test above).
+test("without Dari Auto Routing the model list leaves out dari/routing", async () => {
+  const response = await fetch(`${baseUrl}/v1/models`, { headers: authorized() });
+  expect(response.status).toBe(200);
+  const body = await response.json() as { models: { slug: string }[] };
+  expect(body.models.map((model) => model.slug)).toEqual(["dari/model/local/model-a", "dari/model/local/model-b"]);
+});
+
 test("a failing provider fails the request without trying another model", async () => {
   upstreamCalls.length = 0;
   failingModels.add("model-a");

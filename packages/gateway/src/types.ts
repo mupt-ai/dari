@@ -170,4 +170,8 @@ export type ResolvedRouter = {
   // False when the organization is not on the Autorouting plan. A missing
   // value is treated as enabled.
   autorouting_enabled?: boolean;
+  // False when model lists leave out `dari/routing` while requests for it are
+  // still served: a self-hosted gateway without Dari Auto Routing serves the
+  // first available model for it. A missing value lists it.
+  routing_listed?: boolean;
 };

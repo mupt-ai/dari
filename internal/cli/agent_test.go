@@ -387,3 +387,19 @@ func TestPiCommandUsesSelectedRouter(t *testing.T) {
 		t.Fatalf("DARI_ROUTING_BASE_URL = %q", got)
 	}
 }
+
+// Only hosted routing URLs count as hosted, so gateway launches lose the
+// Activity link while hosted launches, including per-router paths, keep it.
+func TestHostedRouting(t *testing.T) {
+	for baseURL, want := range map[string]bool{
+		routingBaseURL:                      true,
+		agentRoutingBaseURL("rtr_123"):      true,
+		"http://127.0.0.1:7340":             false,
+		"https://gateway.example.com":       false,
+		"https://routing.dari.dev.evil.com": false,
+	} {
+		if got := hostedRouting(baseURL); got != want {
+			t.Errorf("hostedRouting(%q) = %v, want %v", baseURL, got, want)
+		}
+	}
+}

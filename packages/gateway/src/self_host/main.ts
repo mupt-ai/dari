@@ -59,6 +59,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   });
 
   const providerApiKey = async (provider: string) => (await piModels.getAuth(provider))?.auth.apiKey;
+  const autoRoutingKey = env.DARI_AUTO_ROUTING_API_KEY?.trim();
   const platform = createSelfHostedPlatform({
     config,
     gatewayKeys,
@@ -66,6 +67,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     prefixes,
     sessionPins,
     providerApiKey,
+    autoRouting: Boolean(autoRoutingKey),
     env,
     fetch,
   });
@@ -82,7 +84,6 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   }
   await checkConfiguredProviderKeys(config, (provider) =>
     configuredProviderApiKey({ config, providerApiKey, env }, provider));
-  const autoRoutingKey = env.DARI_AUTO_ROUTING_API_KEY?.trim();
   const selectorBackend: SelectorBackend = autoRoutingKey
     ? createAutoRoutingSelectorBackend({
         apiKey: autoRoutingKey,

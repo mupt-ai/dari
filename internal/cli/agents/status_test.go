@@ -50,15 +50,26 @@ func TestStatusSessionPinned(t *testing.T) {
 	}
 }
 
+// Only requests through hosted Dari reach the Activity dashboard, so only
+// they get a link.
 func TestStatusDashboardLink(t *testing.T) {
 	headers := http.Header{}
 	headers.Set("x-dari-selected-model", "m")
 	headers.Set("x-request-id", "req/1")
+	t.Setenv(NoActivityLinkEnv, "")
+	t.Setenv(GatewayURLEnv, "")
 	if got := StatusFromHeaders(headers).String(); got != "m · https://app.dari.dev/activity/conversations/req%2F1" {
 		t.Fatal(got)
 	}
-	t.Setenv(GatewayURLEnv, "http://127.0.0.1:8787")
-	if got := StatusFromHeaders(headers).String(); got != "m" {
-		t.Fatal(got)
+	for _, gateway := range []struct{ env, value string }{
+		{NoActivityLinkEnv, "1"},                 // a local or self-hosted gateway launch
+		{GatewayURLEnv, "http://127.0.0.1:8787"}, // launches before NoActivityLinkEnv
+	} {
+		t.Run(gateway.env, func(t *testing.T) {
+			t.Setenv(gateway.env, gateway.value)
+			if got := StatusFromHeaders(headers).String(); got != "m" {
+				t.Fatal(got)
+			}
+		})
 	}
 }

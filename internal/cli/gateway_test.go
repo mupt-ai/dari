@@ -33,6 +33,8 @@ func setGatewayEnv(t *testing.T, gatewayURL string) {
 	t.Setenv("DARI_API_KEY", "")
 	t.Setenv("DARI_GATEWAY_URL", gatewayURL)
 	t.Setenv("DARI_GATEWAY_KEY", gatewayTestKey)
+	// Launches set this in the process environment; restore it after the test.
+	t.Setenv(agents.NoActivityLinkEnv, "")
 }
 
 // hostedAPIMustNotBeCalled points the hosted API at a server that fails the
@@ -204,6 +206,10 @@ func TestGatewayLaunchesMakeNoHostedCalls(t *testing.T) {
 			if env[agents.RoutingAPIKeyEnv] != gatewayTestKey {
 				t.Errorf("%s = %q, want the gateway key", agents.RoutingAPIKeyEnv, env[agents.RoutingAPIKeyEnv])
 			}
+			// Gateway requests never reach the Activity dashboard.
+			if env[agents.NoActivityLinkEnv] != "1" {
+				t.Errorf("%s = %q, want 1", agents.NoActivityLinkEnv, env[agents.NoActivityLinkEnv])
+			}
 			tc.check(t, env, args)
 
 			mu.Lock()
@@ -332,7 +338,7 @@ func TestGatewayModelsListTheGatewaysRouter(t *testing.T) {
 	})))
 	defer gateway.Close()
 
-	models, err := routerModels(context.Background(), gateway.URL, gatewayTestKey)
+	models, err := routerModels(context.Background(), gateway.URL, gatewayTestKey, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,5 +443,51 @@ func TestGatewayLaunchWithoutCredentialsSaysHowToConnect(t *testing.T) {
 	code := runAgentLaunch(context.Background(), agentLaunch{name: "claude", args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
 	if code != 1 || !strings.Contains(stderr.String(), "dari claude --connect") {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+}
+
+// A gateway that does not list dari/routing (no Dari Auto Routing) starts the
+// agent on its first model and says so, as a hosted router without the
+// Autorouting plan does.
+func TestGatewayWithoutRoutingStartsOnFirstModel(t *testing.T) {
+	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/model/anthropic/claude-sonnet-5-5"},{"slug":"dari/model/anthropic/claude-opus-5-5"}]}`))
+	})))
+	defer gw.Close()
+
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gw.URL)
+	record := fakeAgentExecutable(t, "claude")
+
+	var stderr strings.Builder
+	code := runAgentLaunch(context.Background(), agentLaunch{name: "claude", args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "Starting on dari/model/anthropic/claude-sonnet-5-5. Switch models with /model.") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+	_, args := readLaunchRecord(t, record)
+	if !slices.Contains(args, "dari/model/anthropic/claude-sonnet-5-5") || slices.Contains(args, "dari/routing") {
+		t.Errorf("Claude args = %q, want the first model and no dari/routing", args)
+	}
+}
+
+// The launcher names its agent when it lists models, so a Claude Code or Muse
+// Code plan counts toward the list; other agents name none.
+func TestRouterModelsNamesTheAgent(t *testing.T) {
+	var got string
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("x-dari-client-harness")
+		_, _ = w.Write([]byte(gatewayCatalog))
+	}))
+	defer gw.Close()
+	for agent, want := range map[string]string{"claude": "claude_code", "muse": "muse_code", "codex": "", "pi": ""} {
+		if _, err := routerModels(context.Background(), gw.URL, gatewayTestKey, agent); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s: x-dari-client-harness = %q, want %q", agent, got, want)
+		}
 	}
 }

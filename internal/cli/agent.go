@@ -134,6 +134,17 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		}
 	}
 
+	// Status lines render in the agent and in this launcher (Codex, Muse); both
+	// read this, and a hosted launch clears one inherited from a gateway session.
+	noActivityLink := ""
+	if !hostedRouting(baseURL) {
+		noActivityLink = "1"
+	}
+	if err := os.Setenv(agents.NoActivityLinkEnv, noActivityLink); err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+
 	if launchSetsUpAgent[launch.name] && !agents.OnlyRequestsInfo(launch.args) {
 		if err := applyAgentSetup(ctx, launch.name, key, baseURL, models); err != nil {
 			fmt.Fprintln(stderr, err)
@@ -219,6 +230,7 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 		if err != nil {
 			return "", "", agents.Models{}, err
 		}
+		models = reportGatewayModels(ctx, gateway, launch.name, models, stderr)
 		return gateway.key, gateway.url, models, nil
 	}
 	// Onboarding pages follow one another on the alternate screen; their
@@ -239,7 +251,10 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 		return "", "", agents.Models{}, err
 	}
 	baseURL := agentRoutingBaseURL(routerID)
-	models, err := routerModels(ctx, baseURL, access.key)
+	// Hosted routers fall back to managed keys for a plan's provider, so they
+	// list its models for every client; naming the agent there would also
+	// drop them while the plan is held. Only gateways need the agent.
+	models, err := routerModels(ctx, baseURL, access.key, "")
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
@@ -426,6 +441,12 @@ func buildAgentCommand(path string, launch agentLaunch, key, baseURL string, mod
 		return agents.Command{}, fmt.Errorf("unsupported coding agent %q", launch.name)
 	}
 	return command, nil
+}
+
+// hostedRouting reports whether baseURL is hosted Dari routing, whose
+// requests appear on the Activity dashboard.
+func hostedRouting(baseURL string) bool {
+	return baseURL == routingBaseURL || strings.HasPrefix(baseURL, routingBaseURL+"/")
 }
 
 func agentRoutingBaseURL(routerID string) string {

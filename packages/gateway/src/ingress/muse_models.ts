@@ -10,10 +10,10 @@ import type { ResolvedRouter } from "../types.js";
  * leads it only on the Autorouting plan.
  */
 export function museCodeModelsResponse(
-  router: Pick<ResolvedRouter, "enabled_models" | "autorouting_enabled">,
+  router: Pick<ResolvedRouter, "enabled_models" | "autorouting_enabled" | "routing_listed">,
 ): Record<string, unknown> {
   const ids = [
-    ...(router.autorouting_enabled === false ? [] : ["dari/routing"]),
+    ...(router.autorouting_enabled === false || router.routing_listed === false ? [] : ["dari/routing"]),
     ...router.enabled_models.map((model) => `dari/model/${model}`),
   ];
   return {

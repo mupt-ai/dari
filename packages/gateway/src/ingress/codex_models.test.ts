@@ -53,10 +53,14 @@ test("Codex lists each enabled model as an explicit dari/model slug after dari/r
   expect(models[0]!.input_modalities).toEqual(["text", "image"]);
 });
 
+// Without the Autorouting plan, or on a self-hosted gateway without Dari Auto
+// Routing, dari/routing would only serve the first model.
 test("routers without autorouting list only their explicit models", () => {
-  const response = codexModelsResponse(
-    { enabled_models: ["bounded"], model_configs: { bounded: config }, autorouting_enabled: false },
-    () => false,
-  );
-  expect((response.models as Array<Record<string, unknown>>).map((model) => model.slug)).toEqual(["dari/model/bounded"]);
+  for (const off of [{ autorouting_enabled: false }, { routing_listed: false }]) {
+    const response = codexModelsResponse(
+      { enabled_models: ["bounded"], model_configs: { bounded: config }, ...off },
+      () => false,
+    );
+    expect((response.models as Array<Record<string, unknown>>).map((model) => model.slug)).toEqual(["dari/model/bounded"]);
+  }
 });

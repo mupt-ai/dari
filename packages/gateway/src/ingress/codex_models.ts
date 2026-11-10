@@ -90,12 +90,12 @@ function codexCatalogEntry(args: CodexCatalogEntry): Record<string, unknown> {
    Codex's /model menu can switch to it. The `dari` launchers build every
    agent's model menu from this list. */
 export function codexModelsResponse(
-  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled">,
+  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed">,
   imageInputFor: (model: string) => boolean
 ): Record<string, unknown> {
   return {
     models: [
-      ...(router.autorouting_enabled === false ? [] : [codexCatalogEntry({
+      ...(router.autorouting_enabled === false || router.routing_listed === false ? [] : [codexCatalogEntry({
         slug: CANONICAL_ROUTER_MODEL,
         displayName: "Dari Routing",
         description: "Routes Codex HTTP Responses requests through the configured Dari model router.",

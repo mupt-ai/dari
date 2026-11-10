@@ -11,7 +11,11 @@ import (
 const (
 	RoutingAPIKeyEnv = "DARI_ROUTING_API_KEY"
 	GatewayURLEnv    = "DARI_GATEWAY_URL"
-	RoutingModel     = "dari/routing"
+	// NoActivityLinkEnv is set by a launch whose requests do not go through
+	// hosted Dari, such as one through a local or self-hosted gateway: the
+	// Activity dashboard never sees them, so status lines leave out its link.
+	NoActivityLinkEnv = "DARI_NO_ACTIVITY_LINK"
+	RoutingModel      = "dari/routing"
 	// ExplicitModelPrefix names one enabled model, served without routing.
 	ExplicitModelPrefix = "dari/model/"
 )
@@ -22,6 +26,10 @@ const (
 type Models struct {
 	Routing bool
 	Enabled []string
+	// Unavailable are models the user chose that no connected account or API
+	// key serves yet. They are not in Menu; agents whose picker takes labels
+	// list them with one, so every chosen model is visible.
+	Unavailable []string
 }
 
 // Default is the model a launch starts on: routing when it is available,

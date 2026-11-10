@@ -96,7 +96,7 @@ var gatewayModeDone = map[gateway.Mode]string{
 
 // checkSelfHostedGateway confirms a self-hosted gateway accepts key.
 func checkSelfHostedGateway(ctx context.Context, url, key string) error {
-	if _, err := routerModels(ctx, url, key); err != nil && !errors.Is(err, errNoProviderCredentials) {
+	if _, err := routerModels(ctx, url, key, ""); err != nil && !errors.Is(err, errNoProviderCredentials) {
 		return fmt.Errorf("the gateway did not accept this key: %v", err)
 	}
 	return nil
@@ -324,13 +324,13 @@ func gatewayAgentModels(ctx context.Context, gw *gatewayConfig, launch agentLaun
 			return agents.Models{}, err
 		}
 	}
-	models, err := routerModels(ctx, gw.url, gw.key)
+	models, err := routerModels(ctx, gw.url, gw.key, launch.name)
 	if errors.Is(err, errNoProviderCredentials) && agentInputIsTerminal(stdin) && !launch.connect {
 		agentStep(stderr, "Connect an account to start")
 		if err := manageGatewayAccounts(ctx, gw, launch.name, stdin, stderr); err != nil {
 			return agents.Models{}, err
 		}
-		models, err = routerModels(ctx, gw.url, gw.key)
+		models, err = routerModels(ctx, gw.url, gw.key, launch.name)
 	}
 	// A local gateway's first launch chooses its models, as a hosted
 	// router's first launch does.
@@ -338,7 +338,7 @@ func gatewayAgentModels(ctx context.Context, gw *gatewayConfig, launch agentLaun
 		if err := chooseLocalGatewayModels(ctx, gw, stdin, stderr); err != nil {
 			return agents.Models{}, err
 		}
-		models, err = routerModels(ctx, gw.url, gw.key)
+		models, err = routerModels(ctx, gw.url, gw.key, launch.name)
 	}
 	return models, err
 }
@@ -532,4 +532,35 @@ func position(ids []string, id string) int {
 		return i
 	}
 	return len(ids)
+}
+
+// reportGatewayModels says what a gateway launch starts on. Without Dari
+// Auto Routing it starts on the first model, as a hosted router without the
+// Autorouting plan does. On a local gateway it also adds the chosen models no
+// connected account or API key serves yet, so the agent can list every chosen
+// model, and names them.
+func reportGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, models agents.Models, stderr io.Writer) agents.Models {
+	if !models.Routing && len(models.Enabled) > 0 {
+		hint := "Switch models with /model"
+		if gw.local {
+			hint += ", or turn on auto-routing with `dari gateway auto-routing <dari-api-key>`"
+		}
+		agentPrintln(stderr, fmt.Sprintf("Starting on %s. %s.", models.Default(), hint))
+	}
+	if !gw.local {
+		return models
+	}
+	chosen, err := localGatewayModels(ctx)
+	if err != nil {
+		return models
+	}
+	for _, model := range chosen {
+		if !slices.Contains(models.Enabled, model.ID) {
+			models.Unavailable = append(models.Unavailable, model.ID)
+		}
+	}
+	if len(models.Unavailable) > 0 {
+		agentPrintln(stderr, fmt.Sprintf("Not available until their provider has an account or API key: %s. Connect one with `dari %s --connect`.", strings.Join(models.Unavailable, ", "), agent))
+	}
+	return models
 }

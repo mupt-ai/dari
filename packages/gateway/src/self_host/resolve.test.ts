@@ -13,6 +13,7 @@ const FUTURE = new Date(Date.now() + 24 * 60 * 60_000);
 function deps(overrides: {
   apiKeys?: Record<string, string>;
   config?: unknown;
+  autoRouting?: boolean;
 } = {}): SelfHostedResolverDeps & { subscriptions: SubscriptionStore } {
   return {
     config: parseGatewayConfig(overrides.config ?? {
@@ -29,6 +30,7 @@ function deps(overrides: {
     subscriptions: new SubscriptionStore(new Database(":memory:")),
     prefixHits: () => [],
     providerApiKey: async (provider) => overrides.apiKeys?.[provider],
+    autoRouting: overrides.autoRouting ?? false,
     env: {},
     fetch: async () => {
       throw new Error("unexpected OAuth request");
@@ -234,4 +236,12 @@ describe("parseGatewayConfig", () => {
       providers: {},
     });
   });
+});
+
+// Without Dari Auto Routing, dari/routing only serves the first model, so
+// model lists leave it out; with it, they offer it.
+test("routing is listed only with Dari Auto Routing", async () => {
+  const apiKeys = { anthropic: "sk-ant", openai: "sk-openai" };
+  expect((await resolveSelfHostedRouter(deps({ apiKeys }), request())).routing_listed).toBe(false);
+  expect((await resolveSelfHostedRouter(deps({ apiKeys, autoRouting: true }), request())).routing_listed).toBe(true);
 });

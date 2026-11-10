@@ -1,4 +1,11 @@
-import canonicalIds from "./canonical_model_ids.json" with { type: "json" };
+import canonicalModels from "./canonical_models.json" with { type: "json" };
 
-/** The canonical model ids Dari serves, from the monorepo's router catalog. */
-export const CANONICAL_MODEL_IDS: readonly string[] = canonicalIds;
+export type CanonicalModel = {
+  id: string;
+  name: string;
+  // The default provider's accepted thinking levels.
+  thinking_levels: string[];
+};
+
+/** The canonical models Dari serves, from the monorepo's router catalog. */
+export const CANONICAL_MODELS: readonly CanonicalModel[] = canonicalModels;

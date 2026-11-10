@@ -421,25 +421,34 @@ func chooseLocalGatewayModels(ctx context.Context, gw *gatewayConfig, stdin io.R
 		models = append(models, agentModel{ID: model.ID, DisplayName: model.Name, Provider: model.Provider, SupportedLevels: model.ThinkingLevels})
 	}
 	// Only Dari's canonical models are offered, as on a hosted router. A
-	// canonical model the bundled catalog lacks is still served by the gateway,
-	// so it is offered by id.
+	// canonical model newer than the bundled catalog is still served by the
+	// gateway, so it is offered with Dari's own name and thinking levels.
 	canonicalRaw, err := gateway.CanonicalModels(ctx, cliVersion)
 	if err != nil {
 		return err
 	}
-	var canonical []string
+	var canonical []struct {
+		ID             string   `json:"id"`
+		Name           string   `json:"name"`
+		ThinkingLevels []string `json:"thinking_levels"`
+	}
 	if err := json.Unmarshal(canonicalRaw, &canonical); err != nil {
 		return fmt.Errorf("read the canonical models: %w", err)
 	}
+	canonicalIDs := map[string]bool{}
+	for _, model := range canonical {
+		canonicalIDs[model.ID] = true
+	}
 	offered := []agentModel{}
 	for _, model := range models {
-		if slices.Contains(canonical, model.ID) {
+		if canonicalIDs[model.ID] {
 			offered = append(offered, model)
 		}
 	}
-	for _, id := range canonical {
-		if _, ok := known[id]; !ok {
-			offered = append(offered, agentModel{ID: id, DisplayName: id, Provider: providerOf(id)})
+	for _, model := range canonical {
+		if _, ok := known[model.ID]; !ok {
+			known[model.ID] = model.ThinkingLevels
+			offered = append(offered, agentModel{ID: model.ID, DisplayName: model.Name, Provider: providerOf(model.ID), SupportedLevels: model.ThinkingLevels})
 		}
 	}
 	models = offered

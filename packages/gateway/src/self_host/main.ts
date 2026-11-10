@@ -13,7 +13,7 @@ import type { SelectorBackend } from "../strategies/routing.js";
 import { createSelfHostedPlatform } from "./platform.js";
 import { providerForModel } from "@mupt-ai/dari-router/policy-engine";
 import { checkProviderKey } from "../providers/key_check.js";
-import { CANONICAL_MODEL_IDS } from "../models/canonical.js";
+import { CANONICAL_MODELS } from "../models/canonical.js";
 import { DEFAULT_GATEWAY_CONFIG, loadGatewayConfig, type GatewayConfig } from "./config.js";
 import { configuredProviderApiKey, gatewayKeyIndex, providersWithoutCredentials } from "./resolve.js";
 import { PrefixStore } from "./prefix_store.js";
@@ -162,7 +162,7 @@ export async function runSelfHostedGateway(): Promise<void> {
   // JSON, and exits; `--print-default-config` prints the built-in default.
   // The Dari CLI edits a local gateway's models from them.
   if (process.argv.includes("--print-canonical-models")) {
-    console.log(JSON.stringify(CANONICAL_MODEL_IDS));
+    console.log(JSON.stringify(CANONICAL_MODELS));
     return;
   }
   if (process.argv.includes("--print-default-config")) {

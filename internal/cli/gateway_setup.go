@@ -224,21 +224,30 @@ func askAutoRoutingKey(stdin io.Reader, stderr io.Writer) (string, error) {
 }
 
 // localProviderKeys are the provider API keys the Accounts page saves for a
-// local gateway, by the environment variable the gateway reads.
-var localProviderKeys = []struct{ name, env string }{
-	{"Anthropic", "ANTHROPIC_API_KEY"},
-	{"OpenAI", "OPENAI_API_KEY"},
+// local gateway, by the environment variable the gateway reads: one for each
+// provider in gatewayCatalogProviders, so every model the picker offers can
+// be served.
+var localProviderKeys = []struct{ name, article, env string }{
+	{"Anthropic", "an", "ANTHROPIC_API_KEY"},
+	{"OpenAI", "an", "OPENAI_API_KEY"},
+	{"DeepSeek", "a", "DEEPSEEK_API_KEY"},
+	{"xAI", "an", "XAI_API_KEY"},
+	{"Meta", "a", "META_API_KEY"},
+	{"Fireworks", "a", "FIREWORKS_API_KEY"},
 }
 
+// allSubscriptionProviders are the plans a gateway can serve, offered by
+// `dari gateway accounts`, which is not tied to one agent.
+var allSubscriptionProviders = []agentSubscriptionProvider{claudeSubscription, codexSubscription, museSubscription}
+
 // manageGatewayAccounts is the Accounts page for a gateway: its connected
-// subscriptions, with options to connect more, and on a local gateway, API
-// keys and auto-routing.
-func manageGatewayAccounts(ctx context.Context, gw *gatewayConfig, agent string, stdin io.Reader, stderr io.Writer) error {
+// subscriptions, with options to connect more of providers, and on a local
+// gateway, API keys and auto-routing.
+func manageGatewayAccounts(ctx context.Context, gw *gatewayConfig, providers []agentSubscriptionProvider, stdin io.Reader, stderr io.Writer) error {
 	if !agentInputIsTerminal(stdin) {
-		return errors.New("--connect needs an interactive terminal; use `dari credentials subscription connect` instead")
+		return errors.New("the Accounts page needs an interactive terminal; use `dari credentials subscription connect` instead")
 	}
 	client := api.New(gw.url).WithBearer(gw.key)
-	providers := agentSubscriptionProviders(agent)
 	for {
 		var listed struct {
 			Credentials []subscriptionCredential `json:"credentials"`
@@ -263,7 +272,11 @@ func manageGatewayAccounts(ctx context.Context, gw *gatewayConfig, agent string,
 		}
 		if gw.local {
 			for _, key := range localProviderKeys {
-				options = append(options, agentChoiceOption{label: "Add an " + key.name + " API key"})
+				label := "Add " + key.article + " " + key.name + " API key"
+				if gw.settings.ProviderKeys[key.env] != "" {
+					label = "Replace the " + key.name + " API key"
+				}
+				options = append(options, agentChoiceOption{label: label})
 				actions = append(actions, func() error {
 					_, err := runAgentSecretInputTUI(stdin, stderr, key.name+" API key", nil, func(value string) error {
 						if gw.settings.ProviderKeys == nil {
@@ -320,14 +333,14 @@ func gatewayAgentModels(ctx context.Context, gw *gatewayConfig, launch agentLaun
 		return agents.Models{}, err
 	}
 	if launch.connect {
-		if err := manageGatewayAccounts(ctx, gw, launch.name, stdin, stderr); err != nil {
+		if err := manageGatewayAccounts(ctx, gw, agentSubscriptionProviders(launch.name), stdin, stderr); err != nil {
 			return agents.Models{}, err
 		}
 	}
 	models, err := routerModels(ctx, gw.url, gw.key, launch.name)
 	if errors.Is(err, errNoProviderCredentials) && agentInputIsTerminal(stdin) && !launch.connect {
 		agentStep(stderr, "Connect an account to start")
-		if err := manageGatewayAccounts(ctx, gw, launch.name, stdin, stderr); err != nil {
+		if err := manageGatewayAccounts(ctx, gw, agentSubscriptionProviders(launch.name), stdin, stderr); err != nil {
 			return agents.Models{}, err
 		}
 		models, err = routerModels(ctx, gw.url, gw.key, launch.name)
@@ -548,7 +561,7 @@ func position(ids []string, id string) int {
 // Autorouting plan does. On a local gateway it also adds the chosen models no
 // connected account or API key serves yet, so the agent can list every chosen
 // model, and names them.
-func reportGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, models agents.Models, stderr io.Writer) agents.Models {
+func reportGatewayModels(ctx context.Context, gw *gatewayConfig, models agents.Models, stderr io.Writer) agents.Models {
 	if !models.Routing && len(models.Enabled) > 0 {
 		hint := "Switch models with /model"
 		if gw.local {
@@ -569,7 +582,7 @@ func reportGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, m
 		}
 	}
 	if len(models.Unavailable) > 0 {
-		agentPrintln(stderr, fmt.Sprintf("Not available until their provider has an account or API key: %s. Connect one with `dari %s --connect`.", strings.Join(models.Unavailable, ", "), agent))
+		agentPrintln(stderr, fmt.Sprintf("Not available until their provider has an account or API key: %s. Connect one with `dari gateway accounts`.", strings.Join(models.Unavailable, ", ")))
 	}
 	return models
 }

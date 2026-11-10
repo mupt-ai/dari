@@ -74,12 +74,13 @@ dari credentials subscription connect claude-code   # or codex
 | **Fully local** | The CLI runs the gateway on `127.0.0.1:7340`, matching the CLI's version. Requests go straight to providers, using only keys saved on its Accounts page, never keys exported in your shell. | No. `dari activity` and request costs are unavailable. |
 | **Self-hosted** | Your team runs the gateway. Set its URL and one of its `DARI_GATEWAY_KEYS`. | No. Requests never reach Dari. |
 
-A local gateway serves only provider keys and subscriptions saved on its Accounts page (`dari claude --connect`), never keys exported in your shell.
+A local gateway serves only subscriptions and provider keys saved with `dari gateway accounts` (Anthropic, OpenAI, DeepSeek, xAI, Meta, and Fireworks), never keys exported in your shell.
 
-`DARI_GATEWAY_URL` and `DARI_GATEWAY_KEY` override the saved choice for one shell. In gateway modes, launchers make no hosted API calls; connect subscriptions and keys with `dari <agent> --connect`.
+`DARI_GATEWAY_URL` and `DARI_GATEWAY_KEY` override the saved choice for one shell. In gateway modes, launchers make no hosted API calls.
 
 ```bash
 dari gateway start | stop | restart | logs
+dari gateway accounts                     # connect subscriptions, save provider keys
 dari gateway models                        # choose the local gateway's models
 dari gateway auto-routing <dari-api-key>   # route with Dari's policy; `off` disables
 ```

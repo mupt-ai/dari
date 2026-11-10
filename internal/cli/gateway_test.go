@@ -254,7 +254,7 @@ func TestGatewayLaunchConnectNeedsTerminal(t *testing.T) {
 
 	var stderr strings.Builder
 	code := runAgentLaunch(context.Background(), agentLaunch{name: "pi", args: []string{"hello"}, connect: true}, strings.NewReader(""), io.Discard, &stderr)
-	if code != 1 || !strings.Contains(stderr.String(), "--connect needs an interactive terminal") {
+	if code != 1 || !strings.Contains(stderr.String(), "needs an interactive terminal") {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 }
@@ -599,5 +599,43 @@ func TestGatewayActivityIsHostedOnly(t *testing.T) {
 	cmd.SetErr(io.Discard)
 	if err := cmd.Execute(); !errors.Is(err, errActivityHostedOnly) {
 		t.Fatalf("activity error = %v, want hosted-only", err)
+	}
+}
+
+// Every provider the local model picker offers needs an API key the Accounts
+// page can save, or its models are offered but can never serve.
+func TestLocalProviderKeysCoverPickerProviders(t *testing.T) {
+	saved := map[string]bool{}
+	for _, key := range localProviderKeys {
+		saved[strings.ToLower(strings.TrimSuffix(key.env, "_API_KEY"))] = true
+	}
+	for _, provider := range strings.Split(gatewayCatalogProviders, ",") {
+		if !saved[provider] {
+			t.Errorf("picker offers %s models but the Accounts page cannot save a %s key", provider, provider)
+		}
+	}
+}
+
+// `dari gateway accounts` opens a gateway's Accounts page without naming an
+// agent, and points hosted routing at the dashboard instead.
+func TestGatewayAccountsCommand(t *testing.T) {
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, "http://gateway.test:8080")
+	cmd := newRootCmd("dev")
+	cmd.SetArgs([]string{"gateway", "accounts"})
+	cmd.SetIn(strings.NewReader(""))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "needs an interactive terminal") {
+		t.Fatalf("gateway accounts error = %v", err)
+	}
+
+	t.Setenv("DARI_GATEWAY_URL", "")
+	cmd = newRootCmd("dev")
+	cmd.SetArgs([]string{"gateway", "accounts"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "routing is hosted") {
+		t.Fatalf("hosted gateway accounts error = %v", err)
 	}
 }

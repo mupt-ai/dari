@@ -1,0 +1,5 @@
+[install]
+# Hoisted like the per-package installs this workspace replaced: the
+# packages resolve dependencies, including transitive type packages, by
+# walking up to node_modules.
+linker = "hoisted"

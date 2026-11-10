@@ -1,0 +1,160 @@
+name: Release
+
+# One tag releases everything at one version: the dari CLI and the gateway
+# binaries (one GitHub release), then @mupt-ai/dari-router and
+# @mupt-ai/dari-gateway on npm, then the gateway container image.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: "1.3.14"
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Set the release version
+        run: bun install --frozen-lockfile && bun scripts/set-version.ts "$GITHUB_REF_NAME"
+
+      - name: Compile gateway binaries
+        run: |
+          (cd packages/router && bun run build)
+          (cd packages/gateway && bun run compile)
+
+      - name: Smoke test the linux gateway binary
+        run: |
+          set -euo pipefail
+          mkdir smoke
+          tar -xzf packages/gateway/release/dari-gateway_*_linux_x86_64.tar.gz -C smoke
+          DARI_GATEWAY_KEYS=k PORT=18722 DARI_GATEWAY_DB=:memory: ./smoke/dari-gateway &
+          # No provider credentials: the default router answers 4xx, which proves it started.
+          status=000
+          for attempt in $(seq 1 20); do
+            status="$(curl -s -o /dev/null -w '%{http_code}' -H 'Authorization: Bearer k' http://127.0.0.1:18722/v1/models || true)"
+            if [ "$status" != "000" ]; then break; fi
+            sleep 0.5
+          done
+          kill %1
+          test "$status" != "000"
+
+      # set-version edits package.json files and the smoke test leaves files;
+      # GoReleaser refuses a dirty tree.
+      - name: Restore the tree
+        run: |
+          git checkout -- packages
+          rm -rf smoke
+          git status --porcelain
+          test -z "$(git status --porcelain)"
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  npm:
+    needs: binaries
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19.0"
+          registry-url: https://registry.npmjs.org
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install npm with trusted publishing support
+        run: npm install --global npm@11
+
+      - name: Validate
+        run: |
+          bun install --frozen-lockfile
+          (cd packages/router && bun run build && bun run typecheck && bun test && bun run test:package)
+          (cd packages/gateway && bun run typecheck && bun test)
+
+      - name: Set the release version
+        run: bun scripts/set-version.ts "$GITHUB_REF_NAME"
+
+      # The router first: the gateway depends on this exact version. A
+      # version already on npm is skipped, so re-running a release is safe.
+      - name: Publish
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for dir in packages/router packages/gateway; do
+            name="$(node -p "require('./$dir/package.json').name")"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already published; skipping."
+              continue
+            fi
+            (cd "$dir" && npm publish --access public --provenance)
+          done
+
+  image:
+    needs: npm
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/mupt-ai/dari-gateway
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/gateway/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.ref_name }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/mupt-ai/dari
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.licenses=Apache-2.0

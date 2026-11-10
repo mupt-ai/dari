@@ -1,0 +1,29 @@
+# Copy to dari-gateway.yaml and point DARI_GATEWAY_CONFIG at it.
+#
+# Each router is an endpoint: `default` serves /v1/..., any other router
+# serves /<router>/v1/.... Clients send `model: dari/routing` to let the
+# router choose, or `model: dari/model/<id>` to pin one of its models.
+routers:
+  default:
+    models:
+      - anthropic/claude-sonnet-5-5
+      - id: openai/gpt-6.1-sol
+        thinking: [medium, high]
+    # Serve with connected Claude Code / ChatGPT subscriptions before API
+    # keys (default true).
+    subscriptions: true
+    # Route each session's first turn, then keep that model for the whole
+    # session; each subagent is routed once on its own (default false).
+    sessionPinning: false
+
+  local:
+    models:
+      - local/qwen3-coder
+
+# Endpoints for providers outside the built-in catalog, such as vLLM, Ollama,
+# or any OpenAI-compatible server.
+providers:
+  local:
+    baseUrl: http://localhost:8000/v1
+    # api: openai-completions   # or anthropic-messages, openai-responses
+    # apiKeyEnv: LOCAL_API_KEY

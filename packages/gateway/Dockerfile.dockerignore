@@ -1,0 +1,7 @@
+# Build context is the repository root (see Dockerfile).
+**/node_modules
+**/dist
+**/release
+**/*.db
+**/*.db-*
+**/dari-gateway.yaml

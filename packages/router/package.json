@@ -1,0 +1,74 @@
+{
+  "name": "@mupt-ai/dari-router",
+  "version": "0.0.0-dev",
+  "description": "TypeScript framework for routing OpenAI and Anthropic requests across LLMs with pluggable policies and executors.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mupt-ai/dari.git",
+    "directory": "packages/router"
+  },
+  "homepage": "https://docs.dari.dev/framework/overview",
+  "bugs": {
+    "url": "https://github.com/mupt-ai/dari/issues"
+  },
+  "keywords": [
+    "llm",
+    "router",
+    "llm-router",
+    "model-routing",
+    "openai",
+    "anthropic",
+    "chat-completions",
+    "dari"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./policy-engine": {
+      "types": "./dist/policy-engine.d.ts",
+      "default": "./dist/policy-engine.js"
+    },
+    "./eval-score-imputation": {
+      "types": "./dist/eval_score_imputation.d.ts",
+      "default": "./dist/eval_score_imputation.js"
+    },
+    "./protocols": {
+      "types": "./dist/protocols.d.ts",
+      "default": "./dist/protocols.js"
+    }
+  },
+  "files": [
+    "dist",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && cp -R src/prompts dist/",
+    "test:package": "bash scripts/test-package.sh",
+    "prepublishOnly": "bun run typecheck && bun test && bun run test:package",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "example": "bun run examples/create_router.ts",
+    "example:dari-policy": "bun run examples/dari_policy.ts",
+    "example:decision-pipeline": "bun run examples/basic_route.ts",
+    "example:lease-stores": "bun run examples/lease_stores.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.4",
+    "@types/node": "^24.10.2",
+    "typescript": "^5.6.3"
+  }
+}

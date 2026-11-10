@@ -1,0 +1,10 @@
+{
+  "name": "dari-workspace",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "build": "bun run --filter @mupt-ai/dari-router build && bun run --filter @mupt-ai/dari-gateway build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun run --filter '*' test"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "question": "Does this benchmark measure the kind of work the agent is doing in `task` and `conversation`?",
+  "rules": [
+    "Judge the kind of work from the task and the latest turns of the conversation: the domain (software, law, finance, medicine, science, visual design, writing, ...) and the form of work (editing a codebase, answering questions, producing documents, using tools, ...).",
+    "A benchmark of the same kind of work is relevant even when its exact tasks differ from the agent's.",
+    "A benchmark of a different kind of work is not relevant, however difficult or general it is."
+  ],
+  "criteria": {
+    "true": "The benchmark tests the same domain and form of work the agent is doing, or a general capability the agent's work clearly depends on, such as following instructions or reasoning over long context when the task requires it.",
+    "false": "The benchmark tests a different domain or a different form of work, or a specialized skill the agent's work does not need."
+  }
+}

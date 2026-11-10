@@ -1,0 +1,22 @@
+{
+  "action": {
+    "question": "Which action should serve the coding agent's next turns?",
+    "rules": [
+      "Capability first: the action must be able to handle the task; capability is never traded away for cost.",
+      "Judge the task's difficulty and how much work remains from the user's messages in `conversation`, `lease_history`, and the latest agent turns.",
+      "Use each action's benchmark scores and ranks as evidence of capability. A missing benchmark means the action was not measured on it, not that it scored poorly.",
+      "When several actions are capable enough, choose the one with the best (lowest-numbered) cost rank.",
+      "Prefer `previous_action` while the task and its current phase have not changed."
+    ],
+    "router_rules_rule": "This router has user-authored `router_rules`, and they take priority over cost and benchmarks: choose among the actions of the rule whose condition best describes the agent's current phase, the most specific one when several match, or the default actions when none does."
+  },
+  "lease": {
+    "question": "How many consecutive turns should the chosen action serve before the router reconsiders?",
+    "guidance": "A longer lease amortizes the cold start paid on its first turn across warm cache hits on the turns that follow. The lease ends early only if the task finishes or the provider fails. Judge from how much similar work remains after the latest turn of `conversation`.",
+    "criteria": {
+      "shortest": "{{turns}} turns: the task is nearly done, or the next step may change what the agent needs.",
+      "middle": "{{turns}} turns: a bounded stretch of similar work remains.",
+      "longest": "{{turns}} turns: a long stretch of similar work remains, such as a large implementation or many edit-and-test cycles."
+    }
+  }
+}

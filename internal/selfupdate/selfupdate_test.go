@@ -65,9 +65,9 @@ func TestExtractDariBinary(t *testing.T) {
 		"README.md": "docs",
 		"dari":      "binary contents",
 	})
-	got, mode, err := extractDariBinary(archive)
+	got, mode, err := extractBinary(archive, "dari")
 	if err != nil {
-		t.Fatalf("extractDariBinary: %v", err)
+		t.Fatalf("extractBinary: %v", err)
 	}
 	if string(got) != "binary contents" {
 		t.Fatalf("binary = %q", got)

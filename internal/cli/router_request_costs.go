@@ -36,12 +36,12 @@ func newRouterRequestCostsCmd() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			gateway, err := gatewayFromEnv()
+			gateway, err := currentGateway()
 			if err != nil {
 				return err
 			}
 			if gateway != nil {
-				return fmt.Errorf("request costs are only available on the hosted Dari API; they are not supported with %s", gatewayURLEnv)
+				return fmt.Errorf("request costs are only available on the hosted Dari API; they are not supported with a gateway")
 			}
 			key := strings.TrimSpace(os.Getenv(agents.RoutingAPIKeyEnv))
 			if key == "" {

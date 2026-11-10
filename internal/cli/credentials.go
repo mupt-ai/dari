@@ -144,7 +144,7 @@ func newProviderCredentialAddCmd(gf *globalFlags) *cobra.Command {
 		Short: "Save an API key, Microsoft Azure, AWS IAM, or AWS Role credential",
 		Args:  cobra.RangeArgs(2, 3),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			gateway, err := gatewayFromEnv()
+			gateway, err := currentGateway()
 			if err != nil {
 				return err
 			}
@@ -345,7 +345,7 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 			if !ok {
 				return fmt.Errorf("unknown subscription %q: expected claude-code, codex, or muse-code", args[0])
 			}
-			client, err := subscriptionClient(gf)
+			client, err := subscriptionClient(cmd.Context(), gf, cmd.ErrOrStderr())
 			if err != nil {
 				return err
 			}
@@ -392,12 +392,12 @@ func newSubscriptionAutoResetCmd(gf *globalFlags) *cobra.Command {
 				return fmt.Errorf("expected on or off, got %q", args[1])
 			}
 			// Banked resets are a hosted-billing feature the gateway does not serve.
-			gateway, err := gatewayFromEnv()
+			gateway, err := currentGateway()
 			if err != nil {
 				return err
 			}
 			if gateway != nil {
-				return fmt.Errorf("auto-reset is only available on the hosted Dari API; it is not supported with %s", gatewayURLEnv)
+				return fmt.Errorf("auto-reset is only available on the hosted Dari API; it is not supported with a gateway")
 			}
 			name, err := resolveSubscriptionName(cmd, gf, args[0])
 			if err != nil {

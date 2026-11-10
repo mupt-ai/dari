@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/mupt-ai/dari-cli/internal/cli/agents"
+	"github.com/mupt-ai/dari-cli/internal/gateway"
 )
 
 const gatewayTestKey = "gw_test_key"
@@ -227,14 +228,15 @@ func TestGatewayLaunchNeedsGatewayKey(t *testing.T) {
 	}
 }
 
-func TestGatewayLaunchRejectsHostedConnect(t *testing.T) {
+// --connect opens the gateway's own Accounts page, which needs a terminal.
+func TestGatewayLaunchConnectNeedsTerminal(t *testing.T) {
 	hostedAPIMustNotBeCalled(t)
 	fakeAgentExecutable(t, "pi")
 	setGatewayEnv(t, "http://gateway.test:8080")
 
 	var stderr strings.Builder
 	code := runAgentLaunch(context.Background(), agentLaunch{name: "pi", args: []string{"hello"}, connect: true}, strings.NewReader(""), io.Discard, &stderr)
-	if code != 1 || !strings.Contains(stderr.String(), "--connect manages hosted accounts") {
+	if code != 1 || !strings.Contains(stderr.String(), "--connect needs an interactive terminal") {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 }
@@ -280,7 +282,7 @@ func TestGatewaySubscriptionCommandsUseGatewayKey(t *testing.T) {
 	}
 
 	err := run("", "auto-reset", "openai_codex_oauth_token_2", "on")
-	if err == nil || !strings.Contains(err.Error(), "not supported with DARI_GATEWAY_URL") {
+	if err == nil || !strings.Contains(err.Error(), "not supported with a gateway") {
 		t.Fatalf("auto-reset error = %v", err)
 	}
 	if _, ok := seen["PUT /v1/organizations/current/credentials/OPENAI_CODEX_OAUTH_TOKEN_2/auto-reset"]; ok {
@@ -388,5 +390,52 @@ for arg in "$@"; do printf 'ARG %s\n' "$arg" >> "` + record + `"; done
 	}
 	if !strings.Contains(stderr.String(), "`dari hermes --remove-setup` undoes it") {
 		t.Errorf("launch does not say it set Hermes up: %q", stderr.String())
+	}
+}
+
+// A self-hosted gateway chosen in `dari gateway setup` routes launches just
+// as DARI_GATEWAY_URL does.
+func TestSavedSelfHostedGatewayRoutesLaunches(t *testing.T) {
+	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(gatewayCatalog))
+	})))
+	defer gw.Close()
+
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, "")
+	t.Setenv("DARI_GATEWAY_KEY", "")
+	if err := gateway.Save(gateway.Settings{Mode: gateway.ModeSelfHosted, URL: gw.URL, Key: gatewayTestKey}); err != nil {
+		t.Fatal(err)
+	}
+	record := fakeAgentExecutable(t, "claude")
+
+	var stderr strings.Builder
+	code := runAgentLaunch(context.Background(), agentLaunch{name: "claude", args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	env, _ := readLaunchRecord(t, record)
+	if env["ANTHROPIC_BASE_URL"] != gw.URL || env["ANTHROPIC_AUTH_TOKEN"] != gatewayTestKey {
+		t.Errorf("Claude env = %q, %q", env["ANTHROPIC_BASE_URL"], env["ANTHROPIC_AUTH_TOKEN"])
+	}
+}
+
+// A gateway with no account that can serve its models names how to connect
+// one instead of reporting a bare HTTP status.
+func TestGatewayLaunchWithoutCredentialsSaysHowToConnect(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusFailedDependency)
+		_, _ = w.Write([]byte(`{"error":{"code":"provider_credentials_missing","message":"No credentials"}}`))
+	}))
+	defer gw.Close()
+
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gw.URL)
+	fakeAgentExecutable(t, "claude")
+
+	var stderr strings.Builder
+	code := runAgentLaunch(context.Background(), agentLaunch{name: "claude", args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "dari claude --connect") {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 }

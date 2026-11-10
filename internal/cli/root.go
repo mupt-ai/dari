@@ -21,6 +21,9 @@ import (
 // Execute runs the root command. version is injected at build time via
 // -ldflags -X main.version=...; an empty string is displayed as "dev".
 func Execute(version string) int {
+	if version != "" {
+		cliVersion = version
+	}
 	if launch, ok := parseAgentLaunch(os.Args[1:]); ok {
 		ctx := context.Background()
 		if launch.name == "codex" || launch.name == "opencode" {
@@ -49,6 +52,9 @@ func Execute(version string) int {
 	}
 	return 0
 }
+
+// cliVersion is this build's version, for release downloads.
+var cliVersion = "dev"
 
 // globalFlags hold cross-command options resolved at root level.
 //

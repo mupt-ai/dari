@@ -210,15 +210,12 @@ func inheritsStdio(stdin io.Reader, stdout, stderr io.Writer) bool {
 // gateway mode it makes no hosted calls and offers the gateway's models.
 // Otherwise it signs in, sets up the agent's router, and uses that router.
 func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reader, stderr io.Writer) (string, string, agents.Models, error) {
-	gateway, err := gatewayFromEnv()
+	gateway, err := agentGateway(ctx, stdin, stderr)
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
 	if gateway != nil {
-		if launch.connect {
-			return "", "", agents.Models{}, fmt.Errorf("--connect manages hosted accounts and is not available with %s; use `dari credentials subscription connect`", gatewayURLEnv)
-		}
-		models, err := routerModels(ctx, gateway.url, gateway.key)
+		models, err := gatewayAgentModels(ctx, gateway, launch, stdin, stderr)
 		if err != nil {
 			return "", "", agents.Models{}, err
 		}
@@ -336,6 +333,9 @@ func agentKeyScope(ctx context.Context, apiURL string, stdin io.Reader, stderr i
 		return "", err
 	}
 	if !api.URLsMatch(s.APIURL, apiURL) || s.CurrentOrg() == nil {
+		if !agentInputIsTerminal(stdin) {
+			agentStep(stderr, "Routing is set to hosted Dari, which needs a browser sign-in. For a local gateway run `dari gateway setup --mode local`")
+		}
 		s, err = loginWithBrowser(ctx, apiURL, stdin, stderr, "Sign in to set up your coding agents")
 		if err != nil {
 			return "", err

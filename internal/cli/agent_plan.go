@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,11 @@ type agentSubscriptionStatus struct {
 // routerModels builds a launch's model menu from the router's /v1/models at
 // baseURL, the same list in hosted and gateway mode: dari/routing when the
 // router may autoroute, then every enabled model.
+// errNoProviderCredentials is a gateway router with no subscription or API
+// key that can serve any of its models.
+var errNoProviderCredentials = errors.New("no connected account or API key can serve this gateway's models; " +
+	"connect one with `dari claude --connect` or `dari credentials subscription connect`")
+
 func routerModels(ctx context.Context, baseURL, key string) (agents.Models, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -35,6 +41,16 @@ func routerModels(ctx context.Context, baseURL, key string) (agents.Models, erro
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		var failure struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&failure)
+		if failure.Error.Code == "provider_credentials_missing" {
+			return agents.Models{}, errNoProviderCredentials
+		}
 		return agents.Models{}, fmt.Errorf("list router models: HTTP %d", resp.StatusCode)
 	}
 	var catalog struct {

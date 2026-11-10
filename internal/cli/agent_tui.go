@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -480,6 +481,12 @@ func runAgentDeviceCodeTUI(
 // Enter passes it to submit, whose error is shown on the page for another
 // try; esc leaves without one. It reports whether submit succeeded.
 func runAgentSecretInputTUI(stdin io.Reader, stderr io.Writer, title string, details []string, submit func(string) error) (bool, error) {
+	return runAgentTextInputTUI(stdin, stderr, title, details, "", submit)
+}
+
+// runAgentTextInputTUI is runAgentSecretInputTUI for any value: with a
+// placeholder it shows what is typed, and without one it masks it.
+func runAgentTextInputTUI(stdin io.Reader, stderr io.Writer, title string, details []string, placeholder string, submit func(string) error) (bool, error) {
 	session, err := startAgentTUISession(stdin, stderr)
 	if err != nil {
 		return false, err
@@ -494,7 +501,11 @@ func runAgentSecretInputTUI(stdin io.Reader, stderr io.Writer, title string, det
 		if len(details) > 0 {
 			lines = append(lines, "")
 		}
-		lines = append(lines, agentCursor(true)+secretDisplay(input.value, session.width))
+		display := secretDisplay(input.value, session.width)
+		if placeholder != "" {
+			display = inputDisplay(input.value, session.width, placeholder)
+		}
+		lines = append(lines, agentCursor(true)+display)
 		if status != "" {
 			lines = append(lines, "  "+ansiRed+status+ansiReset)
 		}
@@ -512,7 +523,7 @@ func runAgentSecretInputTUI(stdin io.Reader, stderr io.Writer, title string, det
 		if submitted {
 			value := strings.TrimSpace(input.value)
 			if value == "" {
-				status = "Paste a key, or press esc to go back."
+				status = "Enter a value, or press esc to go back."
 				continue
 			}
 			if err := submit(value); err != nil {
@@ -742,7 +753,13 @@ func agentPickerLines(title string, note []string, p *agentPickerState, visible 
 	if p.editing {
 		return append(lines, agentHintLine("↑↓ move", "space toggle thinking level", "← done"))
 	}
-	return append(lines, agentHintLine("↑↓ move", "space toggle", "→ thinking levels", "s payment", "enter confirm", "esc cancel"))
+	hints := []string{"↑↓ move", "space toggle", "→ thinking levels", "s payment", "enter confirm", "esc cancel"}
+	// Payment is chosen per model only where a model has more than one
+	// source, never on a gateway.
+	if !slices.ContainsFunc(p.rows, func(row agentPickerRow) bool { return len(row.sources) > 0 }) {
+		hints = slices.Delete(hints, 3, 4)
+	}
+	return append(lines, agentHintLine(hints...))
 }
 
 func agentCheckbox(checked bool) string {

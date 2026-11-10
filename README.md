@@ -120,7 +120,15 @@ Both save the default model they replaced in `dari-setup.json` beside the agent'
 
 ## Self-Hosted Gateway
 
-Set `DARI_GATEWAY_URL` and `DARI_GATEWAY_KEY` to run the coding agents and subscription commands against a self-hosted Dari Gateway instead of the hosted API:
+The first `dari claude` (or any launcher) on a machine that has not signed in asks where the agents route. `dari gateway setup` asks again, and `dari gateway status` shows the current choice:
+
+| Mode | What runs where | Trade-offs |
+|---|---|---|
+| **Hosted** | Dari runs the gateway. | Team sharing, Activity analytics, Dari billing. Signs in with your browser. |
+| **Fully local** | The CLI installs the [Dari Gateway](https://github.com/mupt-ai/dari-gateway) binary and runs it on `127.0.0.1:7340`. | Requests go straight to model providers. Only this machine can use it: no team sharing, no analytics. |
+| **Self-hosted** | Your team runs the gateway on its own server. | Everyone shares its accounts and routing. Enter its URL and one of its `DARI_GATEWAY_KEYS`. |
+
+Machines already signed in stay hosted without asking. `DARI_GATEWAY_URL` and `DARI_GATEWAY_KEY` select a self-hosted gateway for one shell and override the saved choice:
 
 ```bash
 export DARI_GATEWAY_URL="http://localhost:8080"
@@ -128,7 +136,21 @@ export DARI_GATEWAY_KEY="your-gateway-key"
 dari claude
 ```
 
-In gateway mode, `dari claude`, `dari codex`, `dari opencode`, `dari pi`, `dari openclaw`, and `dari hermes` make no hosted API calls. They skip sign-in, router setup, and plan checks, then launch the agent against the gateway with `DARI_GATEWAY_KEY` as its routing key. The URL may end in `/v1`. Agents start on the gateway's `dari/routing` model, and their model pickers list the gateway router's models, read from its `/v1/models`. `--connect` manages hosted accounts, so it is rejected in gateway mode. `dari credentials subscription list`, `connect`, `rename`, `mark-available`, and `disconnect` also use the gateway, which stores connected subscriptions in its own database. `dari credentials subscription auto-reset` and `dari router request-costs` are hosted-only and fail in gateway mode. Other commands, such as `dari router`, still use the hosted API.
+With a local or self-hosted gateway, `dari claude`, `dari codex`, `dari opencode`, `dari pi`, `dari openclaw`, and `dari hermes` make no hosted API calls. They skip sign-in, router setup, and plan checks, then launch the agent against the gateway with its key as the routing key. Agents start on the gateway's `dari/routing` model, and their model pickers list the gateway router's models, read from its `/v1/models`. `--connect` opens the gateway's Accounts page: connect Claude Code and ChatGPT subscriptions there, and on a local gateway also save Anthropic and OpenAI API keys and the Dari API key auto-routing uses. A launch whose gateway has nothing connected opens the page itself. `dari credentials subscription list`, `connect`, `rename`, `mark-available`, and `disconnect` also use the gateway, which stores connected subscriptions in its own database. `dari credentials subscription auto-reset` and `dari router request-costs` are hosted-only. Other commands, such as `dari router`, still use the hosted API.
+
+A local gateway needs no config file. It starts on the first launch that needs it and keeps running in the background. Its first launch opens the same model picker a hosted router's first launch does, over the gateway's bundled catalog (Anthropic, OpenAI, DeepSeek, xAI, Meta, Fireworks); until then it serves a default router of current Anthropic and OpenAI models. Each model serves once its provider has a subscription or API key. Its settings, database, and log live in `gateway/` beside the CLI state.
+
+```bash
+dari gateway status                         # mode, URL, running or stopped
+dari gateway start | stop | restart         # restart picks up provider keys exported in this shell
+dari gateway serve                          # run in the foreground
+dari gateway install                        # install or update the gateway binary
+dari gateway logs
+dari gateway models                         # choose models with the same picker as a hosted router
+dari gateway auto-routing <dari-api-key>    # route with Dari's policy; `off` turns it off
+```
+
+Auto-routing picks each request's model with Dari's routing policy, sending Dari the recent conversation to choose, and needs a Dari API key in every mode: hosted Dari includes it with the Autorouting plan, a local gateway uses the key you save, and a self-hosted gateway's operator sets `DARI_AUTO_ROUTING_API_KEY` on the server.
 
 ## Common Workflows
 

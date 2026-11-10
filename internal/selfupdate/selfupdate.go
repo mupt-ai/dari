@@ -228,7 +228,7 @@ func Update(ctx context.Context, currentVersion string, opts UpdateOptions) (Upd
 	if err := client.verifyChecksum(ctx, release, asset, data); err != nil {
 		return result, err
 	}
-	binary, mode, err := extractDariBinary(data)
+	binary, mode, err := extractBinary(data, "dari")
 	if err != nil {
 		return result, err
 	}
@@ -240,8 +240,48 @@ func Update(ctx context.Context, currentVersion string, opts UpdateOptions) (Upd
 	return result, nil
 }
 
+// InstallLatest installs the latest release of project, published on GitHub
+// at latestURL with GoReleaser-style archives and checksums, to target. It
+// returns the installed release version.
+func InstallLatest(ctx context.Context, cliVersion, latestURL, project, target string) (string, error) {
+	client := NewClient(cliVersion)
+	client.LatestURL = latestURL
+	release, err := client.Latest(ctx)
+	if err != nil {
+		return "", err
+	}
+	asset, err := release.archiveFor(project, runtime.GOOS, runtime.GOARCH)
+	if err != nil {
+		return "", err
+	}
+	data, err := client.download(ctx, asset.URL)
+	if err != nil {
+		return "", fmt.Errorf("download %s: %w", asset.Name, err)
+	}
+	if err := client.verifyChecksum(ctx, release, asset, data); err != nil {
+		return "", err
+	}
+	binary, mode, err := extractBinary(data, project)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return "", err
+	}
+	if err := replaceExecutable(target, binary, mode); err != nil {
+		return "", err
+	}
+	return release.Version, nil
+}
+
 // AssetForPlatform selects the GoReleaser archive for a GOOS/GOARCH pair.
 func (r Release) AssetForPlatform(goos, goarch string) (Asset, error) {
+	return r.archiveFor("dari", goos, goarch)
+}
+
+// archiveFor selects project's archive, named
+// <project>_<version>_<macOS|linux>_<x86_64|arm64>.tar.gz, for a platform.
+func (r Release) archiveFor(project, goos, goarch string) (Asset, error) {
 	osName, err := archiveOSName(goos)
 	if err != nil {
 		return Asset{}, err
@@ -252,7 +292,7 @@ func (r Release) AssetForPlatform(goos, goarch string) (Asset, error) {
 	}
 	suffix := "_" + osName + "_" + archName + ".tar.gz"
 	for _, asset := range r.Assets {
-		if strings.HasPrefix(asset.Name, "dari_") && strings.HasSuffix(asset.Name, suffix) {
+		if strings.HasPrefix(asset.Name, project+"_") && strings.HasSuffix(asset.Name, suffix) {
 			return asset, nil
 		}
 	}
@@ -364,7 +404,8 @@ func checksumForAsset(raw []byte, assetName string) (string, bool) {
 	return "", false
 }
 
-func extractDariBinary(archive []byte) ([]byte, os.FileMode, error) {
+// extractBinary returns the executable named name from a release archive.
+func extractBinary(archive []byte, name string) ([]byte, os.FileMode, error) {
 	gz, err := gzip.NewReader(bytes.NewReader(archive))
 	if err != nil {
 		return nil, 0, fmt.Errorf("open release archive: %w", err)
@@ -383,15 +424,15 @@ func extractDariBinary(archive []byte) ([]byte, os.FileMode, error) {
 			continue
 		}
 		base := filepath.Base(hdr.Name)
-		if base != "dari" && base != "dari.exe" {
+		if base != name && base != name+".exe" {
 			continue
 		}
 		data, err := io.ReadAll(io.LimitReader(tr, maxDownloadBytes+1))
 		if err != nil {
-			return nil, 0, fmt.Errorf("read dari binary from archive: %w", err)
+			return nil, 0, fmt.Errorf("read %s binary from archive: %w", name, err)
 		}
 		if len(data) > maxDownloadBytes {
-			return nil, 0, errors.New("dari binary exceeds maximum size")
+			return nil, 0, fmt.Errorf("%s binary exceeds maximum size", name)
 		}
 		mode := hdr.FileInfo().Mode().Perm()
 		if mode&0o111 == 0 {
@@ -399,16 +440,16 @@ func extractDariBinary(archive []byte) ([]byte, os.FileMode, error) {
 		}
 		return data, mode, nil
 	}
-	return nil, 0, errors.New("release archive does not contain a dari binary")
+	return nil, 0, fmt.Errorf("release archive does not contain a %s binary", name)
 }
 
+// replaceExecutable writes binary to target atomically, keeping an existing
+// target's permissions.
 func replaceExecutable(target string, binary []byte, mode os.FileMode) error {
-	info, err := os.Stat(target)
-	if err != nil {
-		return fmt.Errorf("stat current executable: %w", err)
-	}
-	if info.Mode().Perm()&0o111 != 0 {
+	if info, err := os.Stat(target); err == nil && info.Mode().Perm()&0o111 != 0 {
 		mode = info.Mode().Perm()
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat current executable: %w", err)
 	}
 	dir := filepath.Dir(target)
 	tmp, err := os.CreateTemp(dir, ".dari-update-*")
@@ -493,7 +534,7 @@ func archiveOSName(goos string) (string, error) {
 	case "linux":
 		return "linux", nil
 	default:
-		return "", fmt.Errorf("self-update is not supported on %s", goos)
+		return "", fmt.Errorf("Dari releases are not published for %s", goos)
 	}
 }
 
@@ -504,7 +545,7 @@ func archiveArchName(goarch string) (string, error) {
 	case "arm64":
 		return "arm64", nil
 	default:
-		return "", fmt.Errorf("self-update is not supported on %s", goarch)
+		return "", fmt.Errorf("Dari releases are not published for %s", goarch)
 	}
 }
 

@@ -145,6 +145,24 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		return 1
 	}
 
+	if !agents.OnlyRequestsInfo(launch.args) {
+		// Write Dari into the agent's own config so it routes the same way
+		// when run directly. The launch routes through Dari either way, so a
+		// config Dari cannot write (one with comments, say) only skips that,
+		// except for Codex, which reads the router's model catalog only from
+		// the config setup writes.
+		first, err := saveAgentConfig(ctx, launch.name, key, baseURL, models)
+		if err != nil && launch.name == "codex" {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		if err != nil {
+			agentStep(stderr, fmt.Sprintf("Could not save Dari into %s's own config (%v); this launch still routes through Dari", launch.name, err))
+		} else if first {
+			agentStep(stderr, fmt.Sprintf("`%s` itself now routes through Dari too; `dari %s %s` undoes it", launch.name, launch.name, agentRemoveSetupFlag))
+		}
+	}
+
 	if launchSetsUpAgent[launch.name] && !agents.OnlyRequestsInfo(launch.args) {
 		if err := applyAgentSetup(ctx, launch.name, key, baseURL, models); err != nil {
 			fmt.Fprintln(stderr, err)
@@ -165,10 +183,6 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		}
 	}()
 	if launch.name == "codex" && !agents.OnlyRequestsInfo(launch.args) {
-		if err := codex.PrepareCatalog(ctx, &command, key, baseURL, models); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
 		if err := codex.PrepareStatus(ctx, &command, launch.args, key, baseURL); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -230,6 +244,8 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 		if err != nil {
 			return "", "", agents.Models{}, err
 		}
+		// The launch starts on the user's saved pick; say so accurately.
+		models.Saved = savedAgentModel(launch.name)
 		models = reportGatewayModels(ctx, gateway, launch.name, models, stderr)
 		return gateway.key, gateway.url, models, nil
 	}
@@ -258,6 +274,7 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
+	models.Saved = savedAgentModel(launch.name)
 	// Without the Autorouting plan the launch starts on the router's first
 	// model; --connect is where the plan is bought.
 	if !models.Routing && len(models.Enabled) > 0 {

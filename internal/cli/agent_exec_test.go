@@ -71,7 +71,9 @@ func TestLaunchHandsProcessToAgent(t *testing.T) {
 		{"claude", true},
 		{"pi", true},
 		{"opencode", true},
-		{"codex", false},
+		// With its status bridge off, Codex has nothing for the launcher to
+		// clean up afterward (setup wrote its catalog), so it runs in place too.
+		{"codex", true},
 	} {
 		t.Run(tc.agent, func(t *testing.T) {
 			record := fakeAgentExecutable(t, tc.agent)

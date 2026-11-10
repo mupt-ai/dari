@@ -158,6 +158,17 @@ func offered(models agents.Models, model string) bool {
 }
 
 func openCodeConfig(baseURL, pluginDirectory string, models agents.Models) (string, error) {
+	body, err := json.Marshal(openCodeSettings(baseURL, pluginDirectory, "{env:"+agents.RoutingAPIKeyEnv+"}", models))
+	if err != nil {
+		return "", fmt.Errorf("encode OpenCode config: %w", err)
+	}
+	return string(body), nil
+}
+
+// openCodeSettings is Dari's OpenCode configuration: the router as the only
+// provider, its models, and the status plugin. apiKey is the key itself, or
+// a reference to the variable holding it.
+func openCodeSettings(baseURL, pluginDirectory, apiKey string, models agents.Models) map[string]any {
 	defaultModel := models.Default()
 	pinned := make(map[string]any, len(openCodeAgents))
 	for _, name := range openCodeAgents {
@@ -189,30 +200,28 @@ func openCodeConfig(baseURL, pluginDirectory string, models agents.Models) (stri
 		}
 		offeredModels[strings.TrimPrefix(model, "dari/")] = entry
 	}
-	body, err := json.Marshal(map[string]any{
+	provider := map[string]any{
+		"npm":  "@ai-sdk/openai-compatible",
+		"name": "Dari",
+		"options": map[string]string{
+			"baseURL": baseURL + "/v1",
+			"apiKey":  apiKey,
+		},
+		"models": offeredModels,
+	}
+	// A launch's key comes from its environment; saved settings carry the key.
+	if strings.HasPrefix(apiKey, "{env:") {
+		provider["env"] = []string{agents.RoutingAPIKeyEnv}
+	}
+	return map[string]any{
 		"model":       defaultModel,
 		"small_model": defaultModel,
 		"agent":       pinned,
 		"plugins":     []string{pluginDirectory},
 		// /models lists only the router's models, not other configured providers.
 		"enabled_providers": []string{"dari"},
-		"provider": map[string]any{
-			"dari": map[string]any{
-				"npm":  "@ai-sdk/openai-compatible",
-				"name": "Dari",
-				"env":  []string{agents.RoutingAPIKeyEnv},
-				"options": map[string]string{
-					"baseURL": baseURL + "/v1",
-					"apiKey":  "{env:" + agents.RoutingAPIKeyEnv + "}",
-				},
-				"models": offeredModels,
-			},
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("encode OpenCode config: %w", err)
+		"provider":          map[string]any{"dari": provider},
 	}
-	return string(body), nil
 }
 
 // writeOpenCodeStatusPlugin writes the status plugin into Dari's cache and

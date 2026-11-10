@@ -24,6 +24,37 @@ const (
 // override the Dari block written at the root.
 var replacedKeys = []string{"model", "model_provider", "profile", "model_catalog_json", "model_reasoning_summary"}
 
+// SavedModel is the top-level model in home's config.toml, which Codex's
+// /model sets, or "" when there is none.
+func SavedModel(home string) string {
+	config, err := readConfig(filepath.Join(home, "config.toml"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(config, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			return ""
+		}
+		name, value, ok := strings.Cut(trimmed, "=")
+		if !ok || strings.TrimSpace(name) != "model" {
+			continue
+		}
+		model, err := strconv.Unquote(strings.TrimSpace(value))
+		if err != nil {
+			return ""
+		}
+		return model
+	}
+	return ""
+}
+
+// IsSetUp reports whether home's config.toml has Dari set up in it.
+func IsSetUp(home string) bool {
+	config, err := readConfig(filepath.Join(home, "config.toml"))
+	return err == nil && strings.Contains(config, setupBegin)
+}
+
 // Home is the Codex config directory: CODEX_HOME, or ~/.codex.
 func Home() (string, error) {
 	if home := strings.TrimSpace(os.Getenv("CODEX_HOME")); home != "" {
@@ -152,11 +183,17 @@ func removeSetup(config string) string {
 	var kept []string
 	inBlock := false
 	for _, line := range strings.Split(config, "\n") {
+		trimmed := strings.TrimSpace(line)
 		switch {
 		case line == setupBegin:
 			inBlock = true
 		case line == setupEnd:
 			inBlock = false
+		// Codex appends tables it adds (its /model, its [tui] state) at the end
+		// of the file, inside the trailing block; they are Codex's, not setup's.
+		case inBlock && strings.HasPrefix(trimmed, "[") && tableName(trimmed) != "model_providers.dari":
+			inBlock = false
+			kept = append(kept, line)
 		case inBlock:
 		default:
 			kept = append(kept, strings.TrimPrefix(line, setupDisabled))

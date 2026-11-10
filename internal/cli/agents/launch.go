@@ -5,6 +5,7 @@ package agents
 
 import (
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -30,12 +31,18 @@ type Models struct {
 	// key serves yet. They are not in Menu; agents whose picker takes labels
 	// list them with one, so every chosen model is visible.
 	Unavailable []string
+	// Saved is the model the agent itself saved as the user's last pick (its
+	// /model choice). A launch starts on it while it is on the menu.
+	Saved string
 }
 
-// Default is the model a launch starts on: routing when it is available,
-// else the router's first model. Launches that never resolved a router
-// keep dari/routing.
+// Default is the model a launch starts on: the user's saved pick while the
+// router offers it, else routing when it is available, else the router's
+// first model. Launches that never resolved a router keep dari/routing.
 func (m Models) Default() string {
+	if m.Saved != "" && slices.Contains(m.Menu(), m.Saved) {
+		return m.Saved
+	}
 	if m.Routing || len(m.Enabled) == 0 {
 		return RoutingModel
 	}

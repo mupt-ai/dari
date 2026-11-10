@@ -9,7 +9,6 @@ import (
 	"github.com/mupt-ai/dari/internal/cli/agents"
 	"io"
 	"net/http"
-	"os"
 	"strconv"
 	"time"
 )
@@ -28,39 +27,13 @@ func Configure(command *agents.Command, baseURL string, models agents.Models) {
 	})
 }
 
-// Codex does not discover remote catalogs for env-key custom providers. Supply
-// the authenticated router catalog explicitly so auxiliary agents do not pick
-// bundled OpenAI models that the routing endpoint cannot serve. The catalog's
-// models fill Codex's /model menu; dari/routing is dropped without the plan.
-func PrepareCatalog(ctx context.Context, command *agents.Command, key, baseURL string, models agents.Models) error {
-	body, disableWebSearch, err := Catalog(ctx, key, baseURL, models)
-	if err != nil {
-		return err
-	}
-	file, err := os.CreateTemp("", "dari-codex-models-*.json")
-	if err != nil {
-		return fmt.Errorf("create Codex model catalog: %w", err)
-	}
-	path := file.Name()
-	if _, err := file.Write(body); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return fmt.Errorf("write Codex model catalog: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return fmt.Errorf("close Codex model catalog: %w", err)
-	}
-	command.Args = agents.InsertBeforeDoubleDash(command.Args, []string{"--config", "model_catalog_json=" + strconv.Quote(path)})
-	if disableWebSearch {
-		command.Args = agents.InsertBeforeDoubleDash(command.Args, []string{"--config", `web_search="disabled"`})
-	}
-	command.Cleanup = func() { _ = os.Remove(path) }
-	return nil
-}
-
 // Catalog fetches the router's Codex model catalog, narrowed to the models
 // menu, and reports whether the default model needs web search disabled.
+// Setup writes it for Codex to read: Codex does not discover remote catalogs
+// for custom providers, so the authenticated router catalog is supplied
+// explicitly, and auxiliary agents never pick bundled OpenAI models the
+// routing endpoint cannot serve. Its models fill Codex's /model menu;
+// dari/routing is dropped without the plan.
 func Catalog(ctx context.Context, key, baseURL string, models agents.Models) ([]byte, bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()

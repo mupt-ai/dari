@@ -73,3 +73,25 @@ func TestStatusDashboardLink(t *testing.T) {
 		})
 	}
 }
+
+// A launch starts on the user's saved pick while the router offers it.
+func TestDefaultStartsOnTheSavedPick(t *testing.T) {
+	models := Models{Enabled: []string{"a/one", "a/two"}, Unavailable: []string{"b/three"}}
+	for saved, want := range map[string]string{
+		"":                 "dari/model/a/one",
+		"dari/model/a/two": "dari/model/a/two",
+		"dari/model/gone":  "dari/model/a/one",
+		// A chosen model nothing can serve yet is not started on.
+		"dari/model/b/three": "dari/model/a/one",
+		"dari/routing":       "dari/model/a/one",
+	} {
+		models.Saved = saved
+		if got := models.Default(); got != want {
+			t.Errorf("Saved %q: Default() = %q, want %q", saved, got, want)
+		}
+	}
+	routed := Models{Routing: true, Enabled: []string{"a/one"}, Saved: "dari/model/a/one"}
+	if got := routed.Default(); got != "dari/model/a/one" {
+		t.Errorf("with routing, Default() = %q", got)
+	}
+}

@@ -6,13 +6,11 @@ import (
 	"github.com/mupt-ai/dari/internal/cli/agents"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strconv"
 	"strings"
 	"testing"
 )
 
-func TestPrepareCodexCatalog(t *testing.T) {
+func TestCodexCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("unexpected catalog request")
@@ -20,28 +18,12 @@ func TestPrepareCodexCatalog(t *testing.T) {
 		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/routing","context_window":272000,"auto_review_model_override":null,"support_verbosity":false,"web_search_tool_type":null,"tool_mode":null,"multi_agent_version":null}]}`))
 	}))
 	defer server.Close()
-	command := agents.Command{Args: []string{"-c", `approvals_reviewer="auto_review"`, "--", "prompt"}}
-	if err := PrepareCatalog(context.Background(), &command, "test-key", server.URL, agents.Models{Routing: true}); err != nil {
-		t.Fatal(err)
-	}
-	defer command.Cleanup()
-	if command.Args[1] != `approvals_reviewer="auto_review"` || command.Args[6] != "--" || command.Args[5] != `web_search="disabled"` {
-		t.Fatalf("args: %v", command.Args)
-	}
-	path, err := strconv.Unquote(strings.TrimPrefix(command.Args[3], "model_catalog_json="))
+	data, disableWebSearch, err := Catalog(context.Background(), "test-key", server.URL, agents.Models{Routing: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("permissions: %v", info.Mode())
+	if !disableWebSearch {
+		t.Fatal("a catalog without a web search tool type should disable web search")
 	}
 	var catalog struct {
 		Models []map[string]any `json:"models"`
@@ -61,27 +43,14 @@ func TestPrepareCodexCatalog(t *testing.T) {
 			t.Fatalf("null selector retained: %s", field)
 		}
 	}
-	command.Cleanup()
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("catalog not cleaned up: %v", err)
-	}
 }
 
-func TestPrepareCodexCatalogOffersOnlyTheLaunchModels(t *testing.T) {
+func TestCodexCatalogOffersOnlyTheLaunchModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/routing","web_search_tool_type":"text"},{"slug":"dari/model/a/b","web_search_tool_type":"text"},{"slug":"dari/model/x/y","web_search_tool_type":"text"}]}`))
 	}))
 	defer server.Close()
-	command := agents.Command{}
-	if err := PrepareCatalog(context.Background(), &command, "test-key", server.URL, agents.Models{Enabled: []string{"a/b"}}); err != nil {
-		t.Fatal(err)
-	}
-	defer command.Cleanup()
-	path, err := strconv.Unquote(strings.TrimPrefix(command.Args[1], "model_catalog_json="))
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(path)
+	data, _, err := Catalog(context.Background(), "test-key", server.URL, agents.Models{Enabled: []string{"a/b"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +65,7 @@ func TestPrepareCodexCatalogOffersOnlyTheLaunchModels(t *testing.T) {
 	}
 }
 
-func TestPrepareCodexCatalogFailsClosed(t *testing.T) {
+func TestCodexCatalogFailsClosed(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
 		status     int
@@ -114,16 +83,12 @@ func TestPrepareCodexCatalogFailsClosed(t *testing.T) {
 				_, _ = w.Write([]byte(tc.body))
 			}))
 			defer server.Close()
-			command := agents.Command{}
-			err := PrepareCatalog(context.Background(), &command, "test-key", server.URL, agents.Models{Routing: true})
+			_, _, err := Catalog(context.Background(), "test-key", server.URL, agents.Models{Routing: true})
 			if err == nil {
 				t.Fatal("expected error")
 			}
 			if strings.Contains(err.Error(), "secret response body") || strings.Contains(err.Error(), "test-key") {
 				t.Fatalf("leaked response or key: %v", err)
-			}
-			if command.Cleanup != nil || len(command.Args) != 0 {
-				t.Fatal("modified command on failure")
 			}
 		})
 	}

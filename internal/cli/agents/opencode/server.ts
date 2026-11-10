@@ -1,4 +1,4 @@
-import { renameSync, writeFileSync } from "node:fs"
+import { readFileSync, renameSync, writeFileSync } from "node:fs"
 
 const statusFile = new URL("../status.json", import.meta.url)
 const headerNames = ["x-dari-selected-model", "x-dari-thinking-level", "x-dari-lease-turns-remaining", "x-dari-session-pinned", "x-request-id"]
@@ -8,10 +8,20 @@ const headerNames = ["x-dari-selected-model", "x-dari-thinking-level", "x-dari-l
 // rendered status per session next to the plugin. The file lives outside the
 // plugin directory so status writes do not trigger OpenCode's plugin reloads. The launcher supplies the status renderer through the
 // environment.
+// `opencode` run directly has no launcher environment; setup saves the
+// status renderer's path beside the plugin.
+function savedExecutable(): string | undefined {
+  try {
+    return readFileSync(new URL("../status-executable", import.meta.url), "utf8").trim() || undefined
+  } catch {
+    return undefined
+  }
+}
+
 export default {
   id: "dari.status",
   setup: async (ctx: any) => {
-    const executable = process.env.DARI_STATUS_EXECUTABLE
+    const executable = process.env.DARI_STATUS_EXECUTABLE ?? savedExecutable()
     // OpenCode names the session but not the kind of request or the agent;
     // Dari uses both to split Activity into main, subagent, and background work.
     await ctx.session.hook("model.request", (event: any) => {

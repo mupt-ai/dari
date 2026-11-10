@@ -128,3 +128,34 @@ func TestSetupRefusesUserDefinedDariProvider(t *testing.T) {
 		t.Fatalf("Setup() error = %v", err)
 	}
 }
+
+// Codex's /model edits the model inside the setup block, and Codex appends
+// the tables it adds inside the trailing block; a later setup or removal
+// keeps them.
+func TestSetupKeepsWhatCodexAddedInsideItsBlocks(t *testing.T) {
+	config, err := setupConfig("", "https://routing.dari.dev", "dak_1", "dari/routing", "/tmp/catalog.json", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What Codex leaves after /model picks another model.
+	config = strings.Replace(config, `model = "dari/routing"`, `model = "dari/model/a/b"`, 1)
+	config = strings.TrimSuffix(config, setupEnd+"\n") + "\n[tui]\nscreen_reader_detection_done = true\n" + setupEnd + "\n"
+
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := SavedModel(home); got != "dari/model/a/b" {
+		t.Fatalf("SavedModel = %q", got)
+	}
+	again, err := setupConfig(config, "http://127.0.0.1:7340", "dgw", SavedModel(home), "/tmp/catalog.json", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(again, "[tui]\nscreen_reader_detection_done = true") || !strings.Contains(again, `model = "dari/model/a/b"`) {
+		t.Fatalf("setup dropped Codex's additions:\n%s", again)
+	}
+	if removed := removeSetup(again); !strings.Contains(removed, "[tui]") || strings.Contains(removed, "model_providers.dari") {
+		t.Fatalf("removal = %q", removed)
+	}
+}

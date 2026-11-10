@@ -38,9 +38,16 @@ func TestCodexInstalledStatus(t *testing.T) {
 			command.Cleanup()
 		}
 	}()
-	if err := PrepareCatalog(context.Background(), &command, "test-key", base, agents.Models{Routing: true}); err != nil {
+	// Launches set Codex up in its config, as `codex` itself reads it.
+	catalog, disableWebSearch, err := Catalog(context.Background(), "test-key", base, agents.Models{Routing: true})
+	if err != nil {
 		t.Fatal(err)
 	}
+	home := t.TempDir()
+	if err := Setup(home, base, "test-key", agents.RoutingModel, catalog, disableWebSearch); err != nil {
+		t.Fatal(err)
+	}
+	command.Env = agents.WithEnvironment(command.Env, map[string]string{"CODEX_HOME": home})
 	if err := PrepareStatus(context.Background(), &command, args, "test-key", base); err != nil {
 		t.Fatal(err)
 	}

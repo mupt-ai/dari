@@ -13,11 +13,11 @@ import (
 	"github.com/mupt-ai/dari/internal/cli/agents"
 )
 
-// Configure points Claude Code at the router at baseURL, starts it on the
-// launch's default model and, unless the user passed their own --settings,
-// adds Dari's status line and lists the router's models in /model.
-func Configure(command *agents.Command, key, baseURL string, models agents.Models) error {
-	command.Env = agents.WithEnvironment(command.Env, map[string]string{
+// routingEnvironment points Claude Code at the router at baseURL: what a
+// launch sets for its session, and what setup writes into Claude Code's
+// settings so `claude` itself routes the same way.
+func routingEnvironment(key, baseURL string, models agents.Models) map[string]string {
+	return map[string]string{
 		"ANTHROPIC_BASE_URL":               baseURL,
 		"ANTHROPIC_AUTH_TOKEN":             key,
 		"ANTHROPIC_API_KEY":                "",
@@ -30,7 +30,14 @@ func Configure(command *agents.Command, key, baseURL string, models agents.Model
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":   models.Default(),
 		"ANTHROPIC_DEFAULT_SONNET_MODEL": models.Default(),
 		"ANTHROPIC_DEFAULT_FABLE_MODEL":  models.Default(),
-	})
+	}
+}
+
+// Configure points Claude Code at the router at baseURL, starts it on the
+// launch's default model and, unless the user passed their own --settings,
+// adds Dari's status line and lists the router's models in /model.
+func Configure(command *agents.Command, key, baseURL string, models agents.Models) error {
+	command.Env = agents.WithEnvironment(command.Env, routingEnvironment(key, baseURL, models))
 	if !agents.ArgsContainFlag(command.Args, "--settings") {
 		if err := injectSettings(command, models); err != nil {
 			return err

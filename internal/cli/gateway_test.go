@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -26,8 +27,12 @@ const gatewayCatalog = `{"models":[{"slug":"dari/routing","context_window":27200
 func setGatewayEnv(t *testing.T, gatewayURL string) {
 	t.Helper()
 	t.Setenv("DARI_CONFIG_DIR", t.TempDir())
-	// Launches cache the Pi and OpenCode files under the home directory.
+	// Launches cache the Pi and OpenCode files under the home directory, and
+	// write each agent's own config there; nothing may point at the real ones.
 	t.Setenv("HOME", t.TempDir())
+	for _, name := range []string{"CLAUDE_CONFIG_DIR", "CODEX_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "PI_CODING_AGENT_DIR"} {
+		t.Setenv(name, "")
+	}
 	// os.UserCacheDir prefers XDG_CACHE_HOME on Linux.
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("DARI_API_KEY", "")
@@ -173,6 +178,11 @@ func TestGatewayLaunchesMakeNoHostedCalls(t *testing.T) {
 			if env["ANTHROPIC_BASE_URL"] != gateway.URL || env["ANTHROPIC_AUTH_TOKEN"] != gatewayTestKey {
 				t.Errorf("Claude env = %q, %q", env["ANTHROPIC_BASE_URL"], env["ANTHROPIC_AUTH_TOKEN"])
 			}
+			// `claude` run directly routes the same way.
+			raw, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"))
+			if err != nil || !strings.Contains(string(raw), `"ANTHROPIC_BASE_URL": "`+gateway.URL+`"`) {
+				t.Errorf("Claude settings = %s, %v", raw, err)
+			}
 		}},
 		{"codex", []string{"GET /v1/models", "GET /v1/models"}, func(t *testing.T, _ map[string]string, args []string) {
 			want := `model_providers.dari.base_url="` + gateway.URL + `/v1"`
@@ -199,7 +209,9 @@ func TestGatewayLaunchesMakeNoHostedCalls(t *testing.T) {
 
 			var stderr strings.Builder
 			code := runAgentLaunch(context.Background(), agentLaunch{name: tc.agent, args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
-			if code != 0 || stderr.Len() != 0 {
+			// The only output is the first launch saying the agent itself now
+			// routes through Dari too.
+			if out := strings.TrimSpace(stderr.String()); code != 0 || (out != "" && !strings.Contains(out, "itself now routes through Dari")) {
 				t.Fatalf("exit %d, stderr %q", code, stderr.String())
 			}
 			env, args := readLaunchRecord(t, record)
@@ -489,5 +501,86 @@ func TestRouterModelsNamesTheAgent(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: x-dari-client-harness = %q, want %q", agent, got, want)
 		}
+	}
+}
+
+// Codex reads the router's model catalog only from the config setup writes,
+// so a Codex launch whose setup fails does not start Codex without it.
+func TestCodexLaunchStopsWhenSetupFails(t *testing.T) {
+	launchTestGateway(t)
+	record := fakeAgentExecutable(t, "codex")
+	home := filepath.Join(os.Getenv("HOME"), ".codex")
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("[model_providers.dari]\nname = \"mine\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr strings.Builder
+	code := runAgentLaunch(context.Background(), agentLaunch{name: "codex", args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "already defines [model_providers.dari]") {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Fatalf("Codex started without its catalog: %v", err)
+	}
+}
+
+// `dari claude --setup` sets up the Claude app before Claude Code: the app
+// refuses a router without Claude models, and then nothing is written.
+func TestClaudeSetupWritesNothingWhenTheAppRefuses(t *testing.T) {
+	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/model/openai/gpt-6.1-sol"}]}`))
+	})))
+	defer gw.Close()
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gw.URL)
+
+	var stderr strings.Builder
+	err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setup: true}, strings.NewReader(""), &stderr)
+	if err == nil || !strings.Contains(err.Error(), "only lists Claude models") {
+		t.Fatalf("setup error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")); !os.IsNotExist(err) {
+		t.Fatalf("Claude Code settings were written: %v", err)
+	}
+}
+
+// `dari claude --setup` then `--remove-setup` leaves Claude Code's settings
+// as they were, including the hint-header variable both setups set.
+func TestClaudeSetupRoundTripRestoresSettings(t *testing.T) {
+	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/model/anthropic/claude-sonnet-5-5"}]}`))
+	})))
+	defer gw.Close()
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gw.URL)
+	settingsPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := `{"model":"opus","env":{"OTHER":"1"}}`
+	if err := os.WriteFile(settingsPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr strings.Builder
+	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setup: true}, strings.NewReader(""), &stderr); err != nil {
+		t.Fatalf("setup: %v, %s", err, stderr.String())
+	}
+	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", removeSetup: true}, strings.NewReader(""), &stderr); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		t.Fatal(err)
+	}
+	env, _ := settings["env"].(map[string]any)
+	if settings["model"] != "opus" || len(env) != 1 || env["OTHER"] != "1" || len(settings) != 2 {
+		t.Fatalf("settings after round trip = %s", raw)
 	}
 }

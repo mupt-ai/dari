@@ -1,17 +1,35 @@
 // The Dari provider for Pi. It mirrors each response's routing headers into
 // Pi's footer: the model that served the turn, its thinking level, how many
 // turns remain on the current lease, and a link to the conversation in
-// Activity. The launcher supplies the status renderer through the
-// environment, along with the models to offer and the router's base URL.
+// Activity. A `dari pi` launch supplies the status renderer, the models to
+// offer, the router's base URL, and its key through the environment; `pi` run
+// directly reads the same from dari.json, which setup saves beside Pi's
+// settings.
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+function savedSetup(): Record<string, any> {
+  const dir = process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+  try {
+    return JSON.parse(readFileSync(join(dir, "dari.json"), "utf8"));
+  } catch {
+    return {};
+  }
+}
+
 export default function (pi: any) {
-  const executable = process.env.DARI_STATUS_EXECUTABLE
-  // The launcher lists the models this organization can use, default first.
-  const models: string[] = JSON.parse(process.env.DARI_MODELS ?? '["dari/routing"]')
-  const routingBaseURL = process.env.DARI_ROUTING_BASE_URL ?? "https://routing.dari.dev"
+  const saved = savedSetup();
+  const executable = process.env.DARI_STATUS_EXECUTABLE ?? saved.statusExecutable
+  // The models this organization can use, default first.
+  const models: string[] = process.env.DARI_MODELS
+    ? JSON.parse(process.env.DARI_MODELS)
+    : saved.models ?? ["dari/routing"]
+  const routingBaseURL = process.env.DARI_ROUTING_BASE_URL ?? saved.baseUrl ?? "https://routing.dari.dev"
   pi.registerProvider("dari", {
     name: "Dari",
     baseUrl: `${routingBaseURL}/v1`,
-    apiKey: "$DARI_ROUTING_API_KEY",
+    apiKey: process.env.DARI_ROUTING_API_KEY ? "$DARI_ROUTING_API_KEY" : saved.apiKey,
     api: "openai-completions",
     compat: { sendSessionAffinityHeaders: true },
     models: models.map((id: string) => ({

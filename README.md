@@ -103,6 +103,21 @@ dari pi --tools read,grep,find,ls -p "Review this repository"
 
 The launcher subcommand must be the first argument. Dari-owned provider and model settings take precedence if conflicting agent flags are passed, so the process remains routed through Dari. The native agent executable must already be installed and available on `PATH`, or set `DARI_<AGENT>_PATH` (for example `DARI_OPENCODE_PATH`) to its location.
 
+### The Agents Themselves
+
+Every `dari claude`, `dari codex`, `dari pi`, and `dari opencode` launch also writes Dari into that agent's own config, so `claude`, `codex`, `pi`, and `opencode` run directly route through Dari the same way. Each launch refreshes it, so it follows `dari gateway setup` between hosted, local, and self-hosted routing. The first launch says so; `dari <agent> --remove-setup` undoes it and restores what was there.
+
+Each launch starts on the model you last picked with the agent's own `/model` while the router still offers it, else the router's first model:
+
+| Agent | Dari writes | Your pick is read from |
+|---|---|---|
+| Claude Code | `env`, `model`, `modelPicker`, and the status line (unless you set your own) in `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR`) | `model` there |
+| Codex | a marked block in `~/.codex/config.toml` (or `$CODEX_HOME`), as `--setup` does | its top-level `model` |
+| Pi | the provider extension in `~/.pi/agent/extensions/`, the router and key in `dari.json`, and `defaultProvider`, `defaultModel`, `enabledModels` in `settings.json` (or `$PI_CODING_AGENT_DIR`) | `defaultModel` while `defaultProvider` is `dari` |
+| OpenCode | the Dari provider (only), its models, and the status plugin in `~/.config/opencode/opencode.json` | its most recent Dari model (`~/.local/state/opencode/model.json`) |
+
+The values Dari replaces are saved in `dari-setup.json` beside each config. Keys are written in the agent's own config, readable only by you, because the agent run directly has no launcher environment. An `opencode.json` with comments is left as it is; the launch still routes through Dari. With a local gateway, the agents run directly need it running: `dari gateway start`.
+
 ### Desktop Apps
 
 The Claude and Codex desktop apps never run through the launcher, so `--setup` writes Dari into the config each app reads:
@@ -114,7 +129,7 @@ dari codex --setup
 
 Setup runs the same onboarding as a first launch, then exits without starting the agent. Restart the app to apply it. The app's model picker lists the same menu as the launcher; rerun `--setup` after changing the router's models. `--remove-setup` undoes it.
 
-- `dari claude --setup` applies a Dari gateway entry in the Claude app's third-party inference configuration (`Claude-3p/configLibrary` in the app's data directory), which signs the app in through Dari instead of claude.ai. The Claude app lists only Claude models: routing appears as **Dari Routing**, and explicit models from other families are left out. It also sets `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` in Claude Code's user settings so subagents route independently.
+- `dari claude --setup` also applies a Dari gateway entry in the Claude app's third-party inference configuration (`Claude-3p/configLibrary` in the app's data directory), which signs the app in through Dari instead of claude.ai. The Claude app lists only Claude models: routing appears as **Dari Routing**, and explicit models from other families are left out. It also sets `CLAUDE_CODE_GATEWAY_HINT_HEADERS=1` in Claude Code's user settings so subagents route independently.
 - `dari codex --setup` makes Dari the default provider in `~/.codex/config.toml` (or `$CODEX_HOME`), which the Codex app and plain `codex` share. Replaced top-level keys are commented out and restored by `--remove-setup`. The model menu is written to `dari-models.json` beside it.
 
 Both apps store the Routing key in these files because desktop apps do not inherit shell environment variables.

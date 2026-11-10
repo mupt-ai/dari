@@ -98,6 +98,10 @@ func init() {
 					}
 					signal.Ignore(os.Interrupt, syscall.SIGTERM)
 					defer signal.Reset(os.Interrupt, syscall.SIGTERM)
+					if err := gateway.MarkRunning(); err != nil {
+						return err
+					}
+					defer gateway.ClearRunning()
 					return process.Run()
 				},
 			},
@@ -193,6 +197,9 @@ func newGatewayStatusCmd() *cobra.Command {
 				dir, _ := gateway.Dir()
 				fmt.Fprintln(out, "Mode:          Fully local")
 				fmt.Fprintf(out, "Gateway:       %s (%s)\n", gw.url, running)
+				if version := gateway.InstalledVersion(); version != "" {
+					fmt.Fprintf(out, "Version:       v%s\n", version)
+				}
 				fmt.Fprintf(out, "Auto-routing:  %s\n", autorouting)
 				fmt.Fprintf(out, "Data:          %s\n", dir)
 			default:

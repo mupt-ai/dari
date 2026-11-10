@@ -83,32 +83,86 @@ func Install(ctx context.Context, cliVersion string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return selfupdate.Install(ctx, cliVersion, gatewayReleaseURL(cliVersion), binaryName, p.binary)
+	version, err := selfupdate.Install(ctx, cliVersion, gatewayReleaseURL(cliVersion), binaryName, p.binary)
+	if err != nil {
+		return "", err
+	}
+	// Recorded so a CLI on another version knows to replace it.
+	if err := os.WriteFile(versionPath(p), []byte(bareVersion(version)), 0o600); err != nil {
+		return "", err
+	}
+	return version, nil
 }
+
+// InstalledVersion is the version of the installed gateway, "" when unknown
+// (installed before versions were recorded, or not installed).
+func InstalledVersion() string {
+	p, err := paths()
+	if err != nil {
+		return ""
+	}
+	raw, err := os.ReadFile(versionPath(p))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func versionPath(p localPaths) string {
+	return p.binary + ".version"
+}
+
+func bareVersion(version string) string {
+	return strings.TrimPrefix(strings.TrimSpace(version), "v")
+}
+
+// releasesURL lists the releases the gateway installs from.
+var releasesURL = selfupdate.ReleasesURL
 
 func gatewayReleaseURL(cliVersion string) string {
 	if !selfupdate.IsReleaseVersion(cliVersion) {
-		return selfupdate.ReleasesURL + "/latest"
+		return releasesURL + "/latest"
 	}
-	return selfupdate.ReleasesURL + "/tags/v" + strings.TrimPrefix(cliVersion, "v")
+	return releasesURL + "/tags/v" + strings.TrimPrefix(cliVersion, "v")
 }
 
 // EnsureInstalled installs the gateway when it is missing.
 func EnsureInstalled(ctx context.Context, cliVersion string, progress func(string)) error {
+	_, err := ensureInstalled(ctx, cliVersion, progress)
+	return err
+}
+
+// ensureInstalled installs the gateway when it is missing, and replaces it
+// when a released CLI finds it on another version, so `dari update` updates
+// both. It reports whether it replaced an installed gateway. A failed update
+// keeps the installed gateway rather than failing the launch.
+func ensureInstalled(ctx context.Context, cliVersion string, progress func(string)) (bool, error) {
 	p, err := paths()
 	if err != nil {
-		return err
+		return false, err
 	}
-	if _, err := os.Stat(p.binary); !errors.Is(err, os.ErrNotExist) {
-		return err
+	if _, err := os.Stat(p.binary); errors.Is(err, os.ErrNotExist) {
+		progress("Installing Dari Gateway")
+		version, err := Install(ctx, cliVersion)
+		if err != nil {
+			return false, fmt.Errorf("install Dari Gateway: %w", err)
+		}
+		progress("Dari Gateway " + version + " installed")
+		return false, nil
+	} else if err != nil {
+		return false, err
 	}
-	progress("Installing Dari Gateway")
+	if !selfupdate.IsReleaseVersion(cliVersion) || InstalledVersion() == bareVersion(cliVersion) {
+		return false, nil
+	}
+	progress("Updating Dari Gateway to v" + bareVersion(cliVersion))
 	version, err := Install(ctx, cliVersion)
 	if err != nil {
-		return fmt.Errorf("install Dari Gateway: %w", err)
+		progress("Could not update Dari Gateway (" + err.Error() + "); using the installed one")
+		return false, nil
 	}
 	progress("Dari Gateway " + version + " installed")
-	return nil
+	return true, nil
 }
 
 // EffectiveConfig is the router config the local gateway serves, as JSON:
@@ -163,15 +217,29 @@ func Healthy(ctx context.Context) bool {
 // already answering, installing it first when it is missing. progress
 // receives one line per step taken.
 func EnsureRunning(ctx context.Context, settings Settings, cliVersion string, progress func(string)) error {
-	if Healthy(ctx) {
-		return nil
-	}
 	p, err := paths()
 	if err != nil {
 		return err
 	}
-	if err := EnsureInstalled(ctx, cliVersion, progress); err != nil {
+	if _, err := ensureInstalled(ctx, cliVersion, progress); err != nil {
 		return err
+	}
+	if Healthy(ctx) {
+		// The installed binary may be newer than the running process: an
+		// update here, or an earlier command that installed without
+		// restarting. Restart the gateway this CLI runs on it.
+		installed := InstalledVersion()
+		if !runsOldBinary(installed, RunningVersion()) {
+			return nil
+		}
+		stopped, err := Stop(ctx)
+		if err != nil {
+			return err
+		}
+		if !stopped && Healthy(ctx) {
+			progress("A gateway this CLI did not start is answering at " + LocalURL() + "; restart it to use Dari Gateway v" + installed)
+			return nil
+		}
 	}
 	if err := Start(settings); err != nil {
 		return err
@@ -259,7 +327,53 @@ func Start(settings Settings) error {
 	if err := os.WriteFile(p.pid, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
 		return err
 	}
+	if err := MarkRunning(); err != nil {
+		return err
+	}
 	return cmd.Process.Release()
+}
+
+// runsOldBinary reports whether the serving gateway is older than the
+// installed binary: running records another version, or none (started before
+// versions were recorded). Nothing is compared while the installed version is
+// unknown.
+func runsOldBinary(installed, running string) bool {
+	return installed != "" && running != installed
+}
+
+// MarkRunning records that a gateway on the installed version is serving, so
+// a later launch can tell when the installed binary has moved past it.
+func MarkRunning() error {
+	p, err := paths()
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(runningVersionPath(p), []byte(InstalledVersion()), 0o600)
+}
+
+// ClearRunning forgets the serving gateway's version once it has stopped.
+func ClearRunning() {
+	if p, err := paths(); err == nil {
+		_ = os.Remove(runningVersionPath(p))
+	}
+}
+
+// RunningVersion is the version of the gateway serving now, as recorded when
+// this CLI started it, or "" when unknown.
+func RunningVersion() string {
+	p, err := paths()
+	if err != nil {
+		return ""
+	}
+	raw, err := os.ReadFile(runningVersionPath(p))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+func runningVersionPath(p localPaths) string {
+	return p.pid + ".version"
 }
 
 // Stop stops a local gateway started in the background. It reports whether
@@ -282,6 +396,7 @@ func Stop(ctx context.Context) (bool, error) {
 	// pid that is gone, or now belongs to another program, is stale.
 	if err != nil || !gatewayRunning(pid, p.binary) {
 		_ = os.Remove(p.pid)
+		ClearRunning()
 		return false, nil
 	}
 	process, err := os.FindProcess(pid)
@@ -296,6 +411,7 @@ func Stop(ctx context.Context) (bool, error) {
 		}
 		if waitForExit(ctx, pid, p.binary, 5*time.Second) {
 			_ = os.Remove(p.pid)
+			ClearRunning()
 			return true, nil
 		}
 	}

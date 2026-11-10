@@ -27,7 +27,7 @@ The gateway is the runtime behind Dari's hosted routing service, packaged to run
 ## Features
 
 - **One endpoint, three protocols.** `/v1/messages`, `/v1/chat/completions`, and `/v1/responses` (plus `/v1/models`) reach API-key providers in the [Pi AI](https://www.npmjs.com/package/@mupt-ai/pi-ai) catalog, such as Anthropic, OpenAI, and OpenRouter, or any OpenAI-compatible server.
-- **Subscription pooling.** Connect several Claude Code (Max/Pro) or ChatGPT plans. The gateway stays on one until it reports a usage limit, holds it until its reset, and moves to the next. When every plan is held, the provider's API key serves if you set one.
+- **Subscription pooling.** Connect several Claude Code (Max/Pro) or ChatGPT plans. Each conversation stays on one plan so its prompt cache stays warm. Claude Code plans report their usage on every response: once a plan has used 95% of a window, its conversations move to another plan at their next turn, and new conversations start on the plan whose quota resets soonest. A plan that reports a usage limit is held until its reset, and the request it refused is served by the next plan at once. When every plan is held, the provider's API key serves if you set one.
 - **Failover.** A provider failure retries the router's next model.
 - **Prompt-cache aware.** Conversations keep their identity and serving model across turns, so provider caches stay warm. Responses carry `X-Dari-Selected-Model`, `X-Dari-Thinking-Level`, and `X-Dari-Conversation-Id` headers for status lines.
 - **Coding agents.** `dari claude`, `dari codex`, `dari opencode`, and `dari pi` from the [Dari CLI](https://github.com/mupt-ai/dari) launch straight against your gateway.

@@ -13,7 +13,7 @@ import {
   type OAuthFetch,
   type SubscriptionProvider,
 } from "./oauth.js";
-import { isHeld, type SubscriptionCredential, type SubscriptionStore } from "./store.js";
+import { isHeld, type SubscriptionCredential, type SubscriptionStore, currentUsage } from "./store.js";
 
 export type SubscriptionHttpDeps = {
   store: SubscriptionStore;
@@ -160,6 +160,11 @@ function summary(store: SubscriptionStore, credential: SubscriptionCredential, n
 }
 
 /** The fields the CLI reads from a credential, never its tokens. */
+function usageBody(credential: SubscriptionCredential, now: Date) {
+  const usage = currentUsage(credential, now);
+  return usage === null ? null : { utilization: usage.utilization, resets_at: usage.resetsAt.toISOString() };
+}
+
 function credentialBody(credential: SubscriptionCredential, active: boolean, now: Date) {
   const held = isHeld(credential, now);
   return {
@@ -176,6 +181,9 @@ function credentialBody(credential: SubscriptionCredential, active: boolean, now
     unavailable_until: held ? credential.unavailableUntil!.toISOString() : null,
     unavailable_reason: held ? credential.unavailableReason : null,
     subscription_active: active,
+    // The share of its tightest window the plan last reported used, while
+    // that window has not reset; null when it reports none.
+    usage: usageBody(credential, now),
     // Spending banked Codex resets is hosted-only.
     auto_redeem_resets: false,
   };

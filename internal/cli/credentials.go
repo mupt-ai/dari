@@ -281,7 +281,15 @@ type subscriptionCredential struct {
 	UnavailableUntil   *string           `json:"unavailable_until"`
 	UnavailableReason  *string           `json:"unavailable_reason"`
 	SubscriptionActive bool              `json:"subscription_active"`
-	AutoRedeemResets   bool              `json:"auto_redeem_resets"`
+	// Usage is how much of its tightest window the plan last reported used;
+	// a gateway reports it, the hosted API does not yet.
+	Usage            *subscriptionUsage `json:"usage"`
+	AutoRedeemResets bool               `json:"auto_redeem_resets"`
+}
+
+type subscriptionUsage struct {
+	Utilization float64 `json:"utilization"`
+	ResetsAt    string  `json:"resets_at"`
 }
 
 func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
@@ -326,6 +334,7 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 					"unavailable_until":  subscription.UnavailableUntil,
 					"unavailable_reason": subscription.UnavailableReason,
 					"last_used_at":       subscription.LastUsedAt,
+					"usage":              subscription.Usage,
 					"auto_redeem_resets": subscription.AutoRedeemResets,
 				})
 			}

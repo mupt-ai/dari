@@ -5,7 +5,7 @@ import type {
 } from "@mupt-ai/dari-router/policy-engine";
 import type { HarnessConversationIdentity } from "../runtime/harness_identity/index.js";
 import type { InteractionRequest, SourceProtocol } from "../interaction/types.js";
-import type { SubscriptionUsageLimit } from "../providers/subscription_limits.js";
+import type { SubscriptionUsage, SubscriptionUsageLimit } from "../providers/subscription_limits.js";
 import type {
   ClientHarness,
   ProviderCredential,
@@ -55,6 +55,19 @@ export type GatewayPlatform = {
    */
   markSubscriptionUnavailable(hold: SubscriptionHold): Promise<boolean>;
   /**
+   * Optional. Record how much of a personal subscription's quota a successful
+   * response reports used, so the platform can move new conversations to
+   * plans with headroom before one runs out.
+   */
+  recordSubscriptionUsage?(report: SubscriptionUsageReport): Promise<void>;
+  /**
+   * Optional. After `markSubscriptionUnavailable` reports another plan can
+   * serve, the plan that serves this conversation next, so the gateway
+   * retries the request on it at once instead of failing it. Undefined when
+   * none can.
+   */
+  nextSubscription?(request: NextSubscriptionRequest): Promise<NextSubscription | undefined>;
+  /**
    * Account one call served on a platform-managed provider key. Only reached
    * when `resolveRouter` reports a "managed" key source.
    */
@@ -72,6 +85,10 @@ export type ResolveRouterRequest = {
   conversationId?: string;
   includePublicEvalCatalog?: boolean;
   clientHarness?: ClientHarness;
+  // A later resolve with this request's `conversationId` replaces this one's
+  // credentials, so none from it serve the request: a platform should not
+  // mark a credential used or refresh it for this resolve.
+  provisional?: boolean;
 };
 
 export type ProviderCredentialRequest = {
@@ -123,6 +140,24 @@ export type SubscriptionHold = {
   userId: string;
   credentialId: string | undefined;
   limit: SubscriptionUsageLimit;
+};
+
+export type NextSubscriptionRequest = {
+  userId: string;
+  provider: Provider;
+  conversationId: string;
+};
+
+export type NextSubscription = {
+  credentialId: string;
+  // The plan's access token, sent as the bearer credential.
+  apiKey: string;
+};
+
+export type SubscriptionUsageReport = {
+  userId: string;
+  credentialId: string;
+  usage: SubscriptionUsage;
 };
 
 export type RequestRecord = {
@@ -221,7 +256,9 @@ export type OperationalErrorCode =
   | "server_force_stop_failed"
   | "session_pin_write_failed"
   | "stream_report_finalization_failed"
-  | "subscription_unavailable_ingest_failed";
+  | "subscription_unavailable_ingest_failed"
+  | "subscription_usage_record_failed"
+  | "next_subscription_lookup_failed";
 
 export type OperationalErrorContext = {
   code: OperationalErrorCode;

@@ -77,10 +77,14 @@ export async function resolveSelfHostedRouter(
       : null;
     const active = subscription === null
       ? null
-      : deps.subscriptions.activeCredential(subscription, now);
+      : deps.subscriptions.selectCredential(subscription, request.conversationId, now);
     if (active !== null) {
       credentials.set(provider, {
-        key: await freshAccessToken(deps.subscriptions, active, { fetch: deps.fetch }),
+        // A provisional resolve's credentials never serve, so it neither marks
+        // the plan used nor refreshes its token.
+        key: request.provisional === true
+          ? active.accessToken
+          : await freshAccessToken(deps.subscriptions, active, { fetch: deps.fetch }),
         source: "subscription",
         subscription: active,
       });

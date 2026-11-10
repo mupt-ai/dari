@@ -148,6 +148,37 @@ test("an already-started speculative attempt settles before cancellation is chec
   expect(result).toMatchObject({ kind: "succeeded", value: "settled" });
 });
 
+// An exhausted plan names the next one: the same request is retried on it at
+// once, without spending the router's retry budget, and the result reports
+// the choice that served.
+test("retries on the next plan when an exhausted one names it", async () => {
+  type PlanChoice = { plan: string };
+  const dispatched: string[] = [];
+  const result = await runProviderAttemptPlan<PlanChoice, string, never>({
+    primary: { plan: "a" },
+    retries: 0,
+    isCustomerCanceled: () => false,
+    canceledFailure: () => ({ errorMessage: "canceled" }),
+    async runAttempt({ choice }) {
+      dispatched.push(choice.plan);
+      if (choice.plan === "a") {
+        return {
+          kind: "provider_failed",
+          message: { errorMessage: "usage limit" },
+          latencyMs: 1,
+          retryable: false,
+          nextSubscription: { credentialId: "cred_b", apiKey: "b" },
+        };
+      }
+      return { kind: "succeeded", value: "served", latencyMs: 2 };
+    },
+    recordFailedAttempt() {},
+    onSubscription: (_choice, next) => ({ plan: next.apiKey }),
+  });
+  expect(dispatched).toEqual(["a", "b"]);
+  expect(result).toEqual({ kind: "succeeded", choice: { plan: "b" }, attempt: 2, latencyMs: 3, value: "served" });
+});
+
 function failed(message: string, latencyMs: number): ProviderAttemptFailure {
   return {
     kind: "provider_failed",

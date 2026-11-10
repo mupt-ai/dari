@@ -13,8 +13,9 @@
  *   Dari CLI uses to connect, list, rename, release, and disconnect
  *   subscriptions. The caller authenticates the request first.
  *
- * Routing picks `store.activeCredential(provider)`: the subscription in use
- * while it serves, then the next one in connection order that is not held. When a provider reports a usage limit,
+ * Routing picks `store.selectCredential(provider, conversationId)`: see
+ * `store.ts` for how usage, resets, and conversations decide it. Successful
+ * responses report usage through `store.recordUsage`. When a provider reports a usage limit,
  * `store.markUnavailable` holds that subscription until its reset and says
  * whether another one can serve the retry.
  */

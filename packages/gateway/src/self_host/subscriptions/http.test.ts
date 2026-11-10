@@ -21,6 +21,7 @@ const CLI_CREDENTIAL_FIELDS = [
   "unavailable_until",
   "unavailable_reason",
   "subscription_active",
+  "usage",
   "auto_redeem_resets",
 ];
 
@@ -87,6 +88,7 @@ describe("connecting", () => {
         unavailable_until: null,
         unavailable_reason: null,
         subscription_active: true,
+        usage: null,
         auto_redeem_resets: false,
       },
     });

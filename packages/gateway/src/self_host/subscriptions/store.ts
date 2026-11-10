@@ -1,19 +1,38 @@
 /**
- * SQLite storage for personal subscription credentials and pending OAuth flows.
+ * SQLite storage for personal subscription credentials, the conversations
+ * each one serves, and pending OAuth flows.
  *
  * Tokens are stored as PLAINTEXT in the gateway's own database file. Anyone
  * who can read that file can use the connected subscriptions until the
  * provider revokes them, so keep the file on storage only the gateway's
  * operator can read, and treat backups of it as secrets.
  *
- * Connection order (`position`) is the order routing switches through: the
- * active credential for a provider is the first one, in that order, that is
- * not held. A hold ends on its own once `unavailable_until` passes.
+ * Choosing a subscription (`selectCredential`), for each provider:
+ * - A conversation stays on the subscription it started on, so its prompt
+ *   cache stays warm, until that subscription is held or reports at least
+ *   SWITCH_AT_UTILIZATION of a window used.
+ * - Otherwise it moves to the subscription with headroom whose reported
+ *   usage resets soonest, so quota about to reset is spent before fresh
+ *   quota. Ties go to the subscription used last, whose cached system prompt
+ *   new conversations share, then onward from it in connection order
+ *   (`position`). A request with no conversation stays on the subscription
+ *   used last.
+ * - When every subscription is past the threshold, the least used serves.
+ * A hold ends on its own once `unavailable_until` passes; reported usage
+ * stops counting once its window resets.
  */
 import type { Database } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 
+import type { SubscriptionUsage } from "../../providers/subscription_limits.js";
 import type { OAuthTokens, SubscriptionProvider } from "./oauth.js";
+
+// The share of a usage window past which conversations leave a subscription
+// at their next turn, before the provider starts refusing requests.
+export const SWITCH_AT_UTILIZATION = 0.95;
+
+// A conversation idle this long is forgotten; its next turn starts over.
+const CONVERSATION_PIN_TTL_MS = 7 * 24 * 60 * 60_000;
 
 export type SubscriptionCredential = {
   id: string;
@@ -29,6 +48,8 @@ export type SubscriptionCredential = {
   expiresAt: Date;
   unavailableUntil: Date | null;
   unavailableReason: string | null;
+  // The last usage a response reported, and when.
+  usage: (SubscriptionUsage & { observedAt: Date }) | null;
   position: number;
   createdAt: Date;
   updatedAt: Date;
@@ -62,11 +83,22 @@ type CredentialRow = {
   expires_at: number;
   unavailable_until: number | null;
   unavailable_reason: string | null;
+  usage_utilization: number | null;
+  usage_resets_at: number | null;
+  usage_observed_at: number | null;
   position: number;
   created_at: number;
   updated_at: number;
   last_used_at: number | null;
 };
+
+// Usage columns added after the table first shipped; existing databases gain
+// them on open.
+const USAGE_COLUMNS = {
+  usage_utilization: "REAL",
+  usage_resets_at: "INTEGER",
+  usage_observed_at: "INTEGER",
+} as const;
 
 type SessionRow = {
   token: string;
@@ -90,10 +122,26 @@ export class SubscriptionStore {
       expires_at INTEGER NOT NULL,
       unavailable_until INTEGER,
       unavailable_reason TEXT,
+      usage_utilization REAL,
+      usage_resets_at INTEGER,
+      usage_observed_at INTEGER,
       position INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       last_used_at INTEGER
+    )`);
+    const columns = new Set(
+      db.query<{ name: string }, []>("PRAGMA table_info(subscription_credentials)").all().map((column) => column.name),
+    );
+    for (const [column, type] of Object.entries(USAGE_COLUMNS)) {
+      if (!columns.has(column)) db.run(`ALTER TABLE subscription_credentials ADD COLUMN ${column} ${type}`);
+    }
+    db.run(`CREATE TABLE IF NOT EXISTS subscription_conversation_pins (
+      conversation_id TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      credential_id TEXT NOT NULL,
+      used_at INTEGER NOT NULL,
+      PRIMARY KEY (conversation_id, provider)
     )`);
     db.run(`CREATE TABLE IF NOT EXISTS subscription_oauth_sessions (
       token TEXT PRIMARY KEY,
@@ -126,21 +174,75 @@ export class SubscriptionStore {
     return row === null ? null : credentialFromRow(row);
   }
 
-  /** The credential routing uses now, or null when none is connected or every one is held. */
+  /**
+   * The subscription a request without a conversation would use now, or null
+   * when none is connected or every one is held.
+   */
   activeCredential(provider: SubscriptionProvider, now = new Date()): SubscriptionCredential | null {
-    // Stay on the most recently used subscription while it serves, so its
-    // prompt cache stays warm; once it is held, move on in connection order.
-    const credentials = this.list(provider);
-    let start = 0;
-    credentials.forEach((credential, index) => {
-      const lastUsed = credential.lastUsedAt?.getTime() ?? -1;
-      if (lastUsed > (credentials[start]!.lastUsedAt?.getTime() ?? -1)) start = index;
-    });
-    for (let offset = 0; offset < credentials.length; offset += 1) {
-      const credential = credentials[(start + offset) % credentials.length]!;
-      if (!isHeld(credential, now)) return credential;
+    return this.selectCredential(provider, undefined, now);
+  }
+
+  /**
+   * The subscription that serves a conversation's next turn (see the module
+   * comment), or null when none is connected or every one is held. A
+   * conversation is remembered on the subscription chosen for it.
+   */
+  selectCredential(
+    provider: SubscriptionProvider,
+    conversationId: string | undefined,
+    now = new Date(),
+  ): SubscriptionCredential | null {
+    const all = this.list(provider);
+    const available = all.filter((credential) => !isHeld(credential, now));
+    if (available.length === 0) return null;
+    const order = rotationFrom(all, lastUsed(all));
+    const withHeadroom = available.filter((credential) => hasHeadroom(credential, now));
+
+    const current = conversationId === undefined
+      ? lastUsed(available)
+      : this.pinnedCredential(conversationId, provider, available, now);
+    let chosen = current !== null && withHeadroom.includes(current) ? current : null;
+    if (chosen === null) {
+      chosen = withHeadroom.length > 0
+        ? [...withHeadroom].sort(soonestResetFirst(now, order))[0]!
+        : [...available].sort(leastUsedFirst(now, order))[0]!;
     }
-    return null;
+    if (conversationId !== undefined) this.pinConversation(conversationId, provider, chosen.id, now);
+    return chosen;
+  }
+
+  /** Record the usage a response reported for a subscription. */
+  recordUsage(id: string, usage: SubscriptionUsage, now = new Date()): void {
+    this.db.run(
+      "UPDATE subscription_credentials SET usage_utilization = ?, usage_resets_at = ?, usage_observed_at = ? WHERE id = ?",
+      [usage.utilization, usage.resetsAt.getTime(), now.getTime(), id],
+    );
+  }
+
+  // A pin idle past CONVERSATION_PIN_TTL_MS is forgotten: the conversation is
+  // assigned like a new one.
+  private pinnedCredential(
+    conversationId: string,
+    provider: SubscriptionProvider,
+    available: SubscriptionCredential[],
+    now: Date,
+  ): SubscriptionCredential | null {
+    const row = this.db
+      .query<{ credential_id: string }, [string, string, number]>(
+        `SELECT credential_id FROM subscription_conversation_pins
+         WHERE conversation_id = ? AND provider = ? AND used_at >= ?`,
+      )
+      .get(conversationId, provider, now.getTime() - CONVERSATION_PIN_TTL_MS);
+    return available.find((credential) => credential.id === row?.credential_id) ?? null;
+  }
+
+  private pinConversation(conversationId: string, provider: SubscriptionProvider, credentialId: string, now: Date): void {
+    this.db.run(
+      `INSERT INTO subscription_conversation_pins (conversation_id, provider, credential_id, used_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (conversation_id, provider) DO UPDATE SET credential_id = excluded.credential_id, used_at = excluded.used_at`,
+      [conversationId, provider, credentialId, now.getTime()],
+    );
+    this.db.run("DELETE FROM subscription_conversation_pins WHERE used_at < ?", [now.getTime() - CONVERSATION_PIN_TTL_MS]);
   }
 
   /**
@@ -159,11 +261,15 @@ export class SubscriptionStore {
       if (reconnectName !== null && existing?.provider !== tokens.provider) return null;
 
       if (existing !== null) {
-        // Another (or an unidentified) account must not inherit the previous account's hold.
+        // Another (or an unidentified) account must not inherit the previous
+        // account's hold, reported usage, or conversations (whose cache is
+        // the previous account's).
         const sameAccount = tokens.accountEmail !== null && tokens.accountEmail === existing.accountEmail;
+        const usage = sameAccount ? existing.usage : null;
         this.db.run(
           `UPDATE subscription_credentials SET access_token = ?, refresh_token = ?, expires_at = ?,
-             account_id = ?, account_email = ?, unavailable_until = ?, unavailable_reason = ?, updated_at = ?
+             account_id = ?, account_email = ?, unavailable_until = ?, unavailable_reason = ?,
+             usage_utilization = ?, usage_resets_at = ?, usage_observed_at = ?, updated_at = ?
            WHERE id = ?`,
           [
             tokens.accessToken,
@@ -173,10 +279,16 @@ export class SubscriptionStore {
             tokens.accountEmail,
             sameAccount ? existing.unavailableUntil?.getTime() ?? null : null,
             sameAccount ? existing.unavailableReason : null,
+            usage?.utilization ?? null,
+            usage?.resetsAt.getTime() ?? null,
+            usage?.observedAt.getTime() ?? null,
             now.getTime(),
             existing.id,
           ],
         );
+        if (!sameAccount) {
+          this.db.run("DELETE FROM subscription_conversation_pins WHERE credential_id = ?", [existing.id]);
+        }
         return this.get(existing.id);
       }
 
@@ -240,6 +352,7 @@ export class SubscriptionStore {
     const credential = this.getByName(name);
     if (credential === null) return null;
     this.db.run("DELETE FROM subscription_credentials WHERE id = ?", [credential.id]);
+    this.db.run("DELETE FROM subscription_conversation_pins WHERE credential_id = ?", [credential.id]);
     return credential;
   }
 
@@ -314,6 +427,48 @@ export function isHeld(credential: SubscriptionCredential, now: Date): boolean {
   return credential.unavailableUntil !== null && credential.unavailableUntil > now;
 }
 
+/** The usage a subscription last reported, while its window has not reset. */
+export function currentUsage(credential: SubscriptionCredential, now: Date): SubscriptionUsage | null {
+  return credential.usage !== null && credential.usage.resetsAt > now ? credential.usage : null;
+}
+
+function hasHeadroom(credential: SubscriptionCredential, now: Date): boolean {
+  return (currentUsage(credential, now)?.utilization ?? 0) < SWITCH_AT_UTILIZATION;
+}
+
+function lastUsed(credentials: SubscriptionCredential[]): SubscriptionCredential | null {
+  let latest: SubscriptionCredential | null = null;
+  for (const credential of credentials) {
+    if (credential.lastUsedAt !== null && (latest === null || credential.lastUsedAt > latest.lastUsedAt!)) {
+      latest = credential;
+    }
+  }
+  return latest;
+}
+
+// Each credential's rank in connection order starting at `anchor` (the one
+// used last), wrapping past the end; without an anchor, connection order.
+function rotationFrom(all: SubscriptionCredential[], anchor: SubscriptionCredential | null): Map<string, number> {
+  const start = anchor === null ? 0 : all.indexOf(anchor);
+  return new Map(all.map((credential, index) => [credential.id, (index - start + all.length) % all.length]));
+}
+
+// Spend quota about to reset first; a subscription with no current usage
+// report (fresh, or its window reset) comes after, then rotation order.
+function soonestResetFirst(now: Date, order: Map<string, number>) {
+  return (a: SubscriptionCredential, b: SubscriptionCredential): number => {
+    const resetA = currentUsage(a, now)?.resetsAt.getTime() ?? Infinity;
+    const resetB = currentUsage(b, now)?.resetsAt.getTime() ?? Infinity;
+    return resetA - resetB || order.get(a.id)! - order.get(b.id)!;
+  };
+}
+
+function leastUsedFirst(now: Date, order: Map<string, number>) {
+  return (a: SubscriptionCredential, b: SubscriptionCredential): number =>
+    (currentUsage(a, now)?.utilization ?? 0) - (currentUsage(b, now)?.utilization ?? 0)
+    || order.get(a.id)! - order.get(b.id)!;
+}
+
 /** Subscription names are env-var-style identifiers; matching is case-insensitive. */
 export function normalizeName(name: string): string {
   return name.trim().toUpperCase();
@@ -332,6 +487,13 @@ function credentialFromRow(row: CredentialRow): SubscriptionCredential {
     expiresAt: new Date(row.expires_at),
     unavailableUntil: row.unavailable_until === null ? null : new Date(row.unavailable_until),
     unavailableReason: row.unavailable_reason,
+    usage: row.usage_utilization === null || row.usage_resets_at === null || row.usage_observed_at === null
+      ? null
+      : {
+        utilization: row.usage_utilization,
+        resetsAt: new Date(row.usage_resets_at),
+        observedAt: new Date(row.usage_observed_at),
+      },
     position: row.position,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),

@@ -44,10 +44,12 @@ import {
   NO_DELIVERED_OUTPUT,
   observeDeliveredOutput,
 } from "./cancel_estimate.js";
+import type { NextSubscription } from "../platform/platform.js";
 import { providerResponseCaptureFromError, type ProviderResponseCapture } from "./response_capture.js";
 import { createStreamFinalizer } from "./stream_finalization.js";
 import {
   detectSubscriptionUsageLimit,
+  subscriptionUsageFromHeaders,
   failureWithSubscriptionUsageLimit,
   retryAfterSeconds,
   subscriptionUsageLimitFromFailure,
@@ -245,6 +247,7 @@ async function completeWithRetries(args: {
     }),
     recordFailedAttempt: ({ choice, attempt, result }) =>
       recordSettledFailure(args.reporter, choice, attempt, result),
+    onSubscription: onNextSubscription,
   });
 }
 
@@ -278,6 +281,7 @@ async function runCompletionAttempt(args: {
         started.responseCapture,
       );
     }
+    noteSubscriptionUsage(args.choice.execution, started.responseCapture);
     if (args.choice.execution.usageContext && hasUsage(completion.message)) {
       await reportRoutingUsage(
         {
@@ -478,6 +482,7 @@ export async function prepareStreamingExecution(args: {
     }),
     recordFailedAttempt: ({ choice, attempt, result }) =>
       recordSettledFailure(args.reporter, choice, attempt, result),
+    onSubscription: onNextSubscription,
   });
   args.reporter.attachServingDecision(result.choice.decision);
   if (result.kind === "customer_canceled") {
@@ -542,6 +547,7 @@ async function runStreamSetupAttempt(args: {
         started.responseCapture,
       );
     }
+    noteSubscriptionUsage(args.choice.execution, started.responseCapture);
     return {
       kind: "succeeded",
       value: {
@@ -717,11 +723,17 @@ async function providerFailedAttempt(
       credentialId: execution.subscriptionCredentialId,
       limit,
     });
+  // Nothing reached the client yet, so the same request is retried on the
+  // next plan at once when the platform names it.
+  const nextSubscription = switched
+    ? await nextSubscriptionFor(execution)
+    : undefined;
   return {
     kind: "provider_failed",
     message: failureWithSubscriptionUsageLimit(message, { ...limit, switched }),
     latencyMs,
     retryable: false,
+    ...(nextSubscription === undefined ? {} : { nextSubscription }),
   };
 }
 
@@ -775,6 +787,66 @@ function usageHasTokens(usage: unknown): boolean {
 function isPromptPolicyRejection(message: Record<string, unknown>): boolean {
   const text = providerFailureMessage(message).toLowerCase();
   return text.includes("invalid prompt") && text.includes("usage policy");
+}
+
+// The plan that serves this conversation after its plan was held, or
+// undefined when the platform names none. A failure leaves the request to
+// fail as before.
+async function nextSubscriptionFor(execution: ProviderExecution): Promise<NextSubscription | undefined> {
+  const platform = gatewayPlatform();
+  if (platform.nextSubscription === undefined || execution.subscriptionUserId === undefined) return undefined;
+  try {
+    return await platform.nextSubscription({
+      userId: execution.subscriptionUserId,
+      provider: execution.provider,
+      conversationId: execution.conversationId,
+    });
+  } catch (error) {
+    console.error("next subscription lookup failed", error);
+    captureOperationalError(error, { code: "next_subscription_lookup_failed" });
+    return undefined;
+  }
+}
+
+// The same choice served by another of the user's plans.
+function onNextSubscription(choice: ProviderChoice, next: NextSubscription): ProviderChoice {
+  return {
+    ...choice,
+    execution: {
+      ...choice.execution,
+      apiKey: next.apiKey,
+      auth: { type: "bearer", apiKey: next.apiKey },
+      subscriptionCredentialId: next.credentialId,
+    },
+  };
+}
+
+// A served subscription request reports the plan's remaining quota; record
+// it without waiting, and never fail the request over it.
+function noteSubscriptionUsage(
+  execution: ProviderExecution,
+  responseCapture: ProviderResponseCapture | undefined,
+): void {
+  const platform = gatewayPlatform();
+  const headers = responseCapture?.succeeded;
+  if (
+    platform.recordSubscriptionUsage === undefined ||
+    headers === undefined ||
+    execution.subscriptionUserId === undefined ||
+    execution.subscriptionCredentialId === undefined
+  ) {
+    return;
+  }
+  const usage = subscriptionUsageFromHeaders(execution.provider, execution.providerKeySource, headers);
+  if (usage === null) return;
+  platform.recordSubscriptionUsage({
+    userId: execution.subscriptionUserId,
+    credentialId: execution.subscriptionCredentialId,
+    usage,
+  }).catch((error: unknown) => {
+    console.error("subscription usage record failed", error);
+    captureOperationalError(error, { code: "subscription_usage_record_failed" });
+  });
 }
 
 // Never fails the request: the provider already refused. Resolves whether

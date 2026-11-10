@@ -15,6 +15,45 @@ export type SubscriptionUsageLimit = {
   switched?: boolean;
 };
 
+/**
+ * How much of a subscription's quota is used, from a successful response.
+ * `utilization` is the binding window's share used (0 to 1): the window
+ * closest to its limit, whose reset is `resetsAt`.
+ */
+export type SubscriptionUsage = {
+  utilization: number;
+  resetsAt: Date;
+};
+
+// Claude Code's unified limiter reports each window on every response, the
+// same headers Claude Code itself reads: `-utilization` as a fraction of the
+// window and `-reset` in unix seconds.
+const CLAUDE_CODE_USAGE_WINDOWS = ["5h", "7d"] as const;
+
+/**
+ * The quota a successful subscription response reports used, or null when it
+ * reports none. Only Claude Code plans report usage on every response; a
+ * ChatGPT plan reports it inside the response stream, which the provider
+ * client does not surface, so its plans are switched only on a usage limit.
+ */
+export function subscriptionUsageFromHeaders(
+  provider: string,
+  keySource: ProviderKeySource,
+  headers: Headers,
+  now = new Date(),
+): SubscriptionUsage | null {
+  if (subscriptionOAuthProviderFor(provider, keySource) !== "anthropic_claude_code") return null;
+  let binding: SubscriptionUsage | null = null;
+  for (const window of CLAUDE_CODE_USAGE_WINDOWS) {
+    const raw = Number(headers.get(`anthropic-ratelimit-unified-${window}-utilization`) ?? NaN);
+    const resetsAt = unixSecondsDeadline(headers.get(`anthropic-ratelimit-unified-${window}-reset`), now);
+    if (!Number.isFinite(raw) || resetsAt === null) continue;
+    const utilization = Math.max(0, Math.min(1, raw));
+    if (binding === null || utilization > binding.utilization) binding = { utilization, resetsAt };
+  }
+  return binding;
+}
+
 // Neither provider guarantees a reset time on every usage-limit response.
 // Without one, hold the subscription out for an hour rather than hammering an
 // exhausted plan on every request.

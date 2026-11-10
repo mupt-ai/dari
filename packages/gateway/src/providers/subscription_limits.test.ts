@@ -8,6 +8,7 @@ import {
   subscriptionUsageLimitFromFailure,
   subscriptionSwitchedMessage,
   subscriptionUsageLimitMessage,
+  subscriptionUsageFromHeaders,
 } from "./subscription_limits.js";
 import { createProviderResponseCapture, type CapturedProviderResponse } from "./response_capture.js";
 
@@ -246,7 +247,45 @@ test("the failure marker round-trips through the provider message", () => {
   );
 });
 
-test("the response capture remembers only rejected responses and leaves the body readable", async () => {
+// Claude Code's unified limiter reports each window on every response; the
+// tightest window is the one that decides when the plan runs out.
+describe("subscriptionUsageFromHeaders", () => {
+  const FIVE_HOUR_RESET = Math.floor(NOW.getTime() / 1000) + 3600;
+  const WEEK_RESET = Math.floor(NOW.getTime() / 1000) + 3 * 86_400;
+  const headers = (values: Record<string, string>) => new Headers(values);
+
+  test("reports the window closest to its limit", () => {
+    expect(subscriptionUsageFromHeaders("anthropic", "subscription", headers({
+      "anthropic-ratelimit-unified-5h-utilization": "0.42",
+      "anthropic-ratelimit-unified-5h-reset": String(FIVE_HOUR_RESET),
+      "anthropic-ratelimit-unified-5h-status": "allowed",
+      "anthropic-ratelimit-unified-7d-utilization": "0.81",
+      "anthropic-ratelimit-unified-7d-reset": String(WEEK_RESET),
+      "anthropic-ratelimit-unified-7d-status": "allowed_warning",
+    }), NOW)).toEqual({ utilization: 0.81, resetsAt: new Date(WEEK_RESET * 1000) });
+  });
+
+  test("clamps out-of-range values and skips windows without a future reset", () => {
+    expect(subscriptionUsageFromHeaders("anthropic", "subscription", headers({
+      "anthropic-ratelimit-unified-5h-utilization": "1.7",
+      "anthropic-ratelimit-unified-5h-reset": String(FIVE_HOUR_RESET),
+      "anthropic-ratelimit-unified-7d-utilization": "0.99",
+      "anthropic-ratelimit-unified-7d-reset": String(Math.floor(NOW.getTime() / 1000) - 60),
+    }), NOW)).toEqual({ utilization: 1, resetsAt: new Date(FIVE_HOUR_RESET * 1000) });
+  });
+
+  test("reports nothing for API keys, other plans, or responses without usage", () => {
+    const usage = headers({
+      "anthropic-ratelimit-unified-5h-utilization": "0.5",
+      "anthropic-ratelimit-unified-5h-reset": String(FIVE_HOUR_RESET),
+    });
+    expect(subscriptionUsageFromHeaders("anthropic", "user", usage, NOW)).toBeNull();
+    expect(subscriptionUsageFromHeaders("openai", "subscription", usage, NOW)).toBeNull();
+    expect(subscriptionUsageFromHeaders("anthropic", "subscription", headers({}), NOW)).toBeNull();
+  });
+});
+
+test("the response capture remembers rejected responses and leaves the body readable", async () => {
   const capture = createProviderResponseCapture();
   const originalFetch = globalThis.fetch;
   const responses = [
@@ -258,8 +297,10 @@ test("the response capture remembers only rejected responses and leaves the body
   ];
   globalThis.fetch = (async () => responses.shift()!) as unknown as typeof globalThis.fetch;
   try {
-    await capture.fetch("https://provider.test/a");
+    const served = await capture.fetch("https://provider.test/a");
     expect(capture.last).toBeUndefined();
+    // A served response's headers are kept for the plan's reported usage.
+    expect(capture.succeeded).toBe(served.headers);
     const rejected = await capture.fetch("https://provider.test/b");
     expect(await rejected.text()).toContain("usage_limit_reached");
     expect(capture.last?.status).toBe(429);

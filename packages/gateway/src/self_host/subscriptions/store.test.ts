@@ -166,3 +166,118 @@ test("pending sessions round-trip and expired ones are pruned on create", () => 
   store.deleteSession(fresh.token);
   expect(store.getSession(fresh.token)).toBeNull();
 });
+
+describe("usage", () => {
+  const CLAUDE = "anthropic_claude_code";
+  const used = (utilization: number, resetsInMinutes: number) => ({
+    utilization,
+    resetsAt: later(resetsInMinutes),
+  });
+
+  test("a conversation stays on its subscription, keeping its cache, while it has headroom", () => {
+    const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
+    expect(store.selectCredential(CLAUDE, "conv-1", now)?.id).toBe(a!.id);
+    // Another plan now resets sooner, but moving would lose conv-1's cache.
+    store.recordUsage(a!.id, used(0.5, 240), now);
+    store.recordUsage(b!.id, used(0.1, 30), now);
+    expect(store.selectCredential(CLAUDE, "conv-1", later(1))?.id).toBe(a!.id);
+  });
+
+  test("a new conversation goes where quota resets soonest, so it is spent before it is lost", () => {
+    const { store, credentials: [a, b, c] } = connected("a@example.com", "b@example.com", "c@example.com");
+    store.recordUsage(a!.id, used(0.4, 240), now);
+    store.recordUsage(b!.id, used(0.9, 20), now);
+    // c has reported nothing: fresh quota is kept for later.
+    expect(store.selectCredential(CLAUDE, "new", now)?.id).toBe(b!.id);
+    store.recordUsage(b!.id, used(0.96, 20), now);
+    expect(store.selectCredential(CLAUDE, "newer", now)?.id).toBe(a!.id);
+    expect(c).toBeDefined();
+  });
+
+  test("a conversation moves at its next turn once its subscription nears the limit", () => {
+    const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
+    expect(store.selectCredential(CLAUDE, "conv", now)?.id).toBe(a!.id);
+    store.recordUsage(a!.id, used(0.95, 60), now);
+    expect(store.selectCredential(CLAUDE, "conv", later(1))?.id).toBe(b!.id);
+    // It stays on the new subscription after a's window resets.
+    expect(store.selectCredential(CLAUDE, "conv", later(61))?.id).toBe(b!.id);
+  });
+
+  test("with every subscription near the limit, the least used serves", () => {
+    const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
+    store.recordUsage(a!.id, used(0.99, 60), now);
+    store.recordUsage(b!.id, used(0.96, 300), now);
+    expect(store.selectCredential(CLAUDE, "conv", now)?.id).toBe(b!.id);
+  });
+
+  test("usage stops counting once its window resets", () => {
+    const { store, credentials: [a] } = connected("a@example.com", "b@example.com");
+    store.recordUsage(a!.id, used(0.99, 30), now);
+    expect(store.selectCredential(CLAUDE, "conv", later(31))?.id).toBe(a!.id);
+    expect(store.list(CLAUDE)[0]!.usage?.utilization).toBe(0.99);
+  });
+
+  test("held subscriptions never serve, whatever their usage", () => {
+    const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
+    store.recordUsage(b!.id, used(0.1, 10), now);
+    store.markUnavailable(b!.id, later(60), "usage_limit", now);
+    expect(store.selectCredential(CLAUDE, "conv", now)?.id).toBe(a!.id);
+  });
+
+  test("a request without a conversation stays on the subscription used last", () => {
+    const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
+    store.touch(b!.id, later(1));
+    store.recordUsage(a!.id, used(0.2, 10), now);
+    expect(store.selectCredential(CLAUDE, undefined, later(2))?.id).toBe(b!.id);
+    expect(a).toBeDefined();
+  });
+
+  test("disconnecting a subscription moves its conversations on", () => {
+    const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
+    expect(store.selectCredential(CLAUDE, "conv", now)?.id).toBe(a!.id);
+    store.disconnect(a!.name);
+    expect(store.selectCredential(CLAUDE, "conv", now)?.id).toBe(b!.id);
+  });
+
+  test("reconnecting another account onto a subscription starts it fresh", () => {
+    const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
+    expect(store.selectCredential(CLAUDE, "conv", now)?.id).toBe(a!.id);
+    store.recordUsage(a!.id, used(0.97, 60), now);
+    // The same account keeps its usage.
+    store.connect(tokens({ accountEmail: "a@example.com", accessToken: "a-2" }), a!.name, later(1));
+    expect(store.get(a!.id)?.usage?.utilization).toBe(0.97);
+    // Another account gets neither the old usage nor its conversations.
+    store.connect(tokens({ accountEmail: "c@example.com", accessToken: "c" }), a!.name, later(2));
+    expect(store.get(a!.id)?.usage).toBeNull();
+    store.recordUsage(b!.id, used(0.5, 30), later(2));
+    expect(store.selectCredential(CLAUDE, "conv", later(3))?.id).toBe(b!.id);
+  });
+
+  test("a conversation idle past a week is assigned like a new one", () => {
+    const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
+    expect(store.selectCredential(CLAUDE, "recent", now)?.id).toBe(a!.id);
+    expect(store.selectCredential(CLAUDE, "idle", now)?.id).toBe(a!.id);
+    // Now b resets soonest, so a new conversation would start on b.
+    const week = 7 * 24 * 60;
+    store.recordUsage(b!.id, used(0.2, 10 * week), now);
+    expect(store.selectCredential(CLAUDE, "recent", later(week - 1))?.id).toBe(a!.id);
+    expect(store.selectCredential(CLAUDE, "idle", later(week + 1))?.id).toBe(b!.id);
+  });
+
+  test("a database from before usage tracking gains its columns and keeps its subscriptions", () => {
+    const db = new Database(":memory:");
+    db.run(`CREATE TABLE subscription_credentials (
+      id TEXT PRIMARY KEY, provider TEXT NOT NULL, name TEXT NOT NULL UNIQUE, label TEXT,
+      account_email TEXT, account_id TEXT, access_token TEXT NOT NULL, refresh_token TEXT NOT NULL,
+      expires_at INTEGER NOT NULL, unavailable_until INTEGER, unavailable_reason TEXT,
+      position INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_used_at INTEGER
+    )`);
+    db.run(`INSERT INTO subscription_credentials (id, provider, name, access_token, refresh_token, expires_at,
+      position, created_at, updated_at) VALUES ('cred_old', 'anthropic_claude_code', 'ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN',
+      'access', 'refresh', ${later(600).getTime()}, 1, ${now.getTime()}, ${now.getTime()})`);
+    const store = new SubscriptionStore(db);
+    expect(store.list(CLAUDE).map((c) => [c.id, c.usage])).toEqual([["cred_old", null]]);
+    store.recordUsage("cred_old", used(0.3, 60), now);
+    expect(store.list(CLAUDE)[0]!.usage?.utilization).toBe(0.3);
+  });
+});

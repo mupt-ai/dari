@@ -9,12 +9,16 @@ export type ProviderFetch = (input: string | URL | Request, init?: RequestInit) 
 export type ProviderResponseCapture = {
   fetch: ProviderFetch;
   last: CapturedProviderResponse | undefined;
+  // Headers of the last successful provider response, which carry a
+  // subscription's remaining usage.
+  succeeded: Headers | undefined;
 };
 
 const CAPTURED_BODY_MAX_BYTES = 64 * 1024;
 
 /**
- * A fetch wrapper that remembers the last failed provider response. pi-ai
+ * A fetch wrapper that remembers the last failed provider response, and the
+ * headers of the last successful one. pi-ai
  * flattens provider errors into one message string before they reach the
  * runtime, so this is the only place the status, rate-limit headers, and
  * structured error body of a rejected call can still be read.
@@ -22,9 +26,13 @@ const CAPTURED_BODY_MAX_BYTES = 64 * 1024;
 export function createProviderResponseCapture(): ProviderResponseCapture {
   const capture: ProviderResponseCapture = {
     last: undefined,
+    succeeded: undefined,
     fetch: async (input, init) => {
       const response = await globalThis.fetch(input, init);
-      if (response.ok) return response;
+      if (response.ok) {
+        capture.succeeded = response.headers;
+        return response;
+      }
       const bodyText = await readBodyPrefix(response.clone());
       capture.last = { status: response.status, headers: response.headers, bodyText };
       return response;

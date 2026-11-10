@@ -245,3 +245,20 @@ test("routing is listed only with Dari Auto Routing", async () => {
   expect((await resolveSelfHostedRouter(deps({ apiKeys }), request())).routing_listed).toBe(false);
   expect((await resolveSelfHostedRouter(deps({ apiKeys, autoRouting: true }), request())).routing_listed).toBe(true);
 });
+
+// Claude Code requests resolve twice and only the second resolve's
+// credentials serve. The first must not mark a plan used or refresh it: a
+// failed refresh there would fail a request whose own plan is fine.
+test("a provisional resolve neither marks a plan used nor refreshes it", async () => {
+  const resolver = deps({ apiKeys: { openai: "sk-openai" } });
+  // Expires within the refresh margin, and the deps' fetch fails any refresh.
+  const plan = resolver.subscriptions.connect(tokens({ expiresAt: new Date(Date.now() + 60_000) }), null)!;
+
+  const provisional = await resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code", provisional: true }));
+  expect(provisional.provider_keys.anthropic).toBe("sk-ant-oat01-access");
+  expect(resolver.subscriptions.get(plan.id)?.lastUsedAt).toBeNull();
+
+  // The serving resolve does both, and here the refresh fails.
+  await expect(resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code" }))).rejects.toThrow();
+  expect(resolver.subscriptions.get(plan.id)?.lastUsedAt).not.toBeNull();
+});

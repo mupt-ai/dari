@@ -1,9 +1,10 @@
 import { errorCode } from "../http/errors.js";
+import { subscriptionOAuthProviderFor } from "../providers/subscription_limits.js";
 import type { GatewayPlatform } from "../platform/platform.js";
 import type { PrefixStore } from "./prefix_store.js";
 import type { SessionPinStore } from "./session_pin_store.js";
 import { resolveSelfHostedRouter, type SelfHostedResolverDeps } from "./resolve.js";
-import type { SubscriptionStore } from "./subscriptions/index.js";
+import { freshAccessToken, type SubscriptionStore } from "./subscriptions/index.js";
 
 /**
  * The self-hosted platform: routers from the config file, subscriptions,
@@ -30,6 +31,18 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
     readSessionPin: async (key) => deps.sessionPins.read(key),
     writeSessionPin: async (write) => {
       deps.sessionPins.write(write);
+    },
+    recordSubscriptionUsage: async (report) => {
+      deps.subscriptions.recordUsage(report.credentialId, report.usage);
+    },
+    async nextSubscription(request) {
+      const plan = subscriptionOAuthProviderFor(request.provider, "subscription");
+      const next = plan === null ? null : deps.subscriptions.selectCredential(plan, request.conversationId);
+      if (next === null) return undefined;
+      return {
+        credentialId: next.id,
+        apiKey: await freshAccessToken(deps.subscriptions, next, { fetch: deps.fetch }),
+      };
     },
     markSubscriptionUnavailable: async (hold) =>
       hold.credentialId !== undefined &&

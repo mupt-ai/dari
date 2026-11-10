@@ -81,6 +81,8 @@ export async function prepareRoutedCompletion(args: {
     ...resolveRequest,
     prefixHashes,
     clientHarness: args.clientHarness,
+    // Re-resolved below with the harness conversation, whose credentials serve.
+    ...(!background && args.harnessConversationIdentity !== undefined ? { provisional: true } : {}),
   });
   const canonicalRouterId = credentials.router_id;
   const organizationId = credentials.organization_id;

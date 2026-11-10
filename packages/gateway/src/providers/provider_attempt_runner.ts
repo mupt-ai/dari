@@ -1,3 +1,4 @@
+import type { NextSubscription } from "../platform/platform.js";
 import { subscriptionUsageLimitFromFailure } from "./subscription_limits.js";
 
 export type ProviderAttemptFailure =
@@ -6,6 +7,9 @@ export type ProviderAttemptFailure =
       message: Record<string, unknown>;
       latencyMs: number;
       retryable: boolean;
+      // The plan that replaced an exhausted one; the same request is retried
+      // on it at once.
+      nextSubscription?: NextSubscription;
     }
   | {
       kind: "customer_canceled";
@@ -44,6 +48,9 @@ type RunProviderAttemptPlanArgs<TChoice, TValue, TInitial> = {
     attempt: number;
     result: ProviderAttemptFailure;
   }) => void;
+  // The choice served by another of the user's plans; without it a failure
+  // naming one is not retried on it.
+  onSubscription?: (choice: TChoice, next: NextSubscription) => TChoice;
 };
 
 type ChoiceResult<TChoice, TValue> = ProviderAttemptPlanResult<TChoice, TValue>;
@@ -78,14 +85,18 @@ export async function runProviderAttemptPlan<TChoice, TValue, TInitial>(
 
 async function runChoice<TChoice, TValue, TInitial>(
   args: RunProviderAttemptPlanArgs<TChoice, TValue, TInitial>,
-  choice: TChoice,
+  firstChoice: TChoice,
   initial: TInitial | undefined,
 ): Promise<ChoiceResult<TChoice, TValue>> {
+  let choice = firstChoice;
   let latencyMs = 0;
   let lastFailure: Record<string, unknown> | null = null;
   let lastAttempt = 0;
 
-  for (let attempt = 1; attempt <= args.retries + 1; attempt += 1) {
+  // A switch to another plan retries without spending the retry budget; each
+  // switch holds a plan, so switches are bounded by the plans connected.
+  let maxAttempts = args.retries + 1;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     lastAttempt = attempt;
     if (attempt !== 1 || initial === undefined) {
       if (args.isCustomerCanceled(choice)) {
@@ -113,6 +124,11 @@ async function runChoice<TChoice, TValue, TInitial>(
         latencyMs,
         failure: result.message,
       };
+    }
+    if (result.kind === "provider_failed" && result.nextSubscription !== undefined && args.onSubscription) {
+      choice = args.onSubscription(choice, result.nextSubscription);
+      maxAttempts += 1;
+      continue;
     }
     if (!result.retryable) break;
   }

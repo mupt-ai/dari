@@ -202,6 +202,7 @@ func newGatewayStatusCmd() *cobra.Command {
 				}
 				fmt.Fprintf(out, "Auto-routing:  %s\n", autorouting)
 				fmt.Fprintf(out, "Data:          %s\n", dir)
+				fmt.Fprintln(out, "Activity:      unavailable; observability needs hosted mode")
 			default:
 				source := "dari gateway setup"
 				if os.Getenv(gatewayURLEnv) != "" {
@@ -209,6 +210,7 @@ func newGatewayStatusCmd() *cobra.Command {
 				}
 				fmt.Fprintln(out, "Mode:     Self-hosted")
 				fmt.Fprintf(out, "Gateway:  %s (from %s)\n", gw.url, source)
+				fmt.Fprintln(out, "Activity: unavailable; observability needs hosted mode")
 			}
 			return nil
 		},

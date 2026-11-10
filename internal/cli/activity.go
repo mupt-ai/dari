@@ -443,7 +443,18 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
+// errActivityHostedOnly: a local or self-hosted gateway records no activity
+// on the hosted Dari API, so these commands would report nothing true.
+var errActivityHostedOnly = fmt.Errorf("activity needs hosted routing: this machine routes through a gateway, whose requests never reach Dari. For observability, run `dari gateway setup --mode hosted`")
+
 func requestActivity(cmd *cobra.Command, gf *globalFlags, organizationID, endpoint string, query url.Values) error {
+	gw, err := currentGateway()
+	if err != nil {
+		return err
+	}
+	if gw != nil {
+		return errActivityHostedOnly
+	}
 	organizationID = strings.TrimSpace(organizationID)
 	orgPath := "current"
 	if organizationID != "" {

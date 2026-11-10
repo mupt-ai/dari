@@ -146,12 +146,12 @@ func runGatewaySetup(ctx context.Context, stdin io.Reader, stderr io.Writer) err
 		},
 		gatewaySetupLocal: {
 			label:       "Fully local",
-			description: "Runs on this machine; requests go straight to model providers. Only you can use it: no team sharing or analytics.",
+			description: "Runs on this machine; requests go straight to model providers. Only you can use it. No observability: Activity and analytics need Hosted.",
 			done:        gatewayModeDone[gateway.ModeLocal],
 		},
 		gatewaySetupSelfHosted: {
 			label:       "Self-hosted",
-			description: "Connect to a Dari Gateway your team runs on its own server, so everyone shares its accounts and routing.",
+			description: "Connect to a Dari Gateway your team runs on its own server, so everyone shares its accounts and routing. No observability: Activity and analytics need Hosted.",
 			done:        gatewayModeDone[gateway.ModeSelfHosted],
 		},
 	})

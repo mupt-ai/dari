@@ -1,7 +1,5 @@
 <h1 align="center">Dari Router</h1>
 
----
-
 <p align="center">
   <strong>Route each request to a model you choose, behind one endpoint.</strong><br>
   A TypeScript framework that puts several language models behind one web-standard <code>fetch</code> handler. It accepts OpenAI Chat Completions and Anthropic Messages requests, lets a policy choose an eligible model, and runs that model through an executor you control.
@@ -15,7 +13,7 @@
 
 <p align="center">
   <a href="https://www.npmjs.com/package/@mupt-ai/dari-router"><img src="https://img.shields.io/npm/v/@mupt-ai/dari-router" alt="npm version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/mupt-ai/dari-router" alt="License: Apache-2.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-111111" alt="License: Apache-2.0"></a>
 </p>
 
 > [!WARNING]
@@ -228,7 +226,7 @@ bun run build
 bun run test:package   # builds, packs, and smoke-tests the package in a clean consumer
 ```
 
-Releases are published from the public mirror of this package; see [RELEASING.md](RELEASING.md).
+Releases ship with the rest of the repository; see [RELEASING.md](../../RELEASING.md).
 
 ## License
 

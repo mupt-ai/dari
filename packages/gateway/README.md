@@ -32,9 +32,12 @@ The gateway is the runtime behind Dari's hosted routing service, packaged to run
 - **Prompt-cache aware.** Conversations keep their identity and serving model across turns, so provider caches stay warm. Responses carry `X-Dari-Selected-Model`, `X-Dari-Thinking-Level`, and `X-Dari-Conversation-Id` headers for status lines.
 - **Coding agents.** `dari claude`, `dari codex`, `dari opencode`, and `dari pi` from the [Dari CLI](https://github.com/mupt-ai/dari) launch straight against your gateway.
 
-The gateway is the same runtime that serves Dari's hosted routing service. Choosing among a router's models with Dari's trained routing policy (Dari Auto Routing) is optional and uses a Dari API key; without it, `dari/routing` serves the router's first available model.
+Dari Auto Routing (choosing among a router's models with Dari's trained policy) is optional and needs a Dari API key; without it, `dari/routing` serves the router's first available model.
 
 ## Run
+
+> [!IMPORTANT]
+> **Observability needs hosted Dari.** Requests through your own gateway never reach Dari, so there is no Activity dashboard, per-request cost, or usage analytics. Use hosted mode (`dari gateway setup --mode hosted`) if you want them.
 
 The easiest way to run it on your own machine is the [Dari CLI](https://github.com/mupt-ai/dari): choose **Fully local** in `dari gateway setup` (or on your first `dari claude`), and it installs this gateway's standalone binary, runs it in the background, and connects your agents.
 
@@ -55,8 +58,6 @@ docker run -p 8080:8080 \
   -v dari-gateway-data:/data \
   ghcr.io/mupt-ai/dari-gateway
 ```
-
-From a clone of [mupt-ai/dari](https://github.com/mupt-ai/dari), `bun install && (cd packages/router && bun run build) && (cd packages/gateway && bun run start)` or `docker build -f packages/gateway/Dockerfile -t dari-gateway .` run the same thing.
 
 | Variable | Meaning |
 | --- | --- |
@@ -104,7 +105,7 @@ dari credentials subscription connect claude-code   # or codex or muse-code; rep
 dari claude
 ```
 
-In gateway mode the CLI makes no calls to Dari's hosted API. `dari credentials subscription list`, `rename`, `mark-available`, and `disconnect` manage the gateway's subscriptions.
+In gateway mode the CLI makes no calls to Dari's hosted API, and `dari activity` is unavailable.
 
 ## Embed
 

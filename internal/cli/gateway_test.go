@@ -584,3 +584,20 @@ func TestClaudeSetupRoundTripRestoresSettings(t *testing.T) {
 		t.Fatalf("settings after round trip = %s", raw)
 	}
 }
+
+func TestGatewayActivityIsHostedOnly(t *testing.T) {
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected gateway request %s %s", r.Method, r.URL.Path)
+	}))
+	defer gateway.Close()
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gateway.URL)
+
+	cmd := newRootCmd("dev")
+	cmd.SetArgs([]string{"activity", "overview", "--from", "2026-07-01T00:00:00Z", "--to", "2026-07-02T00:00:00Z"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); !errors.Is(err, errActivityHostedOnly) {
+		t.Fatalf("activity error = %v, want hosted-only", err)
+	}
+}

@@ -1,10 +1,3 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/mupt-ai/dari/main/assets/dari-logo-dark.svg">
-    <img src="https://raw.githubusercontent.com/mupt-ai/dari/main/assets/dari-logo-light.svg" alt="Dari" width="72">
-  </picture>
-</p>
-
 <h1 align="center">Dari Router</h1>
 
 ---

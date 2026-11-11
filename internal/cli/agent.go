@@ -43,10 +43,6 @@ var agentLaunchers = map[string]string{
 	"hermes":   "Set Hermes Agent up to route through Dari, then launch it; forward all following arguments (--setup only sets up, --remove-setup undoes it)",
 }
 
-// agentConnectFlag was the launcher's accounts option before `dari accounts`;
-// a launch with it points there instead of passing it to the agent.
-const agentConnectFlag = "--connect"
-
 // agentSetupFlag writes Dari into the agent's own config so its desktop app,
 // which never runs through the launcher, routes through Dari too.
 // agentRemoveSetupFlag undoes it.
@@ -75,8 +71,6 @@ type agentLaunch struct {
 	args        []string
 	setup       bool
 	removeSetup bool
-	// movedConnect is a launch with --connect, which now lives in `dari accounts`.
-	movedConnect bool
 }
 
 func parseAgentLaunch(args []string) (agentLaunch, bool) {
@@ -93,10 +87,6 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 			launch.args = append(launch.args, args[1+i:]...)
 			break
 		}
-		if arg == agentConnectFlag {
-			launch.movedConnect = true
-			continue
-		}
 		if arg == agentSetupFlag {
 			launch.setup = true
 			continue
@@ -111,10 +101,6 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 }
 
 func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, stdout, stderr io.Writer) int {
-	if launch.movedConnect {
-		fmt.Fprintln(stderr, "--connect moved: run `dari accounts` to manage subscriptions, API keys, and auto-routing")
-		return 2
-	}
 	if launch.setup || launch.removeSetup {
 		if err := runAgentSetup(ctx, launch, stdin, stderr); err != nil {
 			fmt.Fprintln(stderr, err)

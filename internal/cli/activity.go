@@ -15,7 +15,7 @@ import (
 
 func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, gf *globalFlags) {
-		activity := &cobra.Command{Use: "activity", Short: "Read routing activity for the current org"}
+		activity := &cobra.Command{Use: "activity", Short: "Hosted only: read routing activity for the current org"}
 		activity.AddCommand(
 			newActivityFiltersCmd(gf),
 			newActivityOverviewCmd(gf),

@@ -18,7 +18,12 @@ func init() {
 		var mode, url, key, autoRoutingKey string
 		cmd := &cobra.Command{
 			Use:   "gateway",
-			Short: "Choose where coding agents route, and run the local Dari Gateway",
+			Short: "Choose a routing mode and manage the local gateway",
+			Long: "Choose Hosted, Fully local, or Self-hosted routing with `dari gateway setup`.\n\n" +
+				"`status` and `setup` work in every mode. The other commands manage only the\n" +
+				"Fully local gateway; they do not install, start, or inspect a self-hosted gateway.\n" +
+				"Hosted routing is managed by Dari. Use `dari accounts` for accounts and keys\n" +
+				"supported by the selected mode. Activity and team analytics require Hosted mode.",
 		}
 		cmd.AddCommand(
 			&cobra.Command{
@@ -183,8 +188,10 @@ func newGatewayStatusCmd() *cobra.Command {
 			}
 			switch {
 			case gw == nil:
-				fmt.Fprintln(out, "Mode:     Hosted")
-				fmt.Fprintln(out, "Switch:   dari gateway setup --mode local  (or self-hosted)")
+				fmt.Fprintln(out, "Mode:      Hosted")
+				fmt.Fprintf(out, "Endpoint:  %s\n", routingBaseURL)
+				fmt.Fprintln(out, "Runtime:   managed by Dari")
+				fmt.Fprintln(out, "Activity:  available")
 			case gw.local:
 				running := "stopped"
 				if gateway.Healthy(cmd.Context()) {
@@ -195,22 +202,25 @@ func newGatewayStatusCmd() *cobra.Command {
 					autorouting = "on"
 				}
 				dir, _ := gateway.Dir()
-				fmt.Fprintln(out, "Mode:          Fully local")
-				fmt.Fprintf(out, "Gateway:       %s (%s)\n", gw.url, running)
+				fmt.Fprintln(out, "Mode:      Fully local")
+				fmt.Fprintf(out, "Endpoint:  %s\n", gw.url)
+				fmt.Fprintf(out, "Runtime:   local gateway %s\n", running)
+				fmt.Fprintln(out, "Activity:  unavailable (hosted mode only)")
 				if version := gateway.InstalledVersion(); version != "" {
-					fmt.Fprintf(out, "Version:       v%s\n", version)
+					fmt.Fprintf(out, "Version:   v%s\n", version)
 				}
-				fmt.Fprintf(out, "Auto-routing:  %s\n", autorouting)
-				fmt.Fprintf(out, "Data:          %s\n", dir)
-				fmt.Fprintln(out, "Activity:      unavailable; observability needs hosted mode")
+				fmt.Fprintf(out, "Auto-routing: %s\n", autorouting)
+				fmt.Fprintf(out, "Data:         %s\n", dir)
 			default:
-				source := "dari gateway setup"
+				source := "saved settings"
 				if os.Getenv(gatewayURLEnv) != "" {
 					source = gatewayURLEnv
 				}
-				fmt.Fprintln(out, "Mode:     Self-hosted")
-				fmt.Fprintf(out, "Gateway:  %s (from %s)\n", gw.url, source)
-				fmt.Fprintln(out, "Activity: unavailable; observability needs hosted mode")
+				fmt.Fprintln(out, "Mode:      Self-hosted")
+				fmt.Fprintf(out, "Endpoint:  %s\n", gw.url)
+				fmt.Fprintln(out, "Runtime:   external gateway")
+				fmt.Fprintln(out, "Activity:  unavailable (hosted mode only)")
+				fmt.Fprintf(out, "Configured via: %s\n", source)
 			}
 			return nil
 		},

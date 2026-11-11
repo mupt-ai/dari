@@ -21,7 +21,6 @@ func TestParseAgentLaunch(t *testing.T) {
 		wantName string
 		wantArgs []string
 		wantOK   bool
-		connect  bool
 		setup    bool
 		remove   bool
 	}{
@@ -35,12 +34,11 @@ func TestParseAgentLaunch(t *testing.T) {
 			remove:   true,
 		},
 		{
-			name:     "--connect is caught for `dari accounts`, but only before --",
+			name:     "agent flags are forwarded",
 			args:     []string{"claude", "--connect", "--print", "--", "--connect"},
 			wantName: "claude",
-			wantArgs: []string{"--print", "--", "--connect"},
+			wantArgs: []string{"--connect", "--print", "--", "--connect"},
 			wantOK:   true,
-			connect:  true,
 		},
 		{
 			name:     "claude forwards every remaining token",
@@ -95,9 +93,6 @@ func TestParseAgentLaunch(t *testing.T) {
 			}
 			if got.name != tt.wantName {
 				t.Errorf("name = %q, want %q", got.name, tt.wantName)
-			}
-			if got.movedConnect != tt.connect {
-				t.Errorf("movedConnect = %v, want %v", got.movedConnect, tt.connect)
 			}
 			if got.setup != tt.setup || got.removeSetup != tt.remove {
 				t.Errorf("setup, removeSetup = %v, %v, want %v, %v", got.setup, got.removeSetup, tt.setup, tt.remove)

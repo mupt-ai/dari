@@ -21,7 +21,7 @@ func init() {
 		cmd := &cobra.Command{
 			Use:     "router",
 			Aliases: []string{"routers"},
-			Short:   "Manage Dari Routers for the current org",
+			Short:   "Hosted only: manage Dari Routers for the current org",
 		}
 		cmd.AddCommand(
 			newRouterListCmd(gf),

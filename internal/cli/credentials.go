@@ -18,7 +18,13 @@ import (
 
 func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, gf *globalFlags) {
-		cmd := &cobra.Command{Use: "credentials", Short: "Manage provider credentials and subscriptions for the current org"}
+		cmd := &cobra.Command{
+			Use:   "credentials",
+			Short: "Manage organization credentials and personal subscriptions",
+			Long: "`provider` and `list` manage organization credentials on Hosted Dari.\n" +
+				"`subscription` manages personal coding-agent subscriptions on Hosted, Fully local,\n" +
+				"or Self-hosted routing. For the interactive accounts menu, use `dari accounts`.",
+		}
 		cmd.AddCommand(
 			newCredentialsListCmd(gf),
 			newProviderCredentialsCmd(gf),
@@ -31,7 +37,7 @@ func init() {
 func newProviderCredentialsCmd(gf *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "provider",
-		Short: "Manage saved provider credentials for routers and custom models",
+		Short: "Hosted only: manage provider credentials for routers and custom models",
 	}
 	cmd.AddCommand(
 		newProviderCredentialAddCmd(gf),

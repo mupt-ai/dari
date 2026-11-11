@@ -10,7 +10,7 @@ import (
 
 func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, gf *globalFlags) {
-		cmd := &cobra.Command{Use: "api-keys", Short: "Manage API keys for the current org"}
+		cmd := &cobra.Command{Use: "api-keys", Short: "Hosted only: manage organization API keys"}
 		cmd.AddCommand(
 			newAPIKeysListCmd(gf),
 			newAPIKeysCreateCmd(gf),

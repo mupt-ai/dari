@@ -289,19 +289,6 @@ func TestAgentSubscriptionLinesListInRoutingOrder(t *testing.T) {
 	}
 }
 
-// The old launcher option points at `dari accounts` instead of reaching the
-// agent as an unknown flag.
-func TestAgentConnectPointsAtAccounts(t *testing.T) {
-	var stderr strings.Builder
-	launch, _ := parseAgentLaunch([]string{"pi", "--connect"})
-	if code := runAgentLaunch(context.Background(), launch, strings.NewReader(""), io.Discard, &stderr); code != 2 {
-		t.Fatalf("exit code = %d", code)
-	}
-	if !strings.Contains(stderr.String(), "`dari accounts`") {
-		t.Fatalf("stderr = %q", stderr.String())
-	}
-}
-
 func TestAgentSubscriptionProvidersMatchTheAgent(t *testing.T) {
 	for agent, want := range map[string][]agentSubscriptionProvider{
 		"claude":   {claudeSubscription, codexSubscription},

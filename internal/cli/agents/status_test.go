@@ -95,3 +95,14 @@ func TestDefaultStartsOnTheSavedPick(t *testing.T) {
 		t.Errorf("with routing, Default() = %q", got)
 	}
 }
+
+func TestStableModelIgnoresSavedPick(t *testing.T) {
+	saved := Models{Routing: true, Enabled: []string{"a/one"}, Saved: "dari/model/a/one"}
+	if got := saved.Stable(); got != RoutingModel {
+		t.Errorf("Stable() = %q, want %q", got, RoutingModel)
+	}
+	noRouting := Models{Enabled: []string{"a/one", "b/two"}, Saved: "dari/model/b/two"}
+	if got := noRouting.Stable(); got != "dari/model/a/one" {
+		t.Errorf("without routing, Stable() = %q, want the first model", got)
+	}
+}

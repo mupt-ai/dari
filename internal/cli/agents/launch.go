@@ -43,6 +43,14 @@ func (m Models) Default() string {
 	if m.Saved != "" && slices.Contains(m.Menu(), m.Saved) {
 		return m.Saved
 	}
+	return m.Stable()
+}
+
+// Stable is the model that never follows a /model pick: routing when it is
+// available, else the router's first model. An agent's aliases and subagents
+// are pinned to it, because a running session cannot update those pins when
+// the user switches models.
+func (m Models) Stable() string {
 	if m.Routing || len(m.Enabled) == 0 {
 		return RoutingModel
 	}

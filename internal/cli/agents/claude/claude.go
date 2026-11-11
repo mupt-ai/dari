@@ -23,13 +23,14 @@ func routingEnvironment(key, baseURL string, models agents.Models) map[string]st
 		"ANTHROPIC_API_KEY":                "",
 		"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":   "1000000",
-		"CLAUDE_CODE_SUBAGENT_MODEL":       models.Default(),
-		// /model keeps a built-in Default row, and subagents may ask for an
-		// alias; both resolve to the launch's model rather than a native one.
+		// Subagents and aliases resolve to the stable model, not the /model
+		// pick: these pins are fixed for the session and written to settings,
+		// so a pick they followed would go stale the moment the user switched.
 		// Haiku stays native: Dari serves background work on its cheapest model.
-		"ANTHROPIC_DEFAULT_OPUS_MODEL":   models.Default(),
-		"ANTHROPIC_DEFAULT_SONNET_MODEL": models.Default(),
-		"ANTHROPIC_DEFAULT_FABLE_MODEL":  models.Default(),
+		"CLAUDE_CODE_SUBAGENT_MODEL":     models.Stable(),
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":   models.Stable(),
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": models.Stable(),
+		"ANTHROPIC_DEFAULT_FABLE_MODEL":  models.Stable(),
 	}
 }
 

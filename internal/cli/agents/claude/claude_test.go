@@ -161,3 +161,23 @@ func TestPickerListsEveryChosenModel(t *testing.T) {
 		t.Fatalf("default = %q", models.Default())
 	}
 }
+
+// A /model pick starts the next launch on that model, but the aliases and
+// subagents stay on the stable model: they are fixed for the session and
+// settings, so following the pick would strand them on a model the user left.
+func TestConfigurePinsAliasesToStableModelNotSavedPick(t *testing.T) {
+	saved := "dari/model/anthropic/claude-opus-5-5"
+	models := agents.Models{Routing: true, Enabled: []string{"anthropic/claude-opus-5-5"}, Saved: saved}
+	command := agents.Command{Path: "/claude"}
+	if err := Configure(&command, "dari_route", "https://routing.dari.dev", models); err != nil {
+		t.Fatal(err)
+	}
+	if i := slices.Index(command.Args, "--model"); i < 0 || command.Args[i+1] != saved {
+		t.Fatalf("args = %q, want the launch to start on the saved pick %q", command.Args, saved)
+	}
+	for _, name := range []string{"CLAUDE_CODE_SUBAGENT_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_FABLE_MODEL"} {
+		if got := agents.EnvironmentValue(command.Env, name); got != agents.RoutingModel {
+			t.Errorf("%s = %q, want %q", name, got, agents.RoutingModel)
+		}
+	}
+}

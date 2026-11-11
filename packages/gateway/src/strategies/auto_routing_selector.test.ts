@@ -41,6 +41,7 @@ test("Dari Auto Routing posts the sized selector request and parses its decision
     selectedModel: "openai/gpt-5.5",
     reasoningEffort: "high",
     reason: "Long refactor.",
+    leaseTurnsRemaining: 4,
   });
 });
 

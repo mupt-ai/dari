@@ -1,4 +1,4 @@
-import { parseSelectorDecision } from "@mupt-ai/dari-router/policy-engine";
+import { parseSelectorDecision, SELECTOR_LEASE_TURNS } from "@mupt-ai/dari-router/policy-engine";
 import { HttpError } from "../http/errors.js";
 import type { SelectorBackend } from "./routing.js";
 
@@ -30,6 +30,9 @@ export function createAutoRoutingSelectorBackend(config: {
   return {
     selectorModel: AUTO_ROUTER_MODEL,
     contextWindowChars: async () => AUTO_ROUTER_CONTEXT_WINDOW_CHARS,
+    // Dari's routing policy grants leases, so an expired lease goes back to
+    // the policy rather than the runtime's stateless hold.
+    negotiatedLeaseTurns: async () => SELECTOR_LEASE_TURNS,
     select: async (args) => {
       let response: Response;
       try {
@@ -53,12 +56,8 @@ export function createAutoRoutingSelectorBackend(config: {
         );
       }
       const outputText = await response.text();
-      // The gateway applies its own stateless hold; drop any lease the
-      // policy stamps so it is not mistaken for a negotiated one.
-      const { leaseTurnsRemaining: _leaseTurnsRemaining, ...decision } =
-        parseSelectorDecision(outputText).decision;
       return {
-        decision,
+        decision: parseSelectorDecision(outputText).decision,
         selectorModel: args.selectorModel,
         candidates: args.candidates,
         selectorInput: args.selectorInput,

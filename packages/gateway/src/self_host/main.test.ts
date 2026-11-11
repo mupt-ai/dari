@@ -246,6 +246,66 @@ test("a config path that does not exist stops the gateway from starting", async 
   expect(await new Response(missing.stderr as ReadableStream).text()).toContain("Gateway config not found");
 });
 
+test("with Dari Auto Routing a policy lease holds its model and counts down", async () => {
+  // Only the first selection leases model-b; any later one (the gateway
+  // prefetches the next lease while holding) would pick model-a.
+  let selections = 0;
+  const autoRouter = Bun.serve({
+    port: 0,
+    fetch() {
+      selections += 1;
+      return Response.json(selections === 1
+        ? { selected_model: "local/model-b", reasoning_effort: "off", reason: "Leased.", lease_turns_remaining: 2 }
+        : { selected_model: "local/model-a", reasoning_effort: "off", reason: "Next." });
+    },
+  });
+  const port = await freePort();
+  const leased = Bun.spawn(["bun", join(import.meta.dir, "main.ts")], {
+    env: {
+      PATH: process.env.PATH ?? "",
+      DARI_GATEWAY_KEYS: "gw-key-1",
+      DARI_GATEWAY_CONFIG: configPath,
+      DARI_GATEWAY_DB: join(dir, "leased.db"),
+      DARI_AUTO_ROUTING_API_KEY: "dari-key",
+      DARI_AUTO_ROUTING_URL: `http://127.0.0.1:${autoRouter.port}/v1/auto-router`,
+      LOCAL_API_KEY: "local-secret",
+      PORT: String(port),
+    },
+    stdout: "pipe",
+    stderr: "inherit",
+  });
+  try {
+    await waitForLine(leased.stdout as ReadableStream<Uint8Array>, "dari-gateway listening");
+    const messages: { role: string; content: string }[] = [{ role: "user", content: "start a long task" }];
+    const turn = async () => {
+      const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+        method: "POST",
+        headers: authorized(),
+        body: JSON.stringify({ model: "dari/routing", messages }),
+      });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { choices: { message: { content: string } }[] };
+      messages.push({ role: "assistant", content: body.choices[0]!.message.content });
+      messages.push({ role: "user", content: "continue" });
+      return {
+        model: response.headers.get("x-dari-selected-model"),
+        lease: response.headers.get("x-dari-lease-turns-remaining"),
+      };
+    };
+    const first = await turn();
+    const second = await turn();
+    expect(first).toEqual({ model: "local/model-b", lease: "2" });
+    expect(second).toEqual({ model: "local/model-b", lease: "1" });
+    // Once the lease runs out the policy chooses again.
+    const served = [(await turn()).model, (await turn()).model];
+    expect(served).toContain("local/model-a");
+  } finally {
+    leased.kill();
+    await leased.exited;
+    await autoRouter.stop(true);
+  }
+});
+
 async function freePort(): Promise<number> {
   const probe = Bun.serve({ port: 0, fetch: () => new Response() });
   const port = probe.port;

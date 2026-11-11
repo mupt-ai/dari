@@ -281,8 +281,7 @@ type subscriptionCredential struct {
 	UnavailableUntil   *string           `json:"unavailable_until"`
 	UnavailableReason  *string           `json:"unavailable_reason"`
 	SubscriptionActive bool              `json:"subscription_active"`
-	// Usage is how much of its tightest window the plan last reported used;
-	// a gateway reports it, the hosted API does not yet.
+	// Usage is how much of its tightest window the plan last reported used.
 	Usage            *subscriptionUsage `json:"usage"`
 	AutoRedeemResets bool               `json:"auto_redeem_resets"`
 }
@@ -303,6 +302,7 @@ func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
 	cmd.AddCommand(
 		newSubscriptionListCmd(gf),
 		newSubscriptionConnectCmd(gf),
+		newSubscriptionBuyCmd(),
 		newSubscriptionCredentialCmd(gf, "mark-available", "Clear a usage-limit hold so routers can use the subscription again",
 			http.MethodPost, func(name string) string { return url.PathEscape(name) + "/mark-available" }),
 		newSubscriptionCredentialCmd(gf, "disconnect", "Disconnect a subscription from Dari",
@@ -330,6 +330,8 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 					"provider":           subscriptionAlias(subscription.OAuthProvider),
 					"label":              subscription.Label,
 					"account_email":      subscription.SafeMetadata["account_email"],
+					"plan":               subscription.SafeMetadata["plan"],
+					"renews_at":          subscription.SafeMetadata["renews_at"],
 					"status":             subscriptionStatus(subscription),
 					"unavailable_until":  subscription.UnavailableUntil,
 					"unavailable_reason": subscription.UnavailableReason,
@@ -339,6 +341,26 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 				})
 			}
 			return printJSON(map[string]any{"subscriptions": rows})
+		},
+	}
+}
+
+func newSubscriptionBuyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "buy <claude-code|codex>",
+		Short: "Open the plan page to subscribe another account, then connect it with `connect`",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			provider, ok := subscriptionProviders[strings.ToLower(strings.TrimSpace(args[0]))]
+			if !ok || provider.buyURL == "" {
+				return fmt.Errorf("unknown subscription %q: expected claude-code or codex", args[0])
+			}
+			if openAgentBrowser(provider.buyURL) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Opened %s in your browser. If it didn't open, visit:\n", provider.vendor)
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "  %s\nEach %s subscription needs its own %s account. Subscribe with a new account, then run `dari credentials subscription connect %s`.\n",
+				provider.buyURL, provider.name, provider.vendor, args[0])
+			return nil
 		},
 	}
 }

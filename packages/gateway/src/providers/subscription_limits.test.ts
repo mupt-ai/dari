@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   DEFAULT_USAGE_LIMIT_WINDOW_MS,
+  codexUsageLimitError,
   detectSubscriptionUsageLimit,
   failureWithSubscriptionUsageLimit,
   retryAfterSeconds,
@@ -238,6 +239,7 @@ test("the failure marker round-trips through the provider message", () => {
   expect(subscriptionUsageLimitFromFailure(FAILURE)).toBeNull();
   expect(subscriptionUsageLimitMessage(limit)).toContain("Claude Code subscription usage limit is reached");
   expect(subscriptionUsageLimitMessage(limit)).toContain(limit.resetsAt.toISOString());
+  expect(subscriptionUsageLimitMessage(limit)).toContain("add another Claude Code subscription at https://app.dari.dev/credentials?buy=anthropic_claude_code.");
   expect(retryAfterSeconds(limit, NOW)).toBe(3600 * 3);
   const switched = { ...limit, switched: true };
   expect(subscriptionUsageLimitFromFailure(failureWithSubscriptionUsageLimit(FAILURE, switched))).toEqual(switched);
@@ -272,6 +274,15 @@ describe("subscriptionUsageFromHeaders", () => {
       "anthropic-ratelimit-unified-7d-utilization": "0.99",
       "anthropic-ratelimit-unified-7d-reset": String(Math.floor(NOW.getTime() / 1000) - 60),
     }), NOW)).toEqual({ utilization: 1, resetsAt: new Date(FIVE_HOUR_RESET * 1000) });
+  });
+
+  test("reads a ChatGPT plan's Codex windows as a fraction used", () => {
+    expect(subscriptionUsageFromHeaders("openai", "subscription", headers({
+      "x-codex-primary-used-percent": "37.5",
+      "x-codex-primary-reset-at": String(FIVE_HOUR_RESET),
+      "x-codex-secondary-used-percent": "12",
+      "x-codex-secondary-reset-at": String(WEEK_RESET),
+    }), NOW)).toEqual({ utilization: 0.375, resetsAt: new Date(FIVE_HOUR_RESET * 1000) });
   });
 
   test("reports nothing for API keys, other plans, or responses without usage", () => {
@@ -309,4 +320,13 @@ test("the response capture remembers rejected responses and leaves the body read
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("an exhausted ChatGPT plan answers in the shape Codex shows, with the buy link", () => {
+  const limit = { oauthProvider: "openai_codex" as const, resetsAt: new Date(RESET_SECONDS * 1000), reason: "ChatGPT usage limit reached." };
+  expect(codexUsageLimitError(limit)).toEqual({
+    body: { type: "usage_limit_reached", resets_at: RESET_SECONDS },
+    headers: { "x-codex-promo-message": "Add another ChatGPT subscription at https://app.dari.dev/credentials?buy=openai_codex" },
+  });
+  expect(codexUsageLimitError({ ...limit, oauthProvider: "anthropic_claude_code" })).toBeNull();
 });

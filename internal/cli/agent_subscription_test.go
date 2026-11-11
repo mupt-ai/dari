@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/cli/agents"
@@ -306,5 +307,31 @@ func TestAgentSubscriptionProvidersMatchTheAgent(t *testing.T) {
 		if got := agentSubscriptionProviders(agent); !slices.Equal(got, want) {
 			t.Errorf("%s: providers = %v, want %v", agent, got, want)
 		}
+	}
+}
+
+func TestSubscriptionDetailsShowPlanAndRenewal(t *testing.T) {
+	renews := time.Now().Add(72 * time.Hour)
+	got := subscriptionDetails(subscriptionCredential{SubscriptionActive: true, SafeMetadata: map[string]string{"plan": "Pro", "renews_at": renews.Format(time.RFC3339)}})
+	want := []string{"active", "Pro", "renews " + renews.Local().Format("Jan 2")}
+	if !slices.Equal(got, want) {
+		t.Fatalf("details = %q, want %q", got, want)
+	}
+	// A renewal date already past is a stale snapshot, not news.
+	lapsed := subscriptionDetails(subscriptionCredential{SafeMetadata: map[string]string{"renews_at": "2026-01-05T00:00:00Z"}})
+	if !slices.Equal(lapsed, []string{"standby"}) {
+		t.Fatalf("lapsed details = %q", lapsed)
+	}
+}
+
+func TestSubscriptionDetailsShowUsageUntilItsWindowResets(t *testing.T) {
+	resets := time.Now().Add(2 * time.Hour)
+	got := subscriptionDetails(subscriptionCredential{SubscriptionActive: true, Usage: &subscriptionUsage{Utilization: 0.62, ResetsAt: resets.Format(time.RFC3339)}})
+	if want := []string{"active", "62% used, resets " + usageResetTime(resets)}; !slices.Equal(got, want) {
+		t.Fatalf("details = %q, want %q", got, want)
+	}
+	expired := subscriptionDetails(subscriptionCredential{Usage: &subscriptionUsage{Utilization: 1, ResetsAt: time.Now().Add(-time.Minute).Format(time.RFC3339)}})
+	if !slices.Equal(expired, []string{"standby"}) {
+		t.Fatalf("expired usage details = %q", expired)
 	}
 }

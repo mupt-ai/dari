@@ -7,6 +7,9 @@ export class HttpError extends Error {
   readonly param?: string;
   // Response headers the error carries to the client, such as retry-after.
   readonly headers?: Record<string, string>;
+  // Fields that replace or extend the OpenAI-shaped error object, for clients
+  // that read more than the message (such as Codex's usage-limit type).
+  readonly body?: Record<string, unknown>;
 
   constructor(
     status: number,
@@ -14,12 +17,14 @@ export class HttpError extends Error {
     code = "invalid_request_error",
     param?: string,
     headers?: Record<string, string>,
+    body?: Record<string, unknown>,
   ) {
     super(message);
     this.status = status;
     this.code = code;
     this.param = param;
     this.headers = headers;
+    this.body = body;
   }
 }
 
@@ -66,6 +71,7 @@ export function errorResponse(error: unknown): Response {
         type: openAiErrorType(normalized.status),
         code: normalized.code,
         ...(normalized.param ? { param: normalized.param } : {}),
+        ...(error instanceof HttpError ? error.body : undefined),
       },
     },
     { status: normalized.status, headers: errorResponseHeaders(error) }

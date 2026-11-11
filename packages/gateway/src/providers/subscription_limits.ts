@@ -30,11 +30,14 @@ export type SubscriptionUsage = {
 // window and `-reset` in unix seconds.
 const CLAUDE_CODE_USAGE_WINDOWS = ["5h", "7d"] as const;
 
+// The ChatGPT backend reports each Codex window on every response, the same
+// headers the Codex CLI reads: `-used-percent` out of 100 and `-reset-at` in
+// unix seconds.
+const CODEX_USAGE_WINDOWS = ["primary", "secondary"] as const;
+
 /**
  * The quota a successful subscription response reports used, or null when it
- * reports none. Only Claude Code plans report usage on every response; a
- * ChatGPT plan reports it inside the response stream, which the provider
- * client does not surface, so its plans are switched only on a usage limit.
+ * reports none: the most used of the plan's windows.
  */
 export function subscriptionUsageFromHeaders(
   provider: string,
@@ -42,13 +45,23 @@ export function subscriptionUsageFromHeaders(
   headers: Headers,
   now = new Date(),
 ): SubscriptionUsage | null {
-  if (subscriptionOAuthProviderFor(provider, keySource) !== "anthropic_claude_code") return null;
+  const oauthProvider = subscriptionOAuthProviderFor(provider, keySource);
+  const windows = oauthProvider === "anthropic_claude_code"
+    ? CLAUDE_CODE_USAGE_WINDOWS.map((window) => ({
+      used: Number(headers.get(`anthropic-ratelimit-unified-${window}-utilization`) ?? NaN),
+      reset: headers.get(`anthropic-ratelimit-unified-${window}-reset`),
+    }))
+    : oauthProvider === "openai_codex"
+      ? CODEX_USAGE_WINDOWS.map((window) => ({
+        used: Number(headers.get(`x-codex-${window}-used-percent`) ?? NaN) / 100,
+        reset: headers.get(`x-codex-${window}-reset-at`),
+      }))
+      : [];
   let binding: SubscriptionUsage | null = null;
-  for (const window of CLAUDE_CODE_USAGE_WINDOWS) {
-    const raw = Number(headers.get(`anthropic-ratelimit-unified-${window}-utilization`) ?? NaN);
-    const resetsAt = unixSecondsDeadline(headers.get(`anthropic-ratelimit-unified-${window}-reset`), now);
-    if (!Number.isFinite(raw) || resetsAt === null) continue;
-    const utilization = Math.max(0, Math.min(1, raw));
+  for (const { used, reset } of windows) {
+    const resetsAt = unixSecondsDeadline(reset, now);
+    if (!Number.isFinite(used) || resetsAt === null) continue;
+    const utilization = Math.max(0, Math.min(1, used));
     if (binding === null || utilization > binding.utilization) binding = { utilization, resetsAt };
   }
   return binding;
@@ -66,6 +79,9 @@ const SUBSCRIPTION_LABEL: Record<SubscriptionOAuthProvider, string> = {
   openai_codex: "ChatGPT",
   meta_muse: "Muse Code",
 };
+
+// Providers whose plan page Dari's credentials page links to for buying another.
+const BUYABLE_SUBSCRIPTIONS = new Set<SubscriptionOAuthProvider>(["anthropic_claude_code", "openai_codex"]);
 
 export function subscriptionOAuthProviderFor(
   provider: string,
@@ -250,7 +266,39 @@ export function subscriptionUsageLimitFromFailure(
 export function subscriptionUsageLimitMessage(limit: SubscriptionUsageLimit): string {
   return `Your ${SUBSCRIPTION_LABEL[limit.oauthProvider]} subscription usage limit is reached. `
     + `It resets at ${limit.resetsAt.toISOString()}. `
-    + "Mark it available early at https://app.dari.dev/credentials.";
+    + "Mark it available early at https://app.dari.dev/credentials."
+    + subscriptionBuyHint(limit.oauthProvider);
+}
+
+// To keep going now: Dari's page links to subscribing another account and
+// connects it.
+function subscriptionBuyHint(provider: SubscriptionOAuthProvider): string {
+  const action = subscriptionBuyAction(provider);
+  return action === null ? "" : ` To keep going now, ${action.charAt(0).toLowerCase()}${action.slice(1)}.`;
+}
+
+function subscriptionBuyAction(provider: SubscriptionOAuthProvider): string | null {
+  if (!BUYABLE_SUBSCRIPTIONS.has(provider)) return null;
+  return `Add another ${SUBSCRIPTION_LABEL[provider]} subscription at `
+    + `https://app.dari.dev/credentials?buy=${provider}`;
+}
+
+/**
+ * Codex shows its own usage-limit notice and drops the message of any other
+ * 429, so an exhausted ChatGPT plan answers in the ChatGPT backend's shape:
+ * the body type Codex recognizes, and the buy link as its promo message.
+ * Codex renders "You've hit your usage limit. <promo>, or try again at <reset>."
+ */
+export function codexUsageLimitError(limit: SubscriptionUsageLimit): {
+  body: Record<string, unknown>;
+  headers: Record<string, string>;
+} | null {
+  if (limit.oauthProvider !== "openai_codex") return null;
+  const promo = subscriptionBuyAction(limit.oauthProvider);
+  return {
+    body: { type: "usage_limit_reached", resets_at: Math.ceil(limit.resetsAt.getTime() / 1000) },
+    headers: promo === null ? {} : { "x-codex-promo-message": promo },
+  };
 }
 
 export function subscriptionSwitchedMessage(limit: SubscriptionUsageLimit): string {

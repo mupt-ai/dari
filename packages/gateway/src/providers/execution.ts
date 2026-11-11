@@ -47,8 +47,11 @@ import {
 import type { NextSubscription } from "../platform/platform.js";
 import { providerResponseCaptureFromError, type ProviderResponseCapture } from "./response_capture.js";
 import { createStreamFinalizer } from "./stream_finalization.js";
+import { readCodexUsage } from "./codex_usage.js";
 import {
   detectSubscriptionUsageLimit,
+  codexUsageLimitError,
+  subscriptionOAuthProviderFor,
   subscriptionUsageFromHeaders,
   failureWithSubscriptionUsageLimit,
   retryAfterSeconds,
@@ -436,12 +439,14 @@ async function throwProviderFailure(args: {
     );
   }
   if (limit !== null) {
+    const codex = codexUsageLimitError(limit);
     throw new HttpError(
       429,
       subscriptionUsageLimitMessage(limit),
       "subscription_usage_limit",
       undefined,
-      { "retry-after": String(retryAfterSeconds(limit)) },
+      { "retry-after": String(retryAfterSeconds(limit)), ...codex?.headers },
+      codex?.body,
     );
   }
   throw new HttpError(
@@ -828,25 +833,32 @@ function noteSubscriptionUsage(
   responseCapture: ProviderResponseCapture | undefined,
 ): void {
   const platform = gatewayPlatform();
-  const headers = responseCapture?.succeeded;
-  if (
-    platform.recordSubscriptionUsage === undefined ||
-    headers === undefined ||
-    execution.subscriptionUserId === undefined ||
-    execution.subscriptionCredentialId === undefined
-  ) {
+  const userId = execution.subscriptionUserId;
+  const credentialId = execution.subscriptionCredentialId;
+  if (platform.recordSubscriptionUsage === undefined || userId === undefined || credentialId === undefined) {
     return;
   }
-  const usage = subscriptionUsageFromHeaders(execution.provider, execution.providerKeySource, headers);
-  if (usage === null) return;
-  platform.recordSubscriptionUsage({
-    userId: execution.subscriptionUserId,
-    credentialId: execution.subscriptionCredentialId,
-    usage,
-  }).catch((error: unknown) => {
-    console.error("subscription usage record failed", error);
-    captureOperationalError(error, { code: "subscription_usage_record_failed" });
-  });
+  const record = platform.recordSubscriptionUsage.bind(platform);
+  const headers = responseCapture?.succeeded;
+  const fromHeaders = headers === undefined
+    ? null
+    : subscriptionUsageFromHeaders(execution.provider, execution.providerKeySource, headers);
+  // Codex's WebSocket transport carries no headers; its usage report does.
+  const usage = fromHeaders !== null
+    ? Promise.resolve(fromHeaders)
+    : subscriptionOAuthProviderFor(execution.provider, execution.providerKeySource) === "openai_codex"
+      ? readCodexUsage({
+        credentialId,
+        accessToken: execution.apiKey,
+        baseUrl: execution.endpoint?.baseUrl ?? execution.config?.base_url ?? undefined,
+      })
+      : Promise.resolve(null);
+  usage
+    .then((reported) => reported === null ? undefined : record({ userId, credentialId, usage: reported }))
+    .catch((error: unknown) => {
+      console.error("subscription usage record failed", error);
+      captureOperationalError(error, { code: "subscription_usage_record_failed" });
+    });
 }
 
 // Never fails the request: the provider already refused. Resolves whether

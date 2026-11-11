@@ -280,7 +280,7 @@ func TestAgentSubscriptionLinesListInRoutingOrder(t *testing.T) {
 		{Name: "MUSE", OAuthProvider: museSubscription.id, CredentialScope: "user", CreatedAt: "2026-03"},
 	}), true)
 	got := stripANSI(strings.Join(lines, "\n"))
-	want := "  Claude Code  CLAUDE           standby\n  Claude Code  Work             standby\n  Muse Code    MUSE             standby\n  ChatGPT      me@example.test  active\n"
+	want := "  Claude Code  CLAUDE\n  Claude Code  Work\n  Muse Code    MUSE\n  ChatGPT      me@example.test\n"
 	if got != want {
 		t.Fatalf("lines:\n%q\nwant:\n%q", got, want)
 	}
@@ -306,25 +306,70 @@ func TestAgentSubscriptionProvidersMatchTheAgent(t *testing.T) {
 func TestSubscriptionDetailsShowPlanAndRenewal(t *testing.T) {
 	renews := time.Now().Add(72 * time.Hour)
 	got := subscriptionDetails(subscriptionCredential{SubscriptionActive: true, SafeMetadata: map[string]string{"plan": "Pro", "renews_at": renews.Format(time.RFC3339)}})
-	want := []string{"active", "Pro", "renews " + renews.Local().Format("Jan 2")}
+	want := []string{"Pro", "renews " + renews.Local().Format("Jan 2")}
 	if !slices.Equal(got, want) {
 		t.Fatalf("details = %q, want %q", got, want)
 	}
 	// A renewal date already past is a stale snapshot, not news.
 	lapsed := subscriptionDetails(subscriptionCredential{SafeMetadata: map[string]string{"renews_at": "2026-01-05T00:00:00Z"}})
-	if !slices.Equal(lapsed, []string{"standby"}) {
+	if len(lapsed) != 0 {
 		t.Fatalf("lapsed details = %q", lapsed)
 	}
 }
 
-func TestSubscriptionDetailsShowUsageUntilItsWindowResets(t *testing.T) {
+func TestSubscriptionDetailsNameUsageReportedWithoutWindows(t *testing.T) {
 	resets := time.Now().Add(2 * time.Hour)
-	got := subscriptionDetails(subscriptionCredential{SubscriptionActive: true, Usage: &subscriptionUsage{Utilization: 0.62, ResetsAt: resets.Format(time.RFC3339)}})
-	if want := []string{"active", "62% used, resets " + usageResetTime(resets)}; !slices.Equal(got, want) {
+	got := subscriptionDetails(subscriptionCredential{Usage: &subscriptionUsage{Utilization: 0.62, ResetsAt: resets.Format(time.RFC3339)}})
+	if want := []string{"5h 62% used, resets " + usageResetTime(resets)}; !slices.Equal(got, want) {
 		t.Fatalf("details = %q, want %q", got, want)
 	}
 	expired := subscriptionDetails(subscriptionCredential{Usage: &subscriptionUsage{Utilization: 1, ResetsAt: time.Now().Add(-time.Minute).Format(time.RFC3339)}})
-	if !slices.Equal(expired, []string{"standby"}) {
+	if len(expired) != 0 {
 		t.Fatalf("expired usage details = %q", expired)
+	}
+}
+
+func TestSubscriptionDetailsShowEveryUsageWindow(t *testing.T) {
+	fiveHours := time.Now().Add(2 * time.Hour)
+	week := time.Now().Add(96 * time.Hour)
+	usage := &subscriptionUsage{
+		Utilization: 0.99,
+		ResetsAt:    fiveHours.Format(time.RFC3339),
+		Windows: []subscriptionUsageWindow{
+			{Minutes: 300, Utilization: 0.99, ResetsAt: fiveHours.Format(time.RFC3339)},
+			{Minutes: 10080, Utilization: 0.2, ResetsAt: week.Format(time.RFC3339)},
+		},
+	}
+	got := subscriptionDetails(subscriptionCredential{Usage: usage})
+	want := []string{"5h 99% used, resets " + usageResetTime(fiveHours), "weekly 20% used, resets " + usageResetTime(week)}
+	if !slices.Equal(got, want) {
+		t.Fatalf("details = %q, want %q", got, want)
+	}
+	// Held until the five hour reset: that window is at its limit, and the
+	// weekly window still shows its headroom.
+	held := fiveHours.Format(time.RFC3339)
+	got = subscriptionDetails(subscriptionCredential{Usage: usage, UnavailableUntil: &held})
+	want = []string{"5h limit reached, resets " + usageResetTime(fiveHours), "weekly 20% used, resets " + usageResetTime(week)}
+	if !slices.Equal(got, want) {
+		t.Fatalf("held details = %q, want %q", got, want)
+	}
+}
+
+func TestSubscriptionDetailsNameAHoldWithoutUsage(t *testing.T) {
+	soon := time.Now().Add(3 * time.Hour).Format(time.RFC3339)
+	later := time.Now().Add(50 * time.Hour).Format(time.RFC3339)
+	cases := []struct {
+		provider, until, want string
+	}{
+		{"openai_codex", soon, "5h"},
+		{"openai_codex", later, "weekly"},
+		// Muse Code plans have only the five hour window.
+		{"meta_muse", later, "5h"},
+	}
+	for _, c := range cases {
+		got := subscriptionDetails(subscriptionCredential{OAuthProvider: c.provider, UnavailableUntil: &c.until})
+		if len(got) != 1 || !strings.HasPrefix(got[0], c.want+" limit reached, resets ") {
+			t.Fatalf("%s held until %s: details = %q", c.provider, c.until, got)
+		}
 	}
 }

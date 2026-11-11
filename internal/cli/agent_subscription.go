@@ -97,7 +97,12 @@ func agentSubscriptionLines(subscriptions []subscriptionCredential, showProvider
 		if showProvider {
 			line += fmt.Sprintf("%-11s  ", subscriptionProviderFor(subscription.OAuthProvider).name)
 		}
-		lines = append(lines, line+fmt.Sprintf("%-*s  %s", width, names[i], ansiGray+strings.Join(subscriptionDetails(subscription), " · ")+ansiReset))
+		if details := subscriptionDetails(subscription); len(details) > 0 {
+			line += fmt.Sprintf("%-*s  %s", width, names[i], ansiGray+strings.Join(details, " · ")+ansiReset)
+		} else {
+			line += names[i]
+		}
+		lines = append(lines, line)
 	}
 	return append(lines, "")
 }

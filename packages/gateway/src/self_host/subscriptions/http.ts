@@ -162,7 +162,15 @@ function summary(store: SubscriptionStore, credential: SubscriptionCredential, n
 /** The fields the CLI reads from a credential, never its tokens. */
 function usageBody(credential: SubscriptionCredential, now: Date) {
   const usage = currentUsage(credential, now);
-  return usage === null ? null : { utilization: usage.utilization, resets_at: usage.resetsAt.toISOString() };
+  return usage === null ? null : {
+    utilization: usage.utilization,
+    resets_at: usage.resetsAt.toISOString(),
+    windows: usage.windows.map((window) => ({
+      minutes: window.minutes,
+      utilization: window.utilization,
+      resets_at: window.resetsAt.toISOString(),
+    })),
+  };
 }
 
 function credentialBody(credential: SubscriptionCredential, active: boolean, now: Date) {

@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
-import { SubscriptionStore } from "./store.js";
+import { currentUsage, SubscriptionStore } from "./store.js";
 import { tokens } from "./test_support.js";
 
 const now = new Date("2026-10-20T12:00:00Z");
@@ -172,6 +172,7 @@ describe("usage", () => {
   const used = (utilization: number, resetsInMinutes: number) => ({
     utilization,
     resetsAt: later(resetsInMinutes),
+    windows: [{ minutes: 300, utilization, resetsAt: later(resetsInMinutes) }],
   });
 
   test("a conversation stays on its subscription, keeping its cache, while it has headroom", () => {
@@ -181,6 +182,38 @@ describe("usage", () => {
     store.recordUsage(a!.id, used(0.5, 240), now);
     store.recordUsage(b!.id, used(0.1, 30), now);
     expect(store.selectCredential(CLAUDE, "conv-1", later(1))?.id).toBe(a!.id);
+  });
+
+  test("keeps every reported window", () => {
+    const { store, credentials: [a] } = connected("a@example.com");
+    const usage = {
+      utilization: 0.7,
+      resetsAt: later(6000),
+      windows: [
+        { minutes: 300, utilization: 0.2, resetsAt: later(90) },
+        { minutes: 10_080, utilization: 0.7, resetsAt: later(6000) },
+      ],
+    };
+    store.recordUsage(a!.id, usage, now);
+    expect(store.list()[0]!.usage).toEqual({ ...usage, observedAt: now });
+  });
+
+  test("a short window resetting leaves the longer ones in force", () => {
+    const { store, credentials: [a] } = connected("a@example.com");
+    store.recordUsage(a!.id, {
+      utilization: 0.9,
+      resetsAt: later(30),
+      windows: [
+        { minutes: 300, utilization: 0.9, resetsAt: later(30) },
+        { minutes: 10_080, utilization: 0.4, resetsAt: later(6000) },
+      ],
+    }, now);
+    expect(currentUsage(store.list()[0]!, later(31))).toEqual({
+      utilization: 0.4,
+      resetsAt: later(6000),
+      windows: [{ minutes: 10_080, utilization: 0.4, resetsAt: later(6000) }],
+    });
+    expect(currentUsage(store.list()[0]!, later(6001))).toBeNull();
   });
 
   test("a new conversation goes where quota resets soonest, so it is spent before it is lost", () => {

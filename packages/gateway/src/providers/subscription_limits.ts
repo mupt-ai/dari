@@ -15,25 +15,55 @@ export type SubscriptionUsageLimit = {
   switched?: boolean;
 };
 
-/**
- * How much of a subscription's quota is used, from a successful response.
- * `utilization` is the binding window's share used (0 to 1): the window
- * closest to its limit, whose reset is `resetsAt`.
- */
-export type SubscriptionUsage = {
+/** One quota window of a plan: its length, share used (0 to 1), and reset. */
+export type SubscriptionUsageWindow = {
+  minutes: number;
   utilization: number;
   resetsAt: Date;
 };
 
+/**
+ * How much of a subscription's quota is used, from a successful response.
+ * `windows` lists every window with a future reset, shortest first;
+ * `utilization` and `resetsAt` are the binding window's: the one closest to
+ * its limit.
+ */
+export type SubscriptionUsage = {
+  utilization: number;
+  resetsAt: Date;
+  windows: SubscriptionUsageWindow[];
+};
+
+const FIVE_HOURS = 5 * 60;
+const ONE_WEEK = 7 * 24 * 60;
+
 // Claude Code's unified limiter reports each window on every response, the
 // same headers Claude Code itself reads: `-utilization` as a fraction of the
 // window and `-reset` in unix seconds.
-const CLAUDE_CODE_USAGE_WINDOWS = ["5h", "7d"] as const;
+const CLAUDE_CODE_USAGE_WINDOWS = [["5h", FIVE_HOURS], ["7d", ONE_WEEK]] as const;
 
 // The ChatGPT backend reports each Codex window on every response, the same
-// headers the Codex CLI reads: `-used-percent` out of 100 and `-reset-at` in
-// unix seconds.
-const CODEX_USAGE_WINDOWS = ["primary", "secondary"] as const;
+// headers the Codex CLI reads: `-used-percent` out of 100, `-reset-at` in
+// unix seconds, and `-window-minutes`. The defaults are a ChatGPT plan's.
+export const CODEX_USAGE_WINDOWS = [["primary", FIVE_HOURS], ["secondary", ONE_WEEK]] as const;
+
+/** Usage from raw windows, dropping malformed or already-reset ones. */
+export function subscriptionUsageFromWindows(
+  raw: Array<{ minutes: number; used: number; resetsAt: Date | null }>,
+  now: Date,
+): SubscriptionUsage | null {
+  const windows = raw
+    .filter((window) => Number.isFinite(window.used) && window.resetsAt !== null && window.resetsAt > now)
+    .map((window) => ({
+      minutes: window.minutes,
+      utilization: Math.max(0, Math.min(1, window.used)),
+      resetsAt: window.resetsAt as Date,
+    }))
+    .sort((a, b) => a.minutes - b.minutes);
+  if (windows.length === 0) return null;
+  const binding = windows.reduce((a, b) => (b.utilization > a.utilization ? b : a));
+  return { utilization: binding.utilization, resetsAt: binding.resetsAt, windows };
+}
 
 /**
  * The quota a successful subscription response reports used, or null when it
@@ -47,24 +77,19 @@ export function subscriptionUsageFromHeaders(
 ): SubscriptionUsage | null {
   const oauthProvider = subscriptionOAuthProviderFor(provider, keySource);
   const windows = oauthProvider === "anthropic_claude_code"
-    ? CLAUDE_CODE_USAGE_WINDOWS.map((window) => ({
+    ? CLAUDE_CODE_USAGE_WINDOWS.map(([window, minutes]) => ({
+      minutes,
       used: Number(headers.get(`anthropic-ratelimit-unified-${window}-utilization`) ?? NaN),
-      reset: headers.get(`anthropic-ratelimit-unified-${window}-reset`),
+      resetsAt: unixSecondsDeadline(headers.get(`anthropic-ratelimit-unified-${window}-reset`), now),
     }))
     : oauthProvider === "openai_codex"
-      ? CODEX_USAGE_WINDOWS.map((window) => ({
+      ? CODEX_USAGE_WINDOWS.map(([window, minutes]) => ({
+        minutes: Number(headers.get(`x-codex-${window}-window-minutes`)) || minutes,
         used: Number(headers.get(`x-codex-${window}-used-percent`) ?? NaN) / 100,
-        reset: headers.get(`x-codex-${window}-reset-at`),
+        resetsAt: unixSecondsDeadline(headers.get(`x-codex-${window}-reset-at`), now),
       }))
       : [];
-  let binding: SubscriptionUsage | null = null;
-  for (const { used, reset } of windows) {
-    const resetsAt = unixSecondsDeadline(reset, now);
-    if (!Number.isFinite(used) || resetsAt === null) continue;
-    const utilization = Math.max(0, Math.min(1, used));
-    if (binding === null || utilization > binding.utilization) binding = { utilization, resetsAt };
-  }
-  return binding;
+  return subscriptionUsageFromWindows(windows, now);
 }
 
 // Neither provider guarantees a reset time on every usage-limit response.

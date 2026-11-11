@@ -287,12 +287,21 @@ type subscriptionCredential struct {
 	UnavailableUntil   *string           `json:"unavailable_until"`
 	UnavailableReason  *string           `json:"unavailable_reason"`
 	SubscriptionActive bool              `json:"subscription_active"`
-	// Usage is how much of its tightest window the plan last reported used.
+	// Usage is how much of its quota the plan last reported used.
 	Usage            *subscriptionUsage `json:"usage"`
 	AutoRedeemResets bool               `json:"auto_redeem_resets"`
 }
 
+// subscriptionUsage is the tightest window's share used and reset, and every
+// window that has not reset, shortest first.
 type subscriptionUsage struct {
+	Utilization float64                   `json:"utilization"`
+	ResetsAt    string                    `json:"resets_at"`
+	Windows     []subscriptionUsageWindow `json:"windows"`
+}
+
+type subscriptionUsageWindow struct {
+	Minutes     int     `json:"minutes"`
 	Utilization float64 `json:"utilization"`
 	ResetsAt    string  `json:"resets_at"`
 }

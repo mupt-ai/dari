@@ -403,22 +403,102 @@ func subscriptionName(subscription subscriptionCredential) string {
 	return subscription.Name
 }
 
-// subscriptionDetails is a subscription's status, then its plan, how much of
-// its current window is used, and its renewal, when the provider reports them.
+// subscriptionDetails is a subscription's plan, how much of each quota
+// window is used, and its renewal, when the provider reports them. A window
+// at its limit says so; the others still show their headroom.
 func subscriptionDetails(subscription subscriptionCredential) []string {
-	details := []string{subscriptionStatus(subscription)}
+	details := []string{}
 	if plan := subscription.SafeMetadata["plan"]; plan != "" {
 		details = append(details, plan)
 	}
-	if usage := subscription.Usage; usage != nil {
-		if resets, err := time.Parse(time.RFC3339Nano, usage.ResetsAt); err == nil && resets.After(time.Now()) {
-			details = append(details, fmt.Sprintf("%.0f%% used, resets %s", usage.Utilization*100, usageResetTime(resets)))
+	for _, window := range subscriptionUsageWindows(subscription, time.Now()) {
+		resets, _ := time.Parse(time.RFC3339Nano, window.ResetsAt)
+		usage := fmt.Sprintf("%.0f%% used", window.Utilization*100)
+		if window.Utilization >= 1 {
+			usage = "limit reached"
 		}
+		details = append(details, fmt.Sprintf("%s %s, resets %s", usageWindowLabel(window.Minutes), usage, usageResetTime(resets)))
 	}
 	if renews, err := time.Parse(time.RFC3339, subscription.SafeMetadata["renews_at"]); err == nil && renews.After(time.Now()) {
 		details = append(details, "renews "+renews.Local().Format("Jan 2"))
 	}
 	return details
+}
+
+const (
+	fiveHourMinutes = 5 * 60
+	weekMinutes     = 7 * 24 * 60
+)
+
+// subscriptionUsageWindows is every window that has not reset, shortest
+// first. A held subscription's hold ends when the window that ran out
+// resets, so that window shows full. Usage reported without per-window
+// detail, and holds without a matching window, are named by how far off
+// their reset is: only the weekly window resets more than five hours out.
+// Muse Code plans have only the five hour window.
+func subscriptionUsageWindows(subscription subscriptionCredential, now time.Time) []subscriptionUsageWindow {
+	fiveHourOnly := subscription.OAuthProvider == "meta_muse"
+	inferred := func(resets time.Time) int {
+		if !fiveHourOnly && resets.Sub(now) > fiveHourMinutes*time.Minute {
+			return weekMinutes
+		}
+		return fiveHourMinutes
+	}
+	running := func(resetsAt string) (time.Time, bool) {
+		resets, err := time.Parse(time.RFC3339Nano, resetsAt)
+		return resets, err == nil && resets.After(now)
+	}
+	windows := []subscriptionUsageWindow{}
+	if usage := subscription.Usage; usage != nil {
+		if len(usage.Windows) == 0 {
+			if resets, ok := running(usage.ResetsAt); ok {
+				windows = append(windows, subscriptionUsageWindow{Minutes: inferred(resets), Utilization: usage.Utilization, ResetsAt: usage.ResetsAt})
+			}
+		}
+		for _, window := range usage.Windows {
+			if _, ok := running(window.ResetsAt); ok {
+				windows = append(windows, window)
+			}
+		}
+	}
+	if subscription.UnavailableUntil == nil {
+		return windows
+	}
+	held, ok := running(*subscription.UnavailableUntil)
+	if !ok {
+		return windows
+	}
+	minutes := inferred(held)
+	closest := 15 * time.Minute
+	for _, window := range windows {
+		resets, _ := time.Parse(time.RFC3339Nano, window.ResetsAt)
+		if gap := resets.Sub(held).Abs(); gap < closest {
+			closest, minutes = gap, window.Minutes
+		}
+	}
+	limited := []subscriptionUsageWindow{}
+	for _, window := range windows {
+		if window.Minutes != minutes {
+			limited = append(limited, window)
+		}
+	}
+	limited = append(limited, subscriptionUsageWindow{Minutes: minutes, Utilization: 1, ResetsAt: *subscription.UnavailableUntil})
+	slices.SortFunc(limited, func(a, b subscriptionUsageWindow) int { return a.Minutes - b.Minutes })
+	return limited
+}
+
+// usageWindowLabel names a quota window by its length: 5h, weekly, 30d.
+func usageWindowLabel(minutes int) string {
+	switch {
+	case minutes == 7*24*60:
+		return "weekly"
+	case minutes%(24*60) == 0:
+		return fmt.Sprintf("%dd", minutes/(24*60))
+	case minutes%60 == 0:
+		return fmt.Sprintf("%dh", minutes/60)
+	default:
+		return fmt.Sprintf("%dm", minutes)
+	}
 }
 
 // usageResetTime is the clock time a window resets, with its date when it is

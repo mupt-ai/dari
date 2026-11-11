@@ -269,7 +269,14 @@ describe("subscriptionUsageFromHeaders", () => {
       "anthropic-ratelimit-unified-7d-utilization": "0.81",
       "anthropic-ratelimit-unified-7d-reset": String(WEEK_RESET),
       "anthropic-ratelimit-unified-7d-status": "allowed_warning",
-    }), NOW)).toEqual({ utilization: 0.81, resetsAt: new Date(WEEK_RESET * 1000) });
+    }), NOW)).toEqual({
+      utilization: 0.81,
+      resetsAt: new Date(WEEK_RESET * 1000),
+      windows: [
+        { minutes: 300, utilization: 0.42, resetsAt: new Date(FIVE_HOUR_RESET * 1000) },
+        { minutes: 10_080, utilization: 0.81, resetsAt: new Date(WEEK_RESET * 1000) },
+      ],
+    });
   });
 
   test("clamps out-of-range values and skips windows without a future reset", () => {
@@ -278,7 +285,11 @@ describe("subscriptionUsageFromHeaders", () => {
       "anthropic-ratelimit-unified-5h-reset": String(FIVE_HOUR_RESET),
       "anthropic-ratelimit-unified-7d-utilization": "0.99",
       "anthropic-ratelimit-unified-7d-reset": String(Math.floor(NOW.getTime() / 1000) - 60),
-    }), NOW)).toEqual({ utilization: 1, resetsAt: new Date(FIVE_HOUR_RESET * 1000) });
+    }), NOW)).toEqual({
+      utilization: 1,
+      resetsAt: new Date(FIVE_HOUR_RESET * 1000),
+      windows: [{ minutes: 300, utilization: 1, resetsAt: new Date(FIVE_HOUR_RESET * 1000) }],
+    });
   });
 
   test("reads a ChatGPT plan's Codex windows as a fraction used", () => {
@@ -287,7 +298,15 @@ describe("subscriptionUsageFromHeaders", () => {
       "x-codex-primary-reset-at": String(FIVE_HOUR_RESET),
       "x-codex-secondary-used-percent": "12",
       "x-codex-secondary-reset-at": String(WEEK_RESET),
-    }), NOW)).toEqual({ utilization: 0.375, resetsAt: new Date(FIVE_HOUR_RESET * 1000) });
+      "x-codex-secondary-window-minutes": "43200",
+    }), NOW)).toEqual({
+      utilization: 0.375,
+      resetsAt: new Date(FIVE_HOUR_RESET * 1000),
+      windows: [
+        { minutes: 300, utilization: 0.375, resetsAt: new Date(FIVE_HOUR_RESET * 1000) },
+        { minutes: 43_200, utilization: 0.12, resetsAt: new Date(WEEK_RESET * 1000) },
+      ],
+    });
   });
 
   test("reports nothing for API keys, other plans, or responses without usage", () => {

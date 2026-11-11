@@ -5,13 +5,20 @@ import { codexUsageFromReport, readCodexUsage } from "./codex_usage.js";
 const NOW = new Date("2026-11-10T12:00:00Z");
 const NOW_SECONDS = NOW.getTime() / 1000;
 
-test("reads the most used Codex window with a future reset", () => {
+test("reads every Codex window with a future reset, binding on the most used", () => {
   expect(codexUsageFromReport({
     rate_limit: {
-      primary_window: { used_percent: 77, reset_at: NOW_SECONDS + 3600 },
-      secondary_window: { used_percent: 41.5, reset_at: NOW_SECONDS + 86_400 },
+      primary_window: { used_percent: 77, reset_at: NOW_SECONDS + 3600, limit_window_seconds: 18_000 },
+      secondary_window: { used_percent: 41.5, reset_at: NOW_SECONDS + 86_400, limit_window_seconds: 604_800 },
     },
-  }, NOW)).toEqual({ utilization: 0.77, resetsAt: new Date((NOW_SECONDS + 3600) * 1000) });
+  }, NOW)).toEqual({
+    utilization: 0.77,
+    resetsAt: new Date((NOW_SECONDS + 3600) * 1000),
+    windows: [
+      { minutes: 300, utilization: 0.77, resetsAt: new Date((NOW_SECONDS + 3600) * 1000) },
+      { minutes: 10_080, utilization: 0.415, resetsAt: new Date((NOW_SECONDS + 86_400) * 1000) },
+    ],
+  });
   expect(codexUsageFromReport({
     rate_limit: { primary_window: { used_percent: 99, reset_at: NOW_SECONDS - 60 } },
   }, NOW)).toBeNull();
@@ -28,7 +35,7 @@ test("asks the ChatGPT backend at most once a minute per subscription, as the ac
   }) as typeof globalThis.fetch;
   const read = (now: number) => readCodexUsage({ credentialId: "cred_codex_throttle", accessToken: token, now, fetch });
 
-  expect(await read(NOW.getTime())).toEqual({ utilization: 0.1, resetsAt: new Date((NOW_SECONDS + 3600) * 1000) });
+  expect(await read(NOW.getTime())).toMatchObject({ utilization: 0.1, resetsAt: new Date((NOW_SECONDS + 3600) * 1000) });
   expect(await read(NOW.getTime() + 30_000)).toBeNull();
   expect(await read(NOW.getTime() + 61_000)).not.toBeNull();
   expect(requests).toHaveLength(2);

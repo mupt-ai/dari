@@ -1,4 +1,4 @@
-import type { SubscriptionUsage } from "./subscription_limits.js";
+import { CODEX_USAGE_WINDOWS, type SubscriptionUsage, subscriptionUsageFromWindows } from "./subscription_limits.js";
 
 // Codex calls run over a WebSocket that bypasses fetch, so a ChatGPT plan's
 // usage never reaches the gateway as response headers. The ChatGPT backend's
@@ -39,22 +39,18 @@ export async function readCodexUsage(args: {
   return codexUsageFromReport(await response.json(), new Date(now));
 }
 
-/** The most used window with a future reset, or null when the report has none. */
+/** Every Codex window with a future reset, or null when the report has none. */
 export function codexUsageFromReport(report: unknown, now: Date): SubscriptionUsage | null {
   const rateLimit = isRecord(report) && isRecord(report.rate_limit) ? report.rate_limit : {};
-  let binding: SubscriptionUsage | null = null;
-  for (const name of ["primary_window", "secondary_window"]) {
-    const window = rateLimit[name];
-    if (!isRecord(window)) continue;
-    const used = window.used_percent;
-    const resetAt = window.reset_at;
-    if (typeof used !== "number" || !Number.isFinite(used) || typeof resetAt !== "number") continue;
-    const resetsAt = new Date(resetAt * 1000);
-    if (resetsAt <= now) continue;
-    const utilization = Math.max(0, Math.min(1, used / 100));
-    if (binding === null || utilization > binding.utilization) binding = { utilization, resetsAt };
-  }
-  return binding;
+  return subscriptionUsageFromWindows(CODEX_USAGE_WINDOWS.map(([name, minutes]) => {
+    const window = isRecord(rateLimit[`${name}_window`]) ? rateLimit[`${name}_window`] as Record<string, unknown> : {};
+    const { used_percent: used, reset_at: resetAt, limit_window_seconds: seconds } = window;
+    return {
+      minutes: typeof seconds === "number" && seconds > 0 ? Math.round(seconds / 60) : minutes,
+      used: typeof used === "number" ? used / 100 : NaN,
+      resetsAt: typeof resetAt === "number" ? new Date(resetAt * 1000) : null,
+    };
+  }), now);
 }
 
 function codexAccountId(token: string): string | null {

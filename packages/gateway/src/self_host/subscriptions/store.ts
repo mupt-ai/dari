@@ -86,6 +86,7 @@ type CredentialRow = {
   usage_utilization: number | null;
   usage_resets_at: number | null;
   usage_observed_at: number | null;
+  usage_windows: string | null;
   position: number;
   created_at: number;
   updated_at: number;
@@ -98,6 +99,7 @@ const USAGE_COLUMNS = {
   usage_utilization: "REAL",
   usage_resets_at: "INTEGER",
   usage_observed_at: "INTEGER",
+  usage_windows: "TEXT",
 } as const;
 
 type SessionRow = {
@@ -125,6 +127,7 @@ export class SubscriptionStore {
       usage_utilization REAL,
       usage_resets_at INTEGER,
       usage_observed_at INTEGER,
+      usage_windows TEXT,
       position INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -214,8 +217,9 @@ export class SubscriptionStore {
   /** Record the usage a response reported for a subscription. */
   recordUsage(id: string, usage: SubscriptionUsage, now = new Date()): void {
     this.db.run(
-      "UPDATE subscription_credentials SET usage_utilization = ?, usage_resets_at = ?, usage_observed_at = ? WHERE id = ?",
-      [usage.utilization, usage.resetsAt.getTime(), now.getTime(), id],
+      `UPDATE subscription_credentials SET usage_utilization = ?, usage_resets_at = ?, usage_observed_at = ?,
+         usage_windows = ? WHERE id = ?`,
+      [usage.utilization, usage.resetsAt.getTime(), now.getTime(), windowsJson(usage), id],
     );
   }
 
@@ -269,7 +273,7 @@ export class SubscriptionStore {
         this.db.run(
           `UPDATE subscription_credentials SET access_token = ?, refresh_token = ?, expires_at = ?,
              account_id = ?, account_email = ?, unavailable_until = ?, unavailable_reason = ?,
-             usage_utilization = ?, usage_resets_at = ?, usage_observed_at = ?, updated_at = ?
+             usage_utilization = ?, usage_resets_at = ?, usage_observed_at = ?, usage_windows = ?, updated_at = ?
            WHERE id = ?`,
           [
             tokens.accessToken,
@@ -282,6 +286,7 @@ export class SubscriptionStore {
             usage?.utilization ?? null,
             usage?.resetsAt.getTime() ?? null,
             usage?.observedAt.getTime() ?? null,
+            usage === null ? null : windowsJson(usage),
             now.getTime(),
             existing.id,
           ],
@@ -428,8 +433,20 @@ export function isHeld(credential: SubscriptionCredential, now: Date): boolean {
 }
 
 /** The usage a subscription last reported, while its window has not reset. */
+/**
+ * The last reported usage of every window that has not reset. A short window
+ * resetting leaves the longer ones in force, so the binding window is the
+ * most used of those still running.
+ */
 export function currentUsage(credential: SubscriptionCredential, now: Date): SubscriptionUsage | null {
-  return credential.usage !== null && credential.usage.resetsAt > now ? credential.usage : null;
+  const usage = credential.usage;
+  if (usage === null) return null;
+  // Usage recorded before per-window reports has only the binding window.
+  if (usage.windows.length === 0) return usage.resetsAt > now ? usage : null;
+  const windows = usage.windows.filter((window) => window.resetsAt > now);
+  if (windows.length === 0) return null;
+  const binding = windows.reduce((a, b) => (b.utilization > a.utilization ? b : a));
+  return { utilization: binding.utilization, resetsAt: binding.resetsAt, windows };
 }
 
 function hasHeadroom(credential: SubscriptionCredential, now: Date): boolean {
@@ -493,10 +510,22 @@ function credentialFromRow(row: CredentialRow): SubscriptionCredential {
         utilization: row.usage_utilization,
         resetsAt: new Date(row.usage_resets_at),
         observedAt: new Date(row.usage_observed_at),
+        windows: parseWindows(row.usage_windows),
       },
     position: row.position,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
     lastUsedAt: row.last_used_at === null ? null : new Date(row.last_used_at),
   };
+}
+
+function windowsJson(usage: SubscriptionUsage): string {
+  return JSON.stringify(usage.windows.map((window) => ({ ...window, resetsAt: window.resetsAt.getTime() })));
+}
+
+// Rows recorded before windows were stored have none.
+function parseWindows(value: string | null): SubscriptionUsage["windows"] {
+  if (value === null) return [];
+  return (JSON.parse(value) as Array<{ minutes: number; utilization: number; resetsAt: number }>)
+    .map((window) => ({ ...window, resetsAt: new Date(window.resetsAt) }));
 }

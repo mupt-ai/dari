@@ -36,10 +36,16 @@ func setGatewayEnv(t *testing.T, gatewayURL string) {
 	// os.UserCacheDir prefers XDG_CACHE_HOME on Linux.
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("DARI_API_KEY", "")
+	t.Setenv("DARI_ROUTING_API_KEY", "")
 	t.Setenv("DARI_GATEWAY_URL", gatewayURL)
 	t.Setenv("DARI_GATEWAY_KEY", gatewayTestKey)
 	// Launches set this in the process environment; restore it after the test.
 	t.Setenv(agents.NoActivityLinkEnv, "")
+	// A mode switch looks for OpenClaw and Hermes setups by running them; never
+	// the ones installed on this machine.
+	for _, agent := range []string{"OPENCLAW", "HERMES"} {
+		t.Setenv("DARI_"+agent+"_PATH", filepath.Join(t.TempDir(), "missing"))
+	}
 }
 
 // hostedAPIMustNotBeCalled points the hosted API at a server that fails the
@@ -246,19 +252,6 @@ func TestGatewayLaunchNeedsGatewayKey(t *testing.T) {
 	}
 }
 
-// --connect opens the gateway's own Accounts page, which needs a terminal.
-func TestGatewayLaunchConnectNeedsTerminal(t *testing.T) {
-	hostedAPIMustNotBeCalled(t)
-	fakeAgentExecutable(t, "pi")
-	setGatewayEnv(t, "http://gateway.test:8080")
-
-	var stderr strings.Builder
-	code := runAgentLaunch(context.Background(), agentLaunch{name: "pi", args: []string{"hello"}, connect: true}, strings.NewReader(""), io.Discard, &stderr)
-	if code != 1 || !strings.Contains(stderr.String(), "needs an interactive terminal") {
-		t.Fatalf("exit %d, stderr %q", code, stderr.String())
-	}
-}
-
 func TestGatewaySubscriptionCommandsUseGatewayKey(t *testing.T) {
 	seen := map[string]map[string]any{}
 	gateway := httptest.NewServer(requireGatewayKey(t, multipleSubscriptionsHandler(t, seen)))
@@ -453,7 +446,7 @@ func TestGatewayLaunchWithoutCredentialsSaysHowToConnect(t *testing.T) {
 
 	var stderr strings.Builder
 	code := runAgentLaunch(context.Background(), agentLaunch{name: "claude", args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
-	if code != 1 || !strings.Contains(stderr.String(), "dari claude --connect") {
+	if code != 1 || !strings.Contains(stderr.String(), "dari accounts") {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
 }
@@ -616,26 +609,19 @@ func TestLocalProviderKeysCoverPickerProviders(t *testing.T) {
 	}
 }
 
-// `dari gateway accounts` opens a gateway's Accounts page without naming an
-// agent, and points hosted routing at the dashboard instead.
-func TestGatewayAccountsCommand(t *testing.T) {
+// `dari accounts` is one page for hosted and gateway routing; both need a
+// terminal, and gateway routing never reaches the hosted API.
+func TestAccountsCommand(t *testing.T) {
 	hostedAPIMustNotBeCalled(t)
-	setGatewayEnv(t, "http://gateway.test:8080")
-	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{"gateway", "accounts"})
-	cmd.SetIn(strings.NewReader(""))
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "needs an interactive terminal") {
-		t.Fatalf("gateway accounts error = %v", err)
-	}
-
-	t.Setenv("DARI_GATEWAY_URL", "")
-	cmd = newRootCmd("dev")
-	cmd.SetArgs([]string{"gateway", "accounts"})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "routing is hosted") {
-		t.Fatalf("hosted gateway accounts error = %v", err)
+	for _, gatewayURL := range []string{"http://gateway.test:8080", ""} {
+		setGatewayEnv(t, gatewayURL)
+		cmd := newRootCmd("dev")
+		cmd.SetArgs([]string{"accounts"})
+		cmd.SetIn(strings.NewReader(""))
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "needs an interactive terminal") {
+			t.Fatalf("accounts with gateway %q: error = %v", gatewayURL, err)
+		}
 	}
 }

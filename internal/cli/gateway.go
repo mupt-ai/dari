@@ -30,7 +30,7 @@ const (
 // saved on its Accounts page, never ones exported in the shell.
 var errGatewayProviderKeys = fmt.Errorf("a self-hosted gateway reads provider keys from its own environment, such as " +
 	"ANTHROPIC_API_KEY, OPENAI_API_KEY, META_API_KEY, OPENROUTER_API_KEY, or AI_GATEWAY_API_KEY for Vercel AI Gateway; " +
-	"for the local gateway, save them with `dari gateway accounts`, or run `dari gateway setup` to save keys on the hosted Dari API")
+	"for the local gateway, save them with `dari accounts`, or run `dari gateway setup` to save keys on the hosted Dari API")
 
 type gatewayConfig struct {
 	url string

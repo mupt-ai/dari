@@ -32,7 +32,7 @@ var agentClientHarness = map[string]string{"claude": "claude_code", "muse": "mus
 // errNoProviderCredentials is a gateway router with no subscription or API
 // key that can serve any of its models.
 var errNoProviderCredentials = errors.New("no connected account or API key can serve this gateway's models; " +
-	"connect one with `dari claude --connect` or `dari credentials subscription connect`")
+	"connect one with `dari accounts` or `dari credentials subscription connect`")
 
 func routerModels(ctx context.Context, baseURL, key, agent string) (agents.Models, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)

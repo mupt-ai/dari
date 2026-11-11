@@ -80,7 +80,7 @@ const SUBSCRIPTION_LABEL: Record<SubscriptionOAuthProvider, string> = {
   meta_muse: "Muse Code",
 };
 
-// Providers whose plan page Dari's credentials page links to for buying another.
+// Providers whose plan page the accounts page links to for buying another.
 const BUYABLE_SUBSCRIPTIONS = new Set<SubscriptionOAuthProvider>(["anthropic_claude_code", "openai_codex"]);
 
 export function subscriptionOAuthProviderFor(
@@ -263,41 +263,42 @@ export function subscriptionUsageLimitFromFailure(
   };
 }
 
-export function subscriptionUsageLimitMessage(limit: SubscriptionUsageLimit): string {
-  return `Your ${SUBSCRIPTION_LABEL[limit.oauthProvider]} subscription usage limit is reached. `
-    + `It resets at ${limit.resetsAt.toISOString()}. `
-    + "Mark it available early at https://app.dari.dev/credentials."
-    + subscriptionBuyHint(limit.oauthProvider);
-}
-
-// To keep going now: Dari's page links to subscribing another account and
-// connects it.
-function subscriptionBuyHint(provider: SubscriptionOAuthProvider): string {
-  const action = subscriptionBuyAction(provider);
-  return action === null ? "" : ` To keep going now, ${action.charAt(0).toLowerCase()}${action.slice(1)}.`;
-}
-
-function subscriptionBuyAction(provider: SubscriptionOAuthProvider): string | null {
-  if (!BUYABLE_SUBSCRIPTIONS.has(provider)) return null;
-  return `Add another ${SUBSCRIPTION_LABEL[provider]} subscription at `
-    + `https://app.dari.dev/credentials?buy=${provider}`;
+/**
+ * The error for a plan out of quota with nothing to switch to. With the
+ * platform's accounts page it links there; without one (a self-hosted
+ * gateway) it points at `dari accounts`, which manages either.
+ */
+export function subscriptionUsageLimitMessage(limit: SubscriptionUsageLimit, accountsUrl?: string): string {
+  const label = SUBSCRIPTION_LABEL[limit.oauthProvider];
+  const reached = `Your ${label} subscription usage limit is reached. It resets at ${limit.resetsAt.toISOString()}. `;
+  if (accountsUrl === undefined) {
+    return reached
+      + `To keep going now, add another ${label} subscription or mark this one available early with \`dari accounts\`.`;
+  }
+  const buy = BUYABLE_SUBSCRIPTIONS.has(limit.oauthProvider)
+    ? ` To keep going now, add another ${label} subscription at ${accountsUrl}?buy=${limit.oauthProvider}.`
+    : "";
+  return `${reached}Mark it available early at ${accountsUrl}.${buy}`;
 }
 
 /**
  * Codex shows its own usage-limit notice and drops the message of any other
  * 429, so an exhausted ChatGPT plan answers in the ChatGPT backend's shape:
- * the body type Codex recognizes, and the buy link as its promo message.
- * Codex renders "You've hit your usage limit. <promo>, or try again at <reset>."
+ * the body type Codex recognizes, and how to add another plan as its promo
+ * message. Codex renders "You've hit your usage limit. <promo>, or try again
+ * at <reset>."
  */
-export function codexUsageLimitError(limit: SubscriptionUsageLimit): {
+export function codexUsageLimitError(limit: SubscriptionUsageLimit, accountsUrl?: string): {
   body: Record<string, unknown>;
   headers: Record<string, string>;
 } | null {
   if (limit.oauthProvider !== "openai_codex") return null;
-  const promo = subscriptionBuyAction(limit.oauthProvider);
+  const promo = accountsUrl === undefined
+    ? "Add another ChatGPT subscription with `dari accounts`"
+    : `Add another ChatGPT subscription at ${accountsUrl}?buy=openai_codex`;
   return {
     body: { type: "usage_limit_reached", resets_at: Math.ceil(limit.resetsAt.getTime() / 1000) },
-    headers: promo === null ? {} : { "x-codex-promo-message": promo },
+    headers: { "x-codex-promo-message": promo },
   };
 }
 

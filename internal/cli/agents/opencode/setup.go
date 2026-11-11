@@ -296,3 +296,9 @@ func writeJSON(path string, value map[string]any) error {
 	}
 	return nil
 }
+
+// IsSetUp reports whether Dari is set up in dir.
+func IsSetUp(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, setupFile))
+	return err == nil
+}

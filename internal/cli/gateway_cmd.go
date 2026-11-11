@@ -34,7 +34,7 @@ func init() {
 					if mode == "" {
 						return runGatewaySetup(cmd.Context(), cmd.InOrStdin(), cmd.ErrOrStderr())
 					}
-					return setGatewayModeFromFlags(cmd.Context(), mode, url, key, autoRoutingKey, cmd.ErrOrStderr())
+					return setGatewayModeFromFlags(cmd.Context(), mode, url, key, autoRoutingKey, cmd.InOrStdin(), cmd.ErrOrStderr())
 				},
 			},
 			newGatewayStatusCmd(),
@@ -141,7 +141,6 @@ func init() {
 					return err
 				},
 			},
-			newGatewayAccountsCmd(),
 			newGatewayAutoRoutingCmd(),
 			newGatewayModelsCmd(),
 		)
@@ -238,27 +237,6 @@ func newGatewayAutoRoutingCmd() *cobra.Command {
 				return err
 			}
 			return gateway.Restart(cmd.Context(), gw.settings, cliVersion)
-		},
-	}
-}
-
-func newGatewayAccountsCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "accounts",
-		Short: "Connect subscriptions and, on the local gateway, save provider API keys",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			gw, err := currentGateway()
-			if err != nil {
-				return err
-			}
-			if gw == nil {
-				return errors.New("routing is hosted; manage accounts at https://app.dari.dev, or choose a gateway with `dari gateway setup`")
-			}
-			if err := gw.ensure(cmd.Context(), cmd.ErrOrStderr()); err != nil {
-				return err
-			}
-			return manageGatewayAccounts(cmd.Context(), gw, allSubscriptionProviders, cmd.InOrStdin(), cmd.ErrOrStderr())
 		},
 	}
 }

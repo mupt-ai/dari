@@ -236,3 +236,13 @@ func writeSaved(dir string, saved savedSetup) error {
 	}
 	return nil
 }
+
+// IsSetUp reports whether Dari is set up in OpenClaw's config.
+func IsSetUp(ctx context.Context, executable string) bool {
+	config, err := configPath(ctx, executable)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(filepath.Dir(config), setupFile))
+	return err == nil
+}

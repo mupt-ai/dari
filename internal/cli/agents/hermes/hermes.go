@@ -315,3 +315,9 @@ func writeSaved(dir string, saved savedSetup) error {
 	}
 	return nil
 }
+
+// IsSetUp reports whether Dari is set up in the Hermes config at path.
+func IsSetUp(path string) bool {
+	_, err := os.Stat(filepath.Join(filepath.Dir(path), setupFile))
+	return err == nil
+}

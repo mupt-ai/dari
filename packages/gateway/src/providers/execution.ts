@@ -439,10 +439,11 @@ async function throwProviderFailure(args: {
     );
   }
   if (limit !== null) {
-    const codex = codexUsageLimitError(limit);
+    const accountsUrl = gatewayPlatform().accountsUrl;
+    const codex = codexUsageLimitError(limit, accountsUrl);
     throw new HttpError(
       429,
-      subscriptionUsageLimitMessage(limit),
+      subscriptionUsageLimitMessage(limit, accountsUrl),
       "subscription_usage_limit",
       undefined,
       { "retry-after": String(retryAfterSeconds(limit)), ...codex?.headers },

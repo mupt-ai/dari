@@ -34,17 +34,17 @@ const (
 // reaches the agent untouched. Cobra only sees them when a Dari flag comes
 // first, which would be dropped, so those commands refuse to run.
 var agentLaunchers = map[string]string{
-	"claude":   "Launch Claude Code through Dari; forward all following arguments (--connect manages subscriptions and provider keys, --setup configures the Claude app)",
-	"codex":    "Launch Codex through Dari; forward all following arguments (--connect manages subscriptions and provider keys, --setup configures the Codex app)",
-	"opencode": "Launch OpenCode through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
-	"pi":       "Launch Pi through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
-	"muse":     "Launch Muse Code through Dari; forward all following arguments (--connect manages subscriptions and provider keys)",
-	"openclaw": "Set OpenClaw up to route through Dari, then launch it; forward all following arguments (--connect manages subscriptions and provider keys, --setup only sets up, --remove-setup undoes it)",
-	"hermes":   "Set Hermes Agent up to route through Dari, then launch it; forward all following arguments (--connect manages subscriptions and provider keys, --setup only sets up, --remove-setup undoes it)",
+	"claude":   "Launch Claude Code through Dari; forward all following arguments (--setup configures the Claude app)",
+	"codex":    "Launch Codex through Dari; forward all following arguments (--setup configures the Codex app)",
+	"opencode": "Launch OpenCode through Dari; forward all following arguments",
+	"pi":       "Launch Pi through Dari; forward all following arguments",
+	"muse":     "Launch Muse Code through Dari; forward all following arguments",
+	"openclaw": "Set OpenClaw up to route through Dari, then launch it; forward all following arguments (--setup only sets up, --remove-setup undoes it)",
+	"hermes":   "Set Hermes Agent up to route through Dari, then launch it; forward all following arguments (--setup only sets up, --remove-setup undoes it)",
 }
 
-// agentConnectFlag opens the subscription list before launching. Dari removes
-// it, so the agent never sees it.
+// agentConnectFlag was the launcher's accounts option before `dari accounts`;
+// a launch with it points there instead of passing it to the agent.
 const agentConnectFlag = "--connect"
 
 // agentSetupFlag writes Dari into the agent's own config so its desktop app,
@@ -73,9 +73,10 @@ func init() {
 type agentLaunch struct {
 	name        string
 	args        []string
-	connect     bool
 	setup       bool
 	removeSetup bool
+	// movedConnect is a launch with --connect, which now lives in `dari accounts`.
+	movedConnect bool
 }
 
 func parseAgentLaunch(args []string) (agentLaunch, bool) {
@@ -93,7 +94,7 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 			break
 		}
 		if arg == agentConnectFlag {
-			launch.connect = true
+			launch.movedConnect = true
 			continue
 		}
 		if arg == agentSetupFlag {
@@ -110,6 +111,10 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 }
 
 func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, stdout, stderr io.Writer) int {
+	if launch.movedConnect {
+		fmt.Fprintln(stderr, "--connect moved: run `dari accounts` to manage subscriptions, API keys, and auto-routing")
+		return 2
+	}
 	if launch.setup || launch.removeSetup {
 		if err := runAgentSetup(ctx, launch, stdin, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
@@ -257,11 +262,6 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
-	if launch.connect {
-		if access.keysAdded, err = connectAgentSubscriptionsOnRequest(ctx, launch.name, access, stdin, stderr); err != nil {
-			return "", "", agents.Models{}, err
-		}
-	}
 	routerID, err := ensureAgentRouter(ctx, launch.name, access, stdin, stderr)
 	if err != nil {
 		return "", "", agents.Models{}, err
@@ -276,9 +276,9 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 	}
 	models.Saved = savedAgentModel(launch.name)
 	// Without the Autorouting plan the launch starts on the router's first
-	// model; --connect is where the plan is bought.
+	// model; the Accounts page is where the plan is bought.
 	if !models.Routing && len(models.Enabled) > 0 {
-		agentPrintln(stderr, fmt.Sprintf("Starting on %s. Switch models with /model, or run `dari %s --connect` to get auto-routing.", models.Default(), launch.name))
+		agentPrintln(stderr, fmt.Sprintf("Starting on %s. Switch models with /model, or run `dari accounts` to get auto-routing.", models.Default()))
 	}
 	return access.key, baseURL, models, nil
 }

@@ -54,16 +54,17 @@ The agent must be on `PATH`, or set `DARI_<AGENT>_PATH`. Status lines show the s
 
 **Desktop apps.** `dari claude --setup` and `dari codex --setup` write Dari into the Claude and Codex apps' config; `--remove-setup` undoes it. OpenClaw and Hermes Agent always use this setup, since their long-lived gateways read their own config.
 
-**Subscriptions.** Connect several plans per provider to pool them. Routing stays on one until it hits its limit, then moves on:
+**Accounts.** `dari accounts` manages everything agents pay with, hosted or on a gateway: subscriptions (with each one's plan, usage, and renewal), buying another, API keys, and auto-routing. Connect several plans per provider to pool them. Routing stays on one until it hits its limit, then moves on. Scripts use the same operations non-interactively:
 
 ```bash
+dari accounts
 dari credentials subscription list
 dari credentials subscription connect claude-code   # or codex
 ```
 
 ## Where Agents Route
 
-`dari gateway setup` picks the mode; `dari gateway status` shows it.
+`dari gateway setup` picks the mode; `dari gateway status` shows it. Switching moves every agent already set up (`claude`, `codex`, Pi, OpenCode, the desktop apps, OpenClaw, Hermes) to the new mode at once, remembers your self-hosted gateway for switching back, and opens `dari accounts` when the new gateway has nothing connected: accounts stay with the mode they were connected in.
 
 > [!IMPORTANT]
 > **Observability needs Hosted.** Activity, per-request costs, and usage analytics only exist for requests that go through hosted Dari. Local and self-hosted gateways keep requests off Dari, so none of that is recorded.
@@ -74,13 +75,12 @@ dari credentials subscription connect claude-code   # or codex
 | **Fully local** | The CLI runs the gateway on `127.0.0.1:7340`, matching the CLI's version. Requests go straight to providers, using only keys saved on its Accounts page, never keys exported in your shell. | No. `dari activity` and request costs are unavailable. |
 | **Self-hosted** | Your team runs the gateway. Set its URL and one of its `DARI_GATEWAY_KEYS`. | No. Requests never reach Dari. |
 
-A local gateway serves only subscriptions and provider keys saved with `dari gateway accounts` (Anthropic, OpenAI, DeepSeek, xAI, Meta, and Fireworks), never keys exported in your shell.
+A local gateway serves only subscriptions and provider keys saved with `dari accounts` (Anthropic, OpenAI, DeepSeek, xAI, Meta, and Fireworks), never keys exported in your shell.
 
 `DARI_GATEWAY_URL` and `DARI_GATEWAY_KEY` override the saved choice for one shell. In gateway modes, launchers make no hosted API calls.
 
 ```bash
 dari gateway start | stop | restart | logs
-dari gateway accounts                     # connect subscriptions, save provider keys
 dari gateway models                        # choose the local gateway's models
 dari gateway auto-routing <dari-api-key>   # route with Dari's policy; `off` disables
 ```

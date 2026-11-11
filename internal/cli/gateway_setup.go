@@ -69,6 +69,10 @@ func saveGatewayMode(ctx context.Context, settings gateway.Settings) error {
 	// The local key outlives mode switches, so agents set up with it, such
 	// as OpenClaw and Hermes, keep working after a round trip.
 	settings.LocalKey = previous.LocalKey
+	// A self-hosted gateway is remembered, so switching back is one choice.
+	if settings.Mode != gateway.ModeSelfHosted {
+		settings.URL, settings.Key = previous.URL, previous.Key
+	}
 	if settings.AutoRoutingKey == "" {
 		settings.AutoRoutingKey = previous.AutoRoutingKey
 	}
@@ -85,6 +89,34 @@ func saveGatewayMode(ctx context.Context, settings gateway.Settings) error {
 	}
 	_, err = gateway.Stop(ctx)
 	return err
+}
+
+// switchGatewayMode saves a routing choice and brings the machine along:
+// set-up agents move to it, and a gateway with nothing connected opens the
+// Accounts page, since the accounts of the previous mode stay there.
+func switchGatewayMode(ctx context.Context, settings gateway.Settings, stdin io.Reader, stderr io.Writer) error {
+	if err := saveGatewayMode(ctx, settings); err != nil {
+		return err
+	}
+	interactive := agentInputIsTerminal(stdin)
+	if !interactive {
+		// The menu prints its own choice.
+		agentStep(stderr, gatewayModeDone[settings.Mode])
+	}
+	if gw, err := currentGateway(); interactive && err == nil && gw != nil {
+		if err := gw.ensure(ctx, stderr); err != nil {
+			return err
+		}
+		if _, err := routerModels(ctx, gw.url, gw.key, ""); errors.Is(err, errNoProviderCredentials) {
+			agentStep(stderr, "This gateway has no accounts yet; accounts stay with the mode they were connected in")
+			page := accountsPage{client: api.New(gw.url).WithBearer(gw.key), providers: allSubscriptionProviders, gw: gw}
+			if _, err := page.run(ctx, stdin, stderr); err != nil {
+				return err
+			}
+		}
+	}
+	moveAgentSetups(ctx, stdin, stderr)
+	return nil
 }
 
 // gatewayModeDone is the line each mode prints once saved.
@@ -104,7 +136,7 @@ func checkSelfHostedGateway(ctx context.Context, url, key string) error {
 
 // setGatewayModeFromFlags saves the routing choice named by --mode without a
 // terminal, for scripts and agents. Flags stand in for the menu's answers.
-func setGatewayModeFromFlags(ctx context.Context, mode, url, key, autoRoutingKey string, stderr io.Writer) error {
+func setGatewayModeFromFlags(ctx context.Context, mode, url, key, autoRoutingKey string, stdin io.Reader, stderr io.Writer) error {
 	var settings gateway.Settings
 	switch mode {
 	case "hosted":
@@ -126,11 +158,7 @@ func setGatewayModeFromFlags(ctx context.Context, mode, url, key, autoRoutingKey
 	default:
 		return fmt.Errorf("--mode must be hosted, local, or self-hosted, got %q", mode)
 	}
-	if err := saveGatewayMode(ctx, settings); err != nil {
-		return err
-	}
-	agentStep(stderr, gatewayModeDone[settings.Mode])
-	return nil
+	return switchGatewayMode(ctx, settings, stdin, stderr)
 }
 
 func runGatewaySetup(ctx context.Context, stdin io.Reader, stderr io.Writer) error {
@@ -160,7 +188,7 @@ func runGatewaySetup(ctx context.Context, stdin io.Reader, stderr io.Writer) err
 	}
 	switch choice {
 	case gatewaySetupHosted:
-		return saveGatewayMode(ctx, gateway.Settings{Mode: gateway.ModeHosted})
+		return switchGatewayMode(ctx, gateway.Settings{Mode: gateway.ModeHosted}, stdin, stderr)
 	case gatewaySetupLocal:
 		settings := gateway.Settings{Mode: gateway.ModeLocal}
 		if previous, _, _ := gateway.Load(); previous.AutoRoutingKey == "" {
@@ -168,9 +196,26 @@ func runGatewaySetup(ctx context.Context, stdin io.Reader, stderr io.Writer) err
 				return err
 			}
 		}
-		return saveGatewayMode(ctx, settings)
+		return switchGatewayMode(ctx, settings, stdin, stderr)
 	default:
 		settings := gateway.Settings{Mode: gateway.ModeSelfHosted}
+		// The gateway used before needs no typing again.
+		if previous, _, _ := gateway.Load(); previous.URL != "" && previous.Key != "" {
+			reuse, err := runAgentChoiceTUI(stdin, stderr, "Self-hosted gateway", nil, []agentChoiceOption{
+				{label: "Use " + previous.URL},
+				{label: "Use another gateway"},
+			})
+			if err != nil {
+				return err
+			}
+			if reuse == 0 {
+				if err := checkSelfHostedGateway(ctx, previous.URL, previous.Key); err != nil {
+					return err
+				}
+				settings.URL, settings.Key = previous.URL, previous.Key
+				return switchGatewayMode(ctx, settings, stdin, stderr)
+			}
+		}
 		if ok, err := runAgentTextInputTUI(stdin, stderr, "Gateway URL", []string{
 			"  The URL your team's Dari Gateway serves on, such as https://gateway.example.com.",
 		}, "https://gateway.example.com", func(value string) error {
@@ -190,7 +235,7 @@ func runGatewaySetup(ctx context.Context, stdin io.Reader, stderr io.Writer) err
 		}); err != nil || !ok {
 			return cmpErr(err, errors.New("gateway setup canceled"))
 		}
-		return saveGatewayMode(ctx, settings)
+		return switchGatewayMode(ctx, settings, stdin, stderr)
 	}
 }
 
@@ -236,83 +281,9 @@ var localProviderKeys = []struct{ name, article, env string }{
 	{"Fireworks", "a", "FIREWORKS_API_KEY"},
 }
 
-// allSubscriptionProviders are the plans a gateway can serve, offered by
-// `dari gateway accounts`, which is not tied to one agent.
+// allSubscriptionProviders are the plans `dari accounts` offers; it is not
+// tied to one agent.
 var allSubscriptionProviders = []agentSubscriptionProvider{claudeSubscription, codexSubscription, museSubscription}
-
-// manageGatewayAccounts is the Accounts page for a gateway: its connected
-// subscriptions, with options to connect more of providers, and on a local
-// gateway, API keys and auto-routing.
-func manageGatewayAccounts(ctx context.Context, gw *gatewayConfig, providers []agentSubscriptionProvider, stdin io.Reader, stderr io.Writer) error {
-	if !agentInputIsTerminal(stdin) {
-		return errors.New("the Accounts page needs an interactive terminal; use `dari credentials subscription connect` instead")
-	}
-	client := api.New(gw.url).WithBearer(gw.key)
-	for {
-		var listed struct {
-			Credentials []subscriptionCredential `json:"credentials"`
-		}
-		if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &listed); err != nil {
-			return api.HumanError(err)
-		}
-		subscriptions := personalSubscriptions(listed.Credentials)
-		lines := agentSubscriptionLines(subscriptions, len(providers) > 1)
-		for _, key := range localProviderKeys {
-			if gw.settings.ProviderKeys[key.env] != "" {
-				lines = slices.Insert(lines, len(lines)-1, "  "+key.name+"  "+ansiGray+"API key"+ansiReset)
-			}
-		}
-		options := []agentChoiceOption{{label: "Continue", done: "Accounts ready"}}
-		actions := []func() error{nil}
-		for _, provider := range providers {
-			options = append(options, agentChoiceOption{label: "Connect a " + provider.name + " account"})
-			actions = append(actions, func() error {
-				return connectAgentPersonalSubscription(ctx, provider, client, stdin, stderr, "")
-			})
-		}
-		if gw.local {
-			for _, key := range localProviderKeys {
-				label := "Add " + key.article + " " + key.name + " API key"
-				if gw.settings.ProviderKeys[key.env] != "" {
-					label = "Replace the " + key.name + " API key"
-				}
-				options = append(options, agentChoiceOption{label: label})
-				actions = append(actions, func() error {
-					_, err := runAgentSecretInputTUI(stdin, stderr, key.name+" API key", nil, func(value string) error {
-						if gw.settings.ProviderKeys == nil {
-							gw.settings.ProviderKeys = map[string]string{}
-						}
-						gw.settings.ProviderKeys[key.env] = value
-						return saveLocalGateway(ctx, gw, stderr)
-					})
-					return err
-				})
-			}
-			label := "Add a Dari API key for auto-routing"
-			if gw.settings.AutoRoutingKey != "" {
-				label = "Replace the auto-routing Dari API key"
-			}
-			options = append(options, agentChoiceOption{label: label})
-			actions = append(actions, func() error {
-				_, err := runAgentSecretInputTUI(stdin, stderr, "Dari API key", nil, func(value string) error {
-					gw.settings.AutoRoutingKey = value
-					return saveLocalGateway(ctx, gw, stderr)
-				})
-				return err
-			})
-		}
-		choice, err := runAgentChoiceTUI(stdin, stderr, "Accounts", lines, options)
-		if err != nil {
-			return err
-		}
-		if actions[choice] == nil {
-			return nil
-		}
-		if err := actions[choice](); err != nil {
-			return err
-		}
-	}
-}
 
 // saveLocalGateway saves a local gateway's settings and restarts it to serve
 // them.
@@ -332,15 +303,11 @@ func gatewayAgentModels(ctx context.Context, gw *gatewayConfig, launch agentLaun
 	if err := gw.ensure(ctx, stderr); err != nil {
 		return agents.Models{}, err
 	}
-	if launch.connect {
-		if err := manageGatewayAccounts(ctx, gw, agentSubscriptionProviders(launch.name), stdin, stderr); err != nil {
-			return agents.Models{}, err
-		}
-	}
 	models, err := routerModels(ctx, gw.url, gw.key, launch.name)
-	if errors.Is(err, errNoProviderCredentials) && agentInputIsTerminal(stdin) && !launch.connect {
+	if errors.Is(err, errNoProviderCredentials) && agentInputIsTerminal(stdin) {
 		agentStep(stderr, "Connect an account to start")
-		if err := manageGatewayAccounts(ctx, gw, agentSubscriptionProviders(launch.name), stdin, stderr); err != nil {
+		page := accountsPage{client: api.New(gw.url).WithBearer(gw.key), providers: agentSubscriptionProviders(launch.name), gw: gw}
+		if _, err := page.run(ctx, stdin, stderr); err != nil {
 			return agents.Models{}, err
 		}
 		models, err = routerModels(ctx, gw.url, gw.key, launch.name)
@@ -582,7 +549,7 @@ func reportGatewayModels(ctx context.Context, gw *gatewayConfig, models agents.M
 		}
 	}
 	if len(models.Unavailable) > 0 {
-		agentPrintln(stderr, fmt.Sprintf("Not available until their provider has an account or API key: %s. Connect one with `dari gateway accounts`.", strings.Join(models.Unavailable, ", ")))
+		agentPrintln(stderr, fmt.Sprintf("Not available until their provider has an account or API key: %s. Connect one with `dari accounts`.", strings.Join(models.Unavailable, ", ")))
 	}
 	return models
 }

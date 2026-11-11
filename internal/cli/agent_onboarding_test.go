@@ -1102,7 +1102,7 @@ func TestEnsureClaudeAgentRouterExplainsModelsByPlan(t *testing.T) {
 		// Setup always asks; the note says how the models get used.
 		want := "Auto-routing picks the best of these"
 		if !allowed {
-			want = "Switch between them with /model.\nRun `dari claude --connect` to get auto-routing ($20/mo)"
+			want = "Switch between them with /model.\nRun `dari accounts` to get auto-routing ($20/mo)"
 		}
 		if !strings.Contains(output.String(), "Choose models for Claude Code") || !strings.Contains(output.String(), want) {
 			t.Errorf("allowed=%v: output missing %q:\n%s", allowed, want, output.String())

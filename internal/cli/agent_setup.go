@@ -2,11 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
 	"strings"
 
+	"github.com/mupt-ai/dari/internal/auth"
 	"github.com/mupt-ai/dari/internal/cli/agents"
 	"github.com/mupt-ai/dari/internal/cli/agents/claude"
 	"github.com/mupt-ai/dari/internal/cli/agents/codex"
@@ -263,4 +265,136 @@ func capitalized(value string) string {
 		return value
 	}
 	return strings.ToUpper(value[:1]) + value[1:]
+}
+
+// setUpAgents are the agents whose own config Dari is set up in, in a fixed
+// order. OpenClaw and Hermes are only asked when installed.
+func setUpAgents(ctx context.Context) []string {
+	set := []string{}
+	if settings, err := claude.SettingsPath(); err == nil && claude.IsCLISetUp(settings) {
+		set = append(set, "claude")
+	} else if dir, err := claude.DesktopDir(); err == nil && claude.IsSetUp(dir) {
+		set = append(set, "claude")
+	}
+	if home, err := codex.Home(); err == nil && codex.IsSetUp(home) {
+		set = append(set, "codex")
+	}
+	if dir, err := pi.AgentDir(); err == nil && pi.IsSetUp(dir) {
+		set = append(set, "pi")
+	}
+	if dir, err := opencode.ConfigDir(); err == nil && opencode.IsSetUp(dir) {
+		set = append(set, "opencode")
+	}
+	if executable, err := agentExecutable("openclaw"); err == nil && openclaw.IsSetUp(ctx, executable) {
+		set = append(set, "openclaw")
+	}
+	if config, err := hermesConfigPath(ctx); err == nil && hermes.IsSetUp(config) {
+		set = append(set, "hermes")
+	}
+	return set
+}
+
+// moveAgentSetups rewrites every set-up agent's own config for the current
+// routing, so `claude`, `codex`, the desktop apps, OpenClaw, and Hermes follow
+// a mode switch at once instead of on their next `dari <agent>` launch. An
+// agent that cannot move is named with how to finish it; the others still move.
+func moveAgentSetups(ctx context.Context, stdin io.Reader, stderr io.Writer) {
+	agentNames := setUpAgents(ctx)
+	if len(agentNames) == 0 {
+		return
+	}
+	// Hosted routing needs a sign-in, which a switch must not start on its own.
+	if gw, err := currentGateway(); err != nil || (gw == nil && !signedIn()) {
+		agentStep(stderr, "Set-up agents move to hosted Dari on their next `dari <agent>` launch, after you sign in")
+		return
+	}
+	for _, name := range agentNames {
+		if err := moveAgentSetup(ctx, name, stdin, stderr); err != nil {
+			agentPrintln(stderr, fmt.Sprintf("%s still routes the old way (%v); run `dari %s %s`", agentApps[name].name, err, name, agentSetupFlag))
+			continue
+		}
+		agentStep(stderr, capitalized(agentApps[name].name)+" moved; "+agentApps[name].applies)
+	}
+}
+
+func moveAgentSetup(ctx context.Context, name string, stdin io.Reader, stderr io.Writer) error {
+	key, baseURL, models, err := existingAgentRouting(ctx, name, stdin, stderr)
+	if err != nil {
+		return err
+	}
+	// Keep the user's last model pick, as a launch does.
+	models.Saved = savedAgentModel(name)
+	// The app first: it is the step that can refuse (the Claude app lists only
+	// Claude models), and nothing moves when it does.
+	claudeApp := false
+	if name == "claude" {
+		if dir, err := claude.DesktopDir(); err == nil && claude.IsSetUp(dir) {
+			claudeApp = true
+		}
+	}
+	if claudeApp || name == "openclaw" || name == "hermes" {
+		if err := applyAgentSetup(ctx, name, key, baseURL, models); err != nil {
+			return err
+		}
+	}
+	// Codex's setup is its config; the others write their own settings.
+	_, err = saveAgentConfig(ctx, name, key, baseURL, models)
+	return err
+}
+
+// existingAgentRouting is where an agent routes in the current mode, found
+// without onboarding: a switch rewrites configs and never opens a model
+// picker or creates a router. An agent with no hosted router yet is named
+// with how to set it up.
+func existingAgentRouting(ctx context.Context, name string, stdin io.Reader, stderr io.Writer) (string, string, agents.Models, error) {
+	gw, err := currentGateway()
+	if err != nil {
+		return "", "", agents.Models{}, err
+	}
+	if gw != nil {
+		if err := gw.ensure(ctx, stderr); err != nil {
+			return "", "", agents.Models{}, err
+		}
+		models, err := routerModels(ctx, gw.url, gw.key, name)
+		return gw.key, gw.url, models, err
+	}
+	access, err := resolveAgentRoutingAccess(ctx, stdin, stderr)
+	if err != nil {
+		return "", "", agents.Models{}, err
+	}
+	client, err := auth.OrgKeyClient(access.apiURL)
+	if err != nil {
+		return "", "", agents.Models{}, err
+	}
+	routers, err := listAgentRouters(ctx, client)
+	if err != nil {
+		return "", "", agents.Models{}, err
+	}
+	setup := agentSetups[name]
+	router, ok := setup.assignedAgentRouter(routers)
+	if !ok && setup.ownsRouter() {
+		// Launch decides between the agent's own routers the same way: its own
+		// provider's subscription connected uses the subscription router even
+		// over an earlier opt-out; otherwise an opt-out keeps the managed one.
+		optedOut, err := agentSubscriptionOptedOut(ctx, client, name)
+		if err != nil {
+			return "", "", agents.Models{}, err
+		}
+		subscribed, err := connectedAgentSubscriptions(ctx, client, setup.subscriptions)
+		if err != nil {
+			return "", "", agents.Models{}, err
+		}
+		ownConnected := slices.Contains(subscribed, setup.subscriptions[0])
+		clientKey, _ := setup.ownRouter(ownConnected || (!optedOut && len(subscribed) > 0))
+		router, ok = findAgentRouter(routers, func(router agentRouter) bool { return router.ClientKey == clientKey })
+	}
+	if !ok && !setup.ownsRouter() {
+		router, ok = findAgentRouter(routers, func(router agentRouter) bool { return router.IsDefault })
+	}
+	if !ok || len(router.EnabledModels) == 0 {
+		return "", "", agents.Models{}, errors.New("it has no hosted router yet")
+	}
+	baseURL := agentRoutingBaseURL(router.ID)
+	models, err := routerModels(ctx, baseURL, access.key, "")
+	return access.key, baseURL, models, err
 }

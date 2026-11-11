@@ -95,7 +95,7 @@ type agentRoutingAccess struct {
 	apiURL string
 	scope  string
 	key    string
-	// keysAdded counts the API keys connected with --connect.
+	// keysAdded counts the API keys connected on the Accounts page.
 	keysAdded int
 }
 
@@ -372,7 +372,7 @@ func ensureAgentRouter(
 		}
 		note := []string{"The checked models are recommended. Auto-routing picks the best of these for each request."}
 		if !routing {
-			offer := "Run `dari " + agent + " --connect` to get auto-routing ($20/mo) and have Dari pick for you."
+			offer := "Run `dari accounts` to get auto-routing ($20/mo) and have Dari pick for you."
 			if agentInputIsTerminal(stdin) {
 				offer = "Press a to get auto-routing ($20/mo) and have Dari pick for you."
 			}
@@ -508,8 +508,9 @@ func resolveAgentPersonalSubscription(
 	}
 
 	if agentInputIsTerminal(stdin) {
-		added, keysAdded, err := manageAgentSubscriptions(ctx, client, providers, stdin, stderr)
-		if added == 0 {
+		result, err := accountsPage{client: client, providers: providers, hosted: true, onboarding: true}.run(ctx, stdin, stderr)
+		keysAdded := result.keysAdded
+		if len(result.added) == 0 {
 			// A failed page with nothing connected records no preference.
 			if err != nil {
 				return agentSubscriptionResolution{}, err

@@ -289,10 +289,16 @@ func TestAgentSubscriptionLinesListInRoutingOrder(t *testing.T) {
 	}
 }
 
-func TestAgentConnectNeedsATerminal(t *testing.T) {
-	_, err := connectAgentSubscriptionsOnRequest(context.Background(), "pi", agentRoutingAccess{}, strings.NewReader(""), io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "interactive terminal") {
-		t.Fatalf("err = %v", err)
+// The old launcher option points at `dari accounts` instead of reaching the
+// agent as an unknown flag.
+func TestAgentConnectPointsAtAccounts(t *testing.T) {
+	var stderr strings.Builder
+	launch, _ := parseAgentLaunch([]string{"pi", "--connect"})
+	if code := runAgentLaunch(context.Background(), launch, strings.NewReader(""), io.Discard, &stderr); code != 2 {
+		t.Fatalf("exit code = %d", code)
+	}
+	if !strings.Contains(stderr.String(), "`dari accounts`") {
+		t.Fatalf("stderr = %q", stderr.String())
 	}
 }
 

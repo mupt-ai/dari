@@ -155,6 +155,8 @@ dari openclaw
 dari hermes
 ```
 
+`dari accounts` is the interactive page for subscriptions (plan, usage, renewal, buying another, rename, reconnect, disconnect), API keys, and auto-routing, hosted or on a gateway. Without a terminal, use `dari credentials subscription` instead.
+
 Launchers use server-owned router configuration and per-user subscription preferences, not a machine-local setup marker. Codex, Pi, OpenCode, OpenClaw, Hermes Agent, and Muse reuse the organization's configured default router; only an empty default router opens the model picker. Claude discovers its existing personal or managed router by its server-side client key and opens model setup only if that profile is absent. Model changes belong in the dashboard or `dari router update`; moving to another computer must not replace models with launcher presets. Set `DARI_ROUTING_API_KEY` to supply the key explicitly. Set `DARI_GATEWAY_URL` and `DARI_GATEWAY_KEY` to launch through a self-hosted gateway instead; the launch then makes no hosted API calls. Every following argument is forwarded to the selected agent, and Dari's provider/model settings take precedence:
 
 ```bash

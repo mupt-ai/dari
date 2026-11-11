@@ -162,3 +162,9 @@ func restore(values map[string]any, replaced map[string]any) {
 		}
 	}
 }
+
+// IsCLISetUp reports whether Dari is set up in Claude Code's settings.
+func IsCLISetUp(settingsPath string) bool {
+	_, err := os.Stat(filepath.Join(filepath.Dir(settingsPath), cliSetupFile))
+	return err == nil
+}

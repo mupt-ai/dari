@@ -58,7 +58,7 @@ func SettingsPath() (string, error) {
 func Setup(dir, settingsPath, baseURL, key string, models agents.Models) error {
 	menu := desktopModels(models)
 	if len(menu) == 0 {
-		return fmt.Errorf("the Claude app only lists Claude models; enable one on the router or get Autorouting with `dari claude --connect`")
+		return fmt.Errorf("the Claude app only lists Claude models; enable one on the router or get Autorouting with `dari accounts`")
 	}
 	library := filepath.Join(dir, "configLibrary")
 	if err := os.MkdirAll(library, 0o700); err != nil {
@@ -217,4 +217,10 @@ func writeJSON(path string, value map[string]any) error {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+// IsSetUp reports whether Dari is set up in the Claude app.
+func IsSetUp(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, "configLibrary", desktopEntryID+".json"))
+	return err == nil
 }

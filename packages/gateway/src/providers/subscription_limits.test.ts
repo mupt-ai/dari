@@ -237,9 +237,14 @@ test("the failure marker round-trips through the provider message", () => {
   expect(tagged.errorMessage).toBe(FAILURE.errorMessage);
   expect(subscriptionUsageLimitFromFailure(tagged)).toEqual(limit);
   expect(subscriptionUsageLimitFromFailure(FAILURE)).toBeNull();
-  expect(subscriptionUsageLimitMessage(limit)).toContain("Claude Code subscription usage limit is reached");
-  expect(subscriptionUsageLimitMessage(limit)).toContain(limit.resetsAt.toISOString());
-  expect(subscriptionUsageLimitMessage(limit)).toContain("add another Claude Code subscription at https://app.dari.dev/credentials?buy=anthropic_claude_code.");
+  const hosted = subscriptionUsageLimitMessage(limit, "https://app.dari.dev/credentials");
+  expect(hosted).toContain("Claude Code subscription usage limit is reached");
+  expect(hosted).toContain(limit.resetsAt.toISOString());
+  expect(hosted).toContain("add another Claude Code subscription at https://app.dari.dev/credentials?buy=anthropic_claude_code.");
+  // A self-hosted gateway has no web page; `dari accounts` manages its plans.
+  expect(subscriptionUsageLimitMessage(limit)).toEndWith(
+    "To keep going now, add another Claude Code subscription or mark this one available early with `dari accounts`.",
+  );
   expect(retryAfterSeconds(limit, NOW)).toBe(3600 * 3);
   const switched = { ...limit, switched: true };
   expect(subscriptionUsageLimitFromFailure(failureWithSubscriptionUsageLimit(FAILURE, switched))).toEqual(switched);
@@ -322,11 +327,14 @@ test("the response capture remembers rejected responses and leaves the body read
   }
 });
 
-test("an exhausted ChatGPT plan answers in the shape Codex shows, with the buy link", () => {
+test("an exhausted ChatGPT plan answers in the shape Codex shows, with how to add another", () => {
   const limit = { oauthProvider: "openai_codex" as const, resetsAt: new Date(RESET_SECONDS * 1000), reason: "ChatGPT usage limit reached." };
-  expect(codexUsageLimitError(limit)).toEqual({
+  expect(codexUsageLimitError(limit, "https://app.dari.dev/credentials")).toEqual({
     body: { type: "usage_limit_reached", resets_at: RESET_SECONDS },
     headers: { "x-codex-promo-message": "Add another ChatGPT subscription at https://app.dari.dev/credentials?buy=openai_codex" },
+  });
+  expect(codexUsageLimitError(limit)?.headers).toEqual({
+    "x-codex-promo-message": "Add another ChatGPT subscription with `dari accounts`",
   });
   expect(codexUsageLimitError({ ...limit, oauthProvider: "anthropic_claude_code" })).toBeNull();
 });

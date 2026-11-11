@@ -35,7 +35,7 @@ func TestParseAgentLaunch(t *testing.T) {
 			remove:   true,
 		},
 		{
-			name:     "--connect is Dari's, but only before --",
+			name:     "--connect is caught for `dari accounts`, but only before --",
 			args:     []string{"claude", "--connect", "--print", "--", "--connect"},
 			wantName: "claude",
 			wantArgs: []string{"--print", "--", "--connect"},
@@ -96,8 +96,8 @@ func TestParseAgentLaunch(t *testing.T) {
 			if got.name != tt.wantName {
 				t.Errorf("name = %q, want %q", got.name, tt.wantName)
 			}
-			if got.connect != tt.connect {
-				t.Errorf("connect = %v, want %v", got.connect, tt.connect)
+			if got.movedConnect != tt.connect {
+				t.Errorf("movedConnect = %v, want %v", got.movedConnect, tt.connect)
 			}
 			if got.setup != tt.setup || got.removeSetup != tt.remove {
 				t.Errorf("setup, removeSetup = %v, %v, want %v, %v", got.setup, got.removeSetup, tt.setup, tt.remove)

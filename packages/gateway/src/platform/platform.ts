@@ -24,6 +24,12 @@ import type {
  */
 export type GatewayPlatform = {
   /**
+   * Optional. The web page where users manage their subscriptions; usage-limit
+   * errors link to it, with `?buy=<provider>` to add another plan. Without
+   * one they point at `dari accounts`.
+   */
+  accountsUrl?: string;
+  /**
    * Authenticate the request's key and return the router it may use, with
    * decrypted provider credentials and the prefix-cache evidence matching
    * `prefixHashes`. Throws HttpError(401) for an unknown key.

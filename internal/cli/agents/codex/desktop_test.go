@@ -117,6 +117,38 @@ func TestRemoveSetupDeletesConfigItCreated(t *testing.T) {
 	}
 }
 
+// Codex will not start while model_catalog_json names a missing file, so
+// removal drops the line even when Codex rewrote the config without the
+// markers.
+func TestRemoveSetupNeverLeavesTheCatalogNamed(t *testing.T) {
+	home := t.TempDir()
+	if err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), false); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "config.toml")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unmarked := strings.NewReplacer(setupBegin+"\n", "", setupEnd+"\n", "").Replace(string(body)) + "\n[features]\ngoals = true\n"
+	if err := os.WriteFile(path, []byte(unmarked), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := RemoveSetup(home); err != nil || !removed {
+		t.Fatalf("RemoveSetup() = %v, %v", removed, err)
+	}
+	config, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(config), "model_catalog_json") || !strings.Contains(string(config), "goals = true") {
+		t.Fatalf("config after removal:\n%s", config)
+	}
+	if _, err := os.Stat(filepath.Join(home, catalogFile)); !os.IsNotExist(err) {
+		t.Fatalf("catalog still exists: %v", err)
+	}
+}
+
 func TestSetupRefusesUserDefinedDariProvider(t *testing.T) {
 	home := t.TempDir()
 	original := "[model_providers.dari]\nbase_url = \"https://example.test\"\n"

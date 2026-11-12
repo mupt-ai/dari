@@ -97,21 +97,41 @@ func RemoveSetup(home string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	catalogErr := os.Remove(filepath.Join(home, catalogFile))
-	if catalogErr != nil && !errors.Is(catalogErr, os.ErrNotExist) {
-		return false, fmt.Errorf("remove Codex model catalog: %w", catalogErr)
-	}
-	config := removeSetup(existing)
-	if config == existing {
-		return catalogErr == nil, nil
-	}
-	if strings.TrimSpace(config) == "" {
+	// Codex refuses to start while model_catalog_json names a missing file, so
+	// the config stops naming the catalog before the catalog goes, including a
+	// line left outside the markers after they were lost.
+	catalogPath := filepath.Join(home, catalogFile)
+	config := withoutCatalog(removeSetup(existing), catalogPath)
+	removed := config != existing
+	if removed && strings.TrimSpace(config) == "" {
 		if err := os.Remove(path); err != nil {
 			return false, fmt.Errorf("remove Codex config: %w", err)
 		}
-		return true, nil
+	} else if removed {
+		if err := writeConfig(path, config); err != nil {
+			return false, err
+		}
 	}
-	return true, writeConfig(path, config)
+	catalogErr := os.Remove(catalogPath)
+	if catalogErr != nil && !errors.Is(catalogErr, os.ErrNotExist) {
+		return false, fmt.Errorf("remove Codex model catalog: %w", catalogErr)
+	}
+	return removed || catalogErr == nil, nil
+}
+
+// withoutCatalog drops the lines that point model_catalog_json at catalogPath.
+func withoutCatalog(config, catalogPath string) string {
+	var kept []string
+	for _, line := range strings.Split(config, "\n") {
+		trimmed := strings.TrimSpace(line)
+		_, value, _ := strings.Cut(trimmed, "=")
+		if path, err := strconv.Unquote(strings.TrimSpace(value)); err == nil && path == catalogPath &&
+			replacesKey(trimmed, []string{"model_catalog_json"}) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func setupConfig(existing, baseURL, key, model, catalogPath string, disableWebSearch bool) (string, error) {

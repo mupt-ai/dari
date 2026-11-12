@@ -27,8 +27,8 @@ type PayloadCase = {
   expected: Record<string, unknown>;
   absent?: string[];
   /** Managed-effort models carry the requested effort in a trailing positional
-   * system marker; the top-level output_config stays at the fixed "high"
-   * default so the cacheable request prefix never changes. */
+   * system marker; the top-level output_config stays at a fixed "low" anchor
+   * so the cacheable request prefix never changes. */
   markerEffort?: ReasoningEffort;
 };
 
@@ -78,12 +78,8 @@ const cases: PayloadCase[] = [
     expected: {},
     absent: ["reasoning"],
   },
-  ...adaptiveAnthropicCases(
-    "anthropic/claude-fable-5-1",
-    ["low", "medium", "high", "xhigh", "max"],
-    "high",
-    128_000,
-    true,
+  ...["anthropic/claude-fable-5-2", "anthropic/claude-fable-5-1"].flatMap((model) =>
+    adaptiveAnthropicCases(model, ["low", "medium", "high", "xhigh", "max"], "high", 128_000, true),
   ),
   ...adaptiveAnthropicCases(
     "anthropic/claude-fable-5",
@@ -247,10 +243,16 @@ const defaultExpectations: Record<
     expected: { reasoning: { effort: "medium", summary: "detailed" } },
   },
   "openai/gpt-4.1-mini": { expected: {}, absent: ["reasoning"] },
+  "anthropic/claude-fable-5-2": {
+    expected: {
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "low" },
+    },
+  },
   "anthropic/claude-fable-5-1": {
     expected: {
       thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort: "high" },
+      output_config: { effort: "low" },
     },
   },
   "anthropic/claude-fable-5": {
@@ -276,13 +278,13 @@ const defaultExpectations: Record<
   "anthropic/claude-opus-5-5": {
     expected: {
       thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort: "high" },
+      output_config: { effort: "low" },
     },
   },
   "anthropic/claude-opus-5": {
     expected: {
       thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort: "high" },
+      output_config: { effort: "low" },
     },
   },
   "anthropic/claude-haiku-4-5": {
@@ -291,7 +293,7 @@ const defaultExpectations: Record<
   "anthropic/claude-haiku-5-5": {
     expected: {
       thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort: "high" },
+      output_config: { effort: "low" },
     },
   },
   "deepseek-ai/DeepSeek-V4-Pro-0813": {
@@ -330,6 +332,9 @@ const defaultCases = Object.entries(defaultExpectations).map(
     return {
       model,
       config: explicitCase.config,
+      ...(explicitCase.markerEffort !== undefined
+        ? { markerEffort: explicitCase.config.default_thinking_level ?? undefined }
+        : {}),
       ...expectation,
     };
   },
@@ -440,6 +445,12 @@ test("every built-in model uses its cataloged provider default", async () => {
     expect(payload).toMatchObject(payloadCase.expected);
     for (const field of payloadCase.absent ?? []) {
       expect(payload).not.toHaveProperty(field);
+    }
+    if (payloadCase.markerEffort !== undefined) {
+      expect((payload.messages as Array<Record<string, unknown>>).at(-1)).toMatchObject({
+        role: "system",
+        output_config: { effort: payloadCase.markerEffort },
+      });
     }
   }
 }, 20_000);
@@ -789,10 +800,10 @@ function adaptiveAnthropicCases(
               // No block_binding: the preserved-thinking prefix check would
               // drop replayed blocks on mismatch and re-write the conversation.
               thinking: { type: "adaptive", display: "summarized" },
-              // The top-level effort stays at the fixed "high" default so the
-              // cacheable prefix is stable; the requested level rides the
-              // trailing positional system marker asserted via markerEffort.
-              output_config: { effort: "high" },
+              // Pi anchors the cacheable prefix at "low" (also accepted by
+              // orgs with effort caps); the requested level rides the trailing
+              // positional system marker asserted via markerEffort.
+              output_config: { effort: "low" },
             }
           : {
               thinking: { type: "adaptive", display: "summarized" },

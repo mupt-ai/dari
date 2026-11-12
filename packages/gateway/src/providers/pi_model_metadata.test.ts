@@ -59,6 +59,21 @@ test("Claude Opus 5.5 is available in the Pi model registry with image input", a
   expect(modelSupportsImageInput(metadata("anthropic/claude-opus-5-5"))).toBe(true);
 });
 
+test("Claude Fable 5.2 serves without a router model config", () => {
+  // A self-hosted gateway sends no model config for direct Anthropic models,
+  // so Fable 5.2's thinking levels, images, and price come from the registry.
+  const { model, supportedThinkingLevels } = modelMetadataLookup()("anthropic/claude-fable-5-2");
+
+  expect(supportedThinkingLevels).toEqual(expect.arrayContaining(["low", "medium", "high", "xhigh", "max"]));
+  expect(model).toMatchObject({
+    id: "claude-fable-5-2",
+    name: "Claude Fable 5.2",
+    input: ["text", "image"],
+    contextWindow: 1_000_000,
+    cost: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 },
+  });
+});
+
 test("Claude Opus 5.5 catalog pricing and limits override the Pi registry", async () => {
   const config: ResolvedRouterModelConfig = {
     provider: "anthropic",

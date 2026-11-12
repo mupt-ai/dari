@@ -102,6 +102,22 @@ test("completions return Anthropic's safeguard results on the message", async ()
   expect(message.safeguardResults).toEqual(SAFEGUARD_RESULTS);
 });
 
+test("session affinity does not opt the gateway into Anthropic message threads", async () => {
+  const requests: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+  const { message } = await completeInteractionModel({
+    model: "anthropic/claude-opus-5-5",
+    request: REQUEST,
+    apiKey: "sk-ant-api-test",
+    sessionId: "gateway-affinity-not-retention",
+    fetch: anthropicFetch(requests),
+  });
+
+  expect(message.stopReason).toBe("toolUse");
+  expect(requests).toHaveLength(1);
+  expect(requests[0]!.body).not.toHaveProperty("thread");
+  expect(requests[0]!.headers.get("anthropic-beta")).not.toContain("message-threads-");
+});
+
 test("safeguards stay off requests that are not served by Anthropic's API", async () => {
   const options = buildOptions(REQUEST, "sk-test", "openai/gpt-5.5-pro", modelFixtures["openai/gpt-5.5-pro"]!, piFixture);
   const onPayload = options.onPayload as ((payload: unknown) => unknown) | undefined;

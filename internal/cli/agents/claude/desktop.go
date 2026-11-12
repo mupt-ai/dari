@@ -23,8 +23,10 @@ const (
 	// request-class headers that give subagents their own routing come from
 	// the user's Claude Code settings instead.
 	hintHeadersEnv = "CLAUDE_CODE_GATEWAY_HINT_HEADERS"
-	// desktopRoutingModel is the Claude tier name the app sends for routing.
-	desktopRoutingModel = "opus"
+	// desktopRoutingModel is the model id the app sends for routing. The app
+	// drops ids that do not name a Claude model, and the router treats every
+	// Claude model id as dari/routing.
+	desktopRoutingModel = "claude-dari-routing"
 )
 
 // DesktopDir is the Claude app's third-party configuration directory.
@@ -131,13 +133,22 @@ func RemoveSetup(dir, settingsPath string) (bool, error) {
 
 // desktopModels is the launcher's menu as the Claude app accepts it. The app
 // drops model ids that do not name a Claude model, so routing is offered under
-// a Claude tier name, which the router treats as dari/routing, and explicit
-// models from other families are left out.
+// a Claude id of its own and explicit models from other families are left out.
+//
+// The app starts Claude Code with the opus alias pinned to the entry in the
+// opus tier or, when no entry is, to the first Opus on the list, and has Claude
+// Code ignore the pins in its own settings. Routing takes the tier, so opus,
+// which subagents and auto mode ask for, routes instead of naming an explicit
+// model.
 func desktopModels(models agents.Models) []map[string]string {
 	var menu []map[string]string
 	for _, model := range models.Menu() {
 		if model == agents.RoutingModel {
-			menu = append(menu, map[string]string{"name": desktopRoutingModel, "labelOverride": "Dari Routing"})
+			menu = append(menu, map[string]string{
+				"name":                desktopRoutingModel,
+				"labelOverride":       "Dari Routing",
+				"anthropicFamilyTier": "opus",
+			})
 			continue
 		}
 		id := strings.TrimPrefix(model, agents.ExplicitModelPrefix)

@@ -22,7 +22,8 @@ const ANTHROPIC_ROUTER_MODELS = new Set<string>([CANONICAL_ROUTER_MODEL, ...ANTH
    request leaves the client (wire-captured live: Task spawns emit
    `claude-opus-5` even when the session model is dari/routing), so concrete
    Claude-family ids are synonyms too — both bare (`claude-opus-5`) and
-   provider-prefixed (`anthropic/claude-opus-5`) forms. */
+   provider-prefixed (`anthropic/claude-opus-5`) forms. `dari claude --setup`
+   relies on this: the Claude app lists routing as `claude-dari-routing`. */
 const ANTHROPIC_MODEL_ID_PATTERN = /^(anthropic\/)?claude-[a-z0-9][a-z0-9.-]*$/i;
 
 export function isAnthropicRouterModel(model: string): boolean {

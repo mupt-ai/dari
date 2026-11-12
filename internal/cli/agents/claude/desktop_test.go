@@ -48,7 +48,7 @@ func TestDesktopSetupAppliesDariEntryAndRemoveRestoresPrevious(t *testing.T) {
 		t.Fatalf("entry = %v", entry)
 	}
 	wantModels := []any{
-		map[string]any{"name": "opus", "labelOverride": "Dari Routing"},
+		map[string]any{"name": "claude-dari-routing", "labelOverride": "Dari Routing", "anthropicFamilyTier": "opus"},
 		map[string]any{"name": "dari/model/anthropic/claude-opus-5-5", "labelOverride": "anthropic/claude-opus-5-5"},
 	}
 	if !reflect.DeepEqual(entry["inferenceModels"], wantModels) {

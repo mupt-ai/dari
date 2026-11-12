@@ -41,9 +41,10 @@ func setGatewayEnv(t *testing.T, gatewayURL string) {
 	t.Setenv("DARI_GATEWAY_KEY", gatewayTestKey)
 	// Launches set this in the process environment; restore it after the test.
 	t.Setenv(agents.NoActivityLinkEnv, "")
-	// A mode switch looks for OpenClaw and Hermes setups by running them; never
-	// the ones installed on this machine.
-	for _, agent := range []string{"OPENCLAW", "HERMES"} {
+	// A mode switch looks for OpenClaw and Hermes setups by running them, and
+	// Claude Code setup asks Claude Code for its claude.ai login; never the
+	// ones installed on this machine.
+	for _, agent := range []string{"OPENCLAW", "HERMES", "CLAUDE"} {
 		t.Setenv("DARI_"+agent+"_PATH", filepath.Join(t.TempDir(), "missing"))
 	}
 }
@@ -241,8 +242,8 @@ func TestGatewayLaunchesMakeNoHostedCalls(t *testing.T) {
 
 func TestGatewayLaunchNeedsGatewayKey(t *testing.T) {
 	hostedAPIMustNotBeCalled(t)
-	fakeAgentExecutable(t, "claude")
 	setGatewayEnv(t, "http://gateway.test:8080")
+	fakeAgentExecutable(t, "claude")
 	t.Setenv("DARI_GATEWAY_KEY", "")
 
 	var stderr strings.Builder

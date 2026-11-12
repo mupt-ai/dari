@@ -3,6 +3,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/mupt-ai/dari/internal/cli/agents"
@@ -25,7 +26,7 @@ func TestCLISetupRoundTrip(t *testing.T) {
 	writeSettings(t, path, `{"model":"opus","theme":"dark","env":{"ANTHROPIC_API_KEY":"sk-user","OTHER":"1"}}`)
 	models := agents.Models{Enabled: []string{"anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5"}}
 
-	first, err := CLISetup(path, "https://routing.dari.dev", "dak_1", models)
+	first, err := CLISetup(path, "", "https://routing.dari.dev", "dak_1", models)
 	if err != nil || !first {
 		t.Fatalf("first setup = %v, %v", first, err)
 	}
@@ -42,7 +43,7 @@ func TestCLISetupRoundTrip(t *testing.T) {
 	// The next launch (say, after switching to a local gateway) refreshes the
 	// values but keeps the record of the user's originals.
 	models.Saved = "dari/model/anthropic/claude-opus-5-5"
-	first, err = CLISetup(path, "http://127.0.0.1:7340", "dgw_local", models)
+	first, err = CLISetup(path, "", "http://127.0.0.1:7340", "dgw_local", models)
 	if err != nil || first {
 		t.Fatalf("second setup = %v, %v", first, err)
 	}
@@ -72,7 +73,7 @@ func TestCLISetupRoundTrip(t *testing.T) {
 func TestCLISetupKeepsTheUsersStatusLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	writeSettings(t, path, `{"statusLine":{"type":"command","command":"my-status"}}`)
-	if _, err := CLISetup(path, "https://routing.dari.dev", "dak_1", agents.Models{Routing: true}); err != nil {
+	if _, err := CLISetup(path, "", "https://routing.dari.dev", "dak_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
 	settings, _ := readJSON(path)
@@ -86,7 +87,7 @@ func TestCLISetupKeepsTheUsersStatusLine(t *testing.T) {
 func TestRemoveCLISetupDropsADariModel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	writeSettings(t, path, `{"model":"dari/model/anthropic/claude-opus-5-5"}`)
-	if _, err := CLISetup(path, "https://routing.dari.dev", "dak_1", agents.Models{Routing: true}); err != nil {
+	if _, err := CLISetup(path, "", "https://routing.dari.dev", "dak_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RemoveCLISetup(path); err != nil {
@@ -105,5 +106,55 @@ func TestSavedModel(t *testing.T) {
 	writeSettings(t, path, `{"model":"dari/model/anthropic/claude-opus-5-5"}`)
 	if got := SavedModel(path); got != "dari/model/anthropic/claude-opus-5-5" {
 		t.Fatalf("SavedModel = %q", got)
+	}
+}
+
+// fakeClaude is a Claude Code whose `auth status` reports authMethod.
+func fakeClaude(t *testing.T, authMethod string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Claude Code is a shell script")
+	}
+	path := filepath.Join(t.TempDir(), "claude")
+	body := "#!/bin/sh\necho '{\"loggedIn\":true,\"authMethod\":\"" + authMethod + "\"}'\n"
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Signed in to claude.ai, the key goes in a custom Authorization header so
+// Claude Code keeps the login for connectors and Artifacts; otherwise it is the
+// auth token. The user's own custom headers survive both and come back on removal.
+func TestCLISetupKeepsTheClaudeAILogin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	writeSettings(t, path, `{"env":{"ANTHROPIC_CUSTOM_HEADERS":"X-Team: core\nAuthorization: Bearer theirs"}}`)
+	models := agents.Models{Routing: true}
+
+	if _, err := CLISetup(path, fakeClaude(t, "claude.ai"), "https://routing.dari.dev", "dak_1", models); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ := readJSON(path)
+	env := settings["env"].(map[string]any)
+	if env["ANTHROPIC_AUTH_TOKEN"] != "" || env["ANTHROPIC_API_KEY"] != "" ||
+		env["ANTHROPIC_CUSTOM_HEADERS"] != "X-Team: core\nAuthorization: Bearer dak_1" {
+		t.Fatalf("env with a claude.ai login = %v", env)
+	}
+
+	if _, err := CLISetup(path, fakeClaude(t, "oauth_token"), "https://routing.dari.dev", "dak_2", models); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ = readJSON(path)
+	env = settings["env"].(map[string]any)
+	if env["ANTHROPIC_AUTH_TOKEN"] != "dak_2" || env["ANTHROPIC_CUSTOM_HEADERS"] != "X-Team: core" {
+		t.Fatalf("env without a claude.ai login = %v", env)
+	}
+
+	if _, err := RemoveCLISetup(path); err != nil {
+		t.Fatal(err)
+	}
+	settings, _ = readJSON(path)
+	if got := settings["env"].(map[string]any)["ANTHROPIC_CUSTOM_HEADERS"]; got != "X-Team: core\nAuthorization: Bearer theirs" {
+		t.Fatalf("custom headers after remove = %q", got)
 	}
 }

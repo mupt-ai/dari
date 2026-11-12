@@ -37,9 +37,10 @@ func SavedModel(settingsPath string) string {
 // start on (the launch's default, which keeps the user's last /model pick),
 // the router's models in /model, and Dari's status line unless the user has
 // their own. It runs on every launch, so the settings follow the routing
-// mode. Each value it replaces is recorded the first time; it reports
-// whether this was the first setup.
-func CLISetup(settingsPath, baseURL, key string, models agents.Models) (bool, error) {
+// mode and the claude.ai login of the Claude Code at executable. Each value it
+// replaces is recorded the first time; it reports whether this was the first
+// setup.
+func CLISetup(settingsPath, executable, baseURL, key string, models agents.Models) (bool, error) {
 	settings, err := readJSON(settingsPath)
 	if err != nil {
 		return false, err
@@ -77,7 +78,8 @@ func CLISetup(settingsPath, baseURL, key string, models agents.Models) (bool, er
 	if env == nil {
 		env = map[string]any{}
 	}
-	for name, value := range routingEnvironment(key, baseURL, models) {
+	headers, _ := env[customHeadersEnv].(string)
+	for name, value := range routingEnvironment(key, baseURL, headers, SignedInToClaudeAI(executable), models) {
 		if _, ok := replacedEnv[name]; !ok {
 			replacedEnv[name] = previous(env, name)
 		}

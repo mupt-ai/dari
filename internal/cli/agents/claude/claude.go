@@ -4,23 +4,42 @@ package claude
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/mupt-ai/dari/internal/cli/agents"
 )
 
+const customHeadersEnv = "ANTHROPIC_CUSTOM_HEADERS"
+
 // routingEnvironment points Claude Code at the router at baseURL: what a
 // launch sets for its session, and what setup writes into Claude Code's
-// settings so `claude` itself routes the same way.
-func routingEnvironment(key, baseURL string, models agents.Models) map[string]string {
+// settings so `claude` itself routes the same way. headers is the
+// ANTHROPIC_CUSTOM_HEADERS already set; its other headers are kept.
+//
+// Claude Code turns off claude.ai features (connectors, Artifacts) whenever
+// ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY is set, since either takes
+// precedence over its claude.ai login. So when Claude Code is signed in to
+// claude.ai, the key goes in a custom Authorization header instead: Claude
+// Code sends that to the router in place of its claude.ai token and keeps the
+// login for claude.ai. Without a login the header alone leaves Claude Code
+// showing "Not logged in", so the key stays in ANTHROPIC_AUTH_TOKEN.
+func routingEnvironment(key, baseURL, headers string, claudeAI bool, models agents.Models) map[string]string {
+	authToken, headerKey := key, ""
+	if claudeAI {
+		authToken, headerKey = "", key
+	}
 	return map[string]string{
 		"ANTHROPIC_BASE_URL":               baseURL,
-		"ANTHROPIC_AUTH_TOKEN":             key,
+		"ANTHROPIC_AUTH_TOKEN":             authToken,
 		"ANTHROPIC_API_KEY":                "",
+		customHeadersEnv:                   customHeaders(headers, headerKey),
 		"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":   "1000000",
 		// Subagents and aliases resolve to the stable model, not the /model
@@ -34,11 +53,59 @@ func routingEnvironment(key, baseURL string, models agents.Models) map[string]st
 	}
 }
 
+// customHeaders is an ANTHROPIC_CUSTOM_HEADERS value, one "Name: value" per
+// line: headers without its Authorization, then the key's, if any.
+func customHeaders(headers, key string) string {
+	lines := []string{}
+	for _, line := range strings.Split(headers, "\n") {
+		name, _, _ := strings.Cut(line, ":")
+		if strings.TrimSpace(line) != "" && !strings.EqualFold(strings.TrimSpace(name), "authorization") {
+			lines = append(lines, line)
+		}
+	}
+	if key != "" {
+		lines = append(lines, "Authorization: Bearer "+key)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// SignedInToClaudeAI reports whether the Claude Code at executable has a
+// claude.ai login, looking past the routing credentials Dari sets.
+func SignedInToClaudeAI(executable string) bool {
+	if executable == "" {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	// Settings passed on the command line override the env in Claude Code's
+	// settings file, where setup writes the routing credentials.
+	// Like injectSettings, use a file where an npm claude.cmd shim would mangle
+	// inline JSON.
+	cleared := `{"env":{"ANTHROPIC_AUTH_TOKEN":"","ANTHROPIC_API_KEY":"","ANTHROPIC_CUSTOM_HEADERS":""}}`
+	if !agents.CanReplaceProcess {
+		path, err := writeSettingsFile([]byte(cleared))
+		if err != nil {
+			return false
+		}
+		defer os.Remove(path)
+		cleared = path
+	}
+	output, err := exec.CommandContext(ctx, executable, "--settings", cleared, "auth", "status", "--json").Output()
+	if err != nil {
+		return false
+	}
+	var status struct {
+		AuthMethod string `json:"authMethod"`
+	}
+	return json.Unmarshal(output, &status) == nil && status.AuthMethod == "claude.ai"
+}
+
 // Configure points Claude Code at the router at baseURL, starts it on the
 // launch's default model and, unless the user passed their own --settings,
 // adds Dari's status line and lists the router's models in /model.
 func Configure(command *agents.Command, key, baseURL string, models agents.Models) error {
-	command.Env = agents.WithEnvironment(command.Env, routingEnvironment(key, baseURL, models))
+	headers := agents.EnvironmentValue(command.Env, customHeadersEnv)
+	command.Env = agents.WithEnvironment(command.Env, routingEnvironment(key, baseURL, headers, SignedInToClaudeAI(command.Path), models))
 	if !agents.ArgsContainFlag(command.Args, "--settings") {
 		if err := injectSettings(command, models); err != nil {
 			return err

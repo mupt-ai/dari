@@ -132,7 +132,9 @@ func saveAgentConfig(ctx context.Context, name, key, baseURL string, models agen
 		if err != nil {
 			return false, err
 		}
-		return claude.CLISetup(settings, baseURL, key, models)
+		// Without Claude Code on PATH there is no login to keep.
+		executable, _ := agentExecutable("claude")
+		return claude.CLISetup(settings, executable, baseURL, key, models)
 	case "codex":
 		// Codex's app and CLI read the same config.toml, so its setup serves both.
 		home, err := codex.Home()

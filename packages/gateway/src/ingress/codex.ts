@@ -5,6 +5,7 @@ import { captureRequestError } from "../observability/errors.js";
 import { openAIResponsesResponse } from "../protocol/output/openai_responses.js";
 import { openAIResponsesSseStream } from "../protocol/output/openai_responses_stream.js";
 import { openAIResponsesToInteraction } from "../protocol/input/openai_responses.js";
+import { claimedClientHarness } from "./client_harness.js";
 import { parseJsonRequest } from "./json.js";
 import { museCodeClientId } from "./muse_code.js";
 import { handleRoutedCompletion } from "../runtime/routed_completion.js";
@@ -56,7 +57,10 @@ export async function handleResponses(
       streamBody: openAIResponsesSseStream,
       errorResponse,
       selectorBackend,
-      clientHarness: museClientId === undefined ? undefined : "muse_code",
+      clientHarness: museClientId !== undefined ? "muse_code"
+        // Codex describes every request in its turn metadata.
+        : agentContext !== undefined ? "codex"
+        : claimedClientHarness(request.headers),
       harnessConversationIdentity,
     });
   } catch (error) {

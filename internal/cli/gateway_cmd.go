@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -20,8 +21,9 @@ func init() {
 			Use:   "gateway",
 			Short: "Choose a routing mode and manage the local gateway",
 			Long: "Choose Hosted, Fully local, or Self-hosted routing with `dari gateway setup`.\n\n" +
-				"`status` and `setup` work in every mode. The other commands manage only the\n" +
-				"Fully local gateway; they do not install, start, or inspect a self-hosted gateway.\n" +
+				"`status` and `setup` work in every mode, and `models` with a local or self-hosted\n" +
+				"gateway. The other commands manage only the Fully local gateway; they do not install,\n" +
+				"start, or inspect a self-hosted gateway.\n" +
 				"Hosted routing is managed by Dari. Use `dari accounts` for accounts and keys\n" +
 				"supported by the selected mode. Activity and team analytics require Hosted mode.",
 		}
@@ -252,26 +254,104 @@ func newGatewayAutoRoutingCmd() *cobra.Command {
 }
 
 func newGatewayModelsCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "models",
-		Short: "Choose the local gateway's models with the same picker as a hosted router",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			gw, err := localGateway()
+	var agent string
+	var reset bool
+	cmd := &cobra.Command{
+		Use:   "models [model[=thinking,...]]...",
+		Short: "Choose the models a local or self-hosted gateway serves",
+		Long: "Choose the models the gateway serves, with the same picker as a hosted router. Every coding\n" +
+			"agent is offered them, less the ones no connected account or API key can serve it.\n\n" +
+			"With --agent, choose a list for one coding agent, which it is offered in place of the\n" +
+			"gateway's models. Agents are " + strings.Join(codingAgentNames(), ", ") + ".\n\n" +
+			"Name the models to set them without the picker, for scripts and agents, in the order the\n" +
+			"gateway tries them. A model takes every thinking level it supports unless some are named:\n" +
+			"  dari gateway models anthropic/claude-sonnet-5-5 openai/gpt-6.1-sol=medium,high\n" +
+			"  dari gateway models --agent codex openai/gpt-6.1-sol\n" +
+			"With no models and no terminal this prints the current ones.\n\n" +
+			"The gateway saves the choice and serves it at once, in place of the models in its config\n" +
+			"file. --reset forgets the choice, so the config file's models are served again.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, stderr := cmd.Context(), cmd.ErrOrStderr()
+			saved := "Models"
+			if agent != "" {
+				setup, ok := agentSetups[agent]
+				if !ok {
+					return fmt.Errorf("unknown coding agent %q; use one of %s", agent, strings.Join(codingAgentNames(), ", "))
+				}
+				saved = setup.label + " models"
+			}
+			if reset && len(args) > 0 {
+				return errors.New("--reset takes no models")
+			}
+			chosen, err := gatewayModelArgs(args)
 			if err != nil {
 				return err
 			}
-			if agentInputIsTerminal(cmd.InOrStdin()) {
-				return chooseLocalGatewayModels(cmd.Context(), gw, cmd.InOrStdin(), cmd.ErrOrStderr())
-			}
-			current, err := localGatewayModels(cmd.Context())
+			gw, err := currentGateway()
 			if err != nil {
 				return err
 			}
-			for _, model := range current {
-				fmt.Fprintln(cmd.OutOrStdout(), model.ID)
+			if gw == nil {
+				return errors.New("routing is hosted, where each router has its own models (see `dari router --help`); " +
+					"`dari gateway models` is for a local or self-hosted gateway")
+			}
+			if err := gw.ensure(ctx, stderr); err != nil {
+				return err
+			}
+			switch {
+			case reset:
+				if err := saveGatewayModels(ctx, gw, agent, nil); err != nil {
+					return err
+				}
+				agentStep(stderr, saved+": back to the gateway's config")
+			case len(chosen) > 0:
+				if err := saveGatewayModels(ctx, gw, agent, chosen); err != nil {
+					return err
+				}
+				agentStep(stderr, fmt.Sprintf("%s: %d selected", saved, len(chosen)))
+			case agentInputIsTerminal(cmd.InOrStdin()):
+				return chooseGatewayModels(ctx, gw, agent, cmd.InOrStdin(), stderr)
+			default:
+				lists, err := fetchGatewayModelLists(ctx, gw)
+				if err != nil {
+					return err
+				}
+				for _, model := range lists.offered(agent) {
+					fmt.Fprintln(cmd.OutOrStdout(), model.ID)
+				}
 			}
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&agent, "agent", "", "choose one coding agent's own models")
+	cmd.Flags().BoolVar(&reset, "reset", false, "forget the choice and serve the gateway's config again")
+	return cmd
+}
+
+var gatewayThinkingLevels = []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+
+// gatewayModelArgs reads models named on the command line, each a
+// provider/model id with optional thinking levels after "=".
+func gatewayModelArgs(args []string) ([]gatewayModelConfig, error) {
+	models := make([]gatewayModelConfig, 0, len(args))
+	for _, arg := range args {
+		id, levels, hasLevels := strings.Cut(arg, "=")
+		if provider, name, ok := strings.Cut(id, "/"); !ok || provider == "" || name == "" || strings.ContainsAny(id, " \t") {
+			return nil, fmt.Errorf("%q is not a provider/model id, such as openai/gpt-6.1-sol", id)
+		}
+		if slices.ContainsFunc(models, func(model gatewayModelConfig) bool { return model.ID == id }) {
+			return nil, fmt.Errorf("%s is named twice", id)
+		}
+		model := gatewayModelConfig{ID: id}
+		if hasLevels {
+			model.Thinking = strings.Split(levels, ",")
+			for _, level := range model.Thinking {
+				if !slices.Contains(gatewayThinkingLevels, level) {
+					return nil, fmt.Errorf("%s has unknown thinking level %q; use %s", id, level, strings.Join(gatewayThinkingLevels, ", "))
+				}
+			}
+		}
+		models = append(models, model)
+	}
+	return models, nil
 }

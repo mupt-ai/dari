@@ -237,7 +237,7 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 		}
 		// The launch starts on the user's saved pick; say so accurately.
 		models.Saved = savedAgentModel(launch.name)
-		models = reportGatewayModels(ctx, gateway, models, stderr)
+		models = reportGatewayModels(ctx, gateway, launch.name, models, stderr)
 		return gateway.key, gateway.url, models, nil
 	}
 	// Onboarding pages follow one another on the alternate screen; their

@@ -59,9 +59,10 @@ func TestSetupMakesDariTheDefaultAndRemoveRestoresIt(t *testing.T) {
 	var patch struct {
 		Models struct {
 			Providers map[string]struct {
-				BaseURL string `json:"baseUrl"`
-				APIKey  string `json:"apiKey"`
-				API     string `json:"api"`
+				BaseURL string            `json:"baseUrl"`
+				APIKey  string            `json:"apiKey"`
+				API     string            `json:"api"`
+				Headers map[string]string `json:"headers"`
 				Models  []struct {
 					ID        string          `json:"id"`
 					Reasoning bool            `json:"reasoning"`
@@ -79,6 +80,10 @@ func TestSetupMakesDariTheDefaultAndRemoveRestoresIt(t *testing.T) {
 	dari := patch.Models.Providers["dari"]
 	if dari.BaseURL != "https://routing.dari.dev/rtr_1/v1" || dari.APIKey != "dari_key" || dari.API != "openai-completions" {
 		t.Fatalf("provider = %+v", dari)
+	}
+	// OpenClaw names itself, so a gateway serves it its own model list.
+	if dari.Headers["x-dari-client-harness"] != "openclaw" {
+		t.Fatalf("headers = %v", dari.Headers)
 	}
 	if len(dari.Models) != 2 || dari.Models[0].ID != "dari/routing" || dari.Models[0].Reasoning || !dari.Models[1].Reasoning || !dari.Models[0].Compat["sendSessionAffinityHeaders"] ||
 		dari.Models[0].Compat["supportsReasoningEffort"] || !dari.Models[1].Compat["supportsReasoningEffort"] {

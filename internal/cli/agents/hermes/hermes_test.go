@@ -55,8 +55,10 @@ terminal:
 		"transport":               "chat_completions",
 		"default_model":           "dari/routing",
 		"session_affinity_header": "x-session-affinity",
+		// Hermes names itself, so a gateway serves it its own model list.
+		"extra_headers": map[string]any{"x-dari-client-harness": "hermes"},
 	} {
-		if dari[field] != want {
+		if !reflect.DeepEqual(dari[field], want) {
 			t.Errorf("providers.dari.%s = %#v, want %#v", field, dari[field], want)
 		}
 	}

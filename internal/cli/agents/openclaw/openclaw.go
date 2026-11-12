@@ -91,7 +91,8 @@ func RemoveSetup(ctx context.Context, executable string) (bool, error) {
 
 // provider is the Dari entry under models.providers. Prompt cache keys and
 // session affinity headers carry OpenClaw's session to the router, which
-// groups its turns into one conversation.
+// groups its turns into one conversation. OpenClaw names itself on every
+// request, so a gateway serves the models it lists for OpenClaw.
 func provider(baseURL, key string, models agents.Models) map[string]any {
 	offered := make([]map[string]any, 0, len(models.Menu()))
 	for _, model := range models.Menu() {
@@ -120,6 +121,7 @@ func provider(baseURL, key string, models agents.Models) map[string]any {
 		"baseUrl": baseURL + "/v1",
 		"apiKey":  key,
 		"api":     "openai-completions",
+		"headers": map[string]string{agents.ClientHarnessHeader: "openclaw"},
 		"models":  offered,
 	}
 }

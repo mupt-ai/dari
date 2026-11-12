@@ -4,6 +4,9 @@ import {
   type ReasoningEffort,
 } from "@mupt-ai/dari-router/policy-engine";
 
+import { CLIENT_HARNESSES } from "../ingress/client_harness.js";
+import type { ClientHarness } from "../types.js";
+
 /**
  * The self-hosted gateway's configuration file (YAML or JSON):
  *
@@ -14,6 +17,9 @@ import {
  *       - anthropic/claude-sonnet-5-5
  *       - id: openai/gpt-6.1-sol
  *         thinking: [medium, high]
+ *     agentModels:          # optional: a coding agent's own list
+ *       codex:
+ *         - openai/gpt-6.1-sol
  *     subscriptions: true   # serve with connected Claude Code / ChatGPT plans
  *     sessionPinning: false # route each session and subagent once, then keep its model
  * providers:                # optional: OpenAI-compatible or self-run endpoints
@@ -24,7 +30,9 @@ import {
  *
  * Secrets never live here: gateway keys come from `DARI_GATEWAY_KEYS`,
  * provider API keys from each provider's standard environment variable, and
- * personal subscriptions from the gateway database.
+ * personal subscriptions from the gateway database. Model lists saved through
+ * the gateway's API (`dari gateway models`) live in the database too, and are
+ * served in place of this file's.
  */
 export type GatewayConfig = {
   routers: Record<string, RouterConfig>;
@@ -44,6 +52,8 @@ export type ProviderEndpointConfig = {
 
 export type RouterConfig = {
   models: RouterModelConfig[];
+  // A coding agent's own models, served to it in place of `models`.
+  agentModels: Partial<Record<ClientHarness, RouterModelConfig[]>>;
   retries: number;
   subscriptions: boolean;
   sessionPinning: boolean;
@@ -149,23 +159,54 @@ function parseProvider(id: string, raw: unknown): ProviderEndpointConfig {
   };
 }
 
+/** The models a router serves a client: its coding agent's own list, else the router's. */
+export function routerModelsFor(router: RouterConfig, clientHarness?: ClientHarness): RouterModelConfig[] {
+  return (clientHarness === undefined ? undefined : router.agentModels[clientHarness]) ?? router.models;
+}
+
+/** Every model a router can serve, to any client. */
+export function allRouterModels(router: RouterConfig): RouterModelConfig[] {
+  return [router.models, ...Object.values(router.agentModels)].flat();
+}
+
 function parseRouter(id: string, raw: unknown): RouterConfig {
-  if (!isRecord(raw) || !Array.isArray(raw.models) || raw.models.length === 0) {
-    throw new Error(`Router "${id}" needs a non-empty \`models\` list.`);
-  }
-  const models = raw.models.map((model) => parseModel(id, model));
-  const seen = new Set<string>();
-  for (const model of models) {
-    if (seen.has(model.id)) throw new Error(`Router "${id}" lists ${model.id} twice.`);
-    seen.add(model.id);
+  if (!isRecord(raw)) throw new Error(`Router "${id}" needs a non-empty \`models\` list.`);
+  const agentModels: RouterConfig["agentModels"] = {};
+  if (raw.agentModels !== undefined) {
+    if (!isRecord(raw.agentModels)) {
+      throw new Error(`routers.${id}.agentModels must map coding agents to model lists.`);
+    }
+    for (const [agent, models] of Object.entries(raw.agentModels)) {
+      if (!CLIENT_HARNESSES.includes(agent)) {
+        throw new Error(
+          `Router "${id}" has models for an unknown coding agent "${agent}"; use ${CLIENT_HARNESSES.join(", ")}.`,
+        );
+      }
+      agentModels[agent as ClientHarness] = parseRouterModels(id, `agentModels.${agent}`, models);
+    }
   }
   return {
-    models,
+    models: parseRouterModels(id, "models", raw.models),
+    agentModels,
     retries: optionalRetries(raw.retries, `routers.${id}.retries`) ?? 1,
     subscriptions: optionalBoolean(raw.subscriptions, `routers.${id}.subscriptions`) ?? true,
     sessionPinning: optionalBoolean(raw.sessionPinning, `routers.${id}.sessionPinning`) ?? false,
     zdr: optionalBoolean(raw.zdr, `routers.${id}.zdr`) ?? false,
   };
+}
+
+/** Read one model list of a router, naming `field` in what it rejects. */
+export function parseRouterModels(routerId: string, field: string, raw: unknown): RouterModelConfig[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error(`Router "${routerId}" needs a non-empty \`${field}\` list.`);
+  }
+  const models = raw.map((model) => parseModel(routerId, model));
+  const seen = new Set<string>();
+  for (const model of models) {
+    if (seen.has(model.id)) throw new Error(`Router "${routerId}" lists ${model.id} twice in \`${field}\`.`);
+    seen.add(model.id);
+  }
+  return models;
 }
 
 function parseModel(routerId: string, raw: unknown): RouterModelConfig {

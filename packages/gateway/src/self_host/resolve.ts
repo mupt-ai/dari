@@ -11,7 +11,14 @@ import type { ResolveRouterRequest } from "../platform/platform.js";
 import { codexModelConfig } from "../models/subscriptions.js";
 import { registeredModelPrice } from "../providers/pi.js";
 import type { ProviderKeySource, ResolvedRouter } from "../types.js";
-import type { GatewayConfig, RouterConfig } from "./config.js";
+import {
+  allRouterModels,
+  routerModelsFor,
+  type GatewayConfig,
+  type RouterConfig,
+  type RouterModelConfig,
+} from "./config.js";
+import type { RouterModelStore } from "./router_models.js";
 import {
   freshAccessToken,
   type OAuthFetch,
@@ -27,6 +34,8 @@ export const SELF_HOSTED_USER_ID = "self-hosted";
 
 export type SelfHostedResolverDeps = {
   config: GatewayConfig;
+  // Model lists saved through the API, served in place of the config's.
+  routerModels: RouterModelStore;
   gatewayKeys: readonly string[];
   subscriptions: SubscriptionStore;
   prefixHits: (args: {
@@ -53,7 +62,8 @@ type ProviderCredential = {
  * Resolve a configured router for one request. Each provider is served by a
  * connected personal subscription when the router allows it and one is
  * available, otherwise by the provider's API key; models whose provider has
- * neither are left out.
+ * neither are left out. A coding agent with its own model list on the router
+ * is served that list.
  */
 export async function resolveSelfHostedRouter(
   deps: SelfHostedResolverDeps,
@@ -63,15 +73,17 @@ export async function resolveSelfHostedRouter(
   if (keyIndex === null) {
     throw new HttpError(401, "Missing or invalid gateway key.", "authentication_error");
   }
-  const router = deps.config.routers[request.routerId];
-  if (router === undefined) {
+  const configured = deps.config.routers[request.routerId];
+  if (configured === undefined) {
     throw new HttpError(404, `Router ${request.routerId} is not configured on this gateway.`, "router_not_found");
   }
+  const router = deps.routerModels.served(request.routerId, configured);
 
+  const listed = routerModelsFor(router, request.clientHarness);
   const now = new Date();
   const credentials = new Map<string, ProviderCredential | null>();
   const exhausted = new Set<SubscriptionProvider>();
-  for (const provider of new Set(router.models.map((model) => providerForModel(model.id)))) {
+  for (const provider of new Set(listed.map((model) => providerForModel(model.id)))) {
     const subscription = router.subscriptions
       ? subscriptionProviderFor(provider, request.clientHarness)
       : null;
@@ -97,7 +109,7 @@ export async function resolveSelfHostedRouter(
     credentials.set(provider, apiKey ? { key: apiKey, source: "user" } : null);
   }
 
-  const models = router.models.filter((model) => credentials.get(providerForModel(model.id)) != null);
+  const models = listed.filter((model) => credentials.get(providerForModel(model.id)) != null);
   if (models.length === 0) {
     const missing = [...credentials].filter(([, credential]) => credential == null).map(([provider]) => provider);
     throw unavailableRouterError(request.routerId, exhausted, missing);
@@ -120,7 +132,7 @@ export async function resolveSelfHostedRouter(
     routing_strategy: "dari",
     custom_config: null,
     evals: [],
-    model_thinking_levels: thinkingLevels(router),
+    model_thinking_levels: thinkingLevels(listed),
     model_prices: {},
     model_configs: {},
     prefix_hits: deps.prefixHits({
@@ -204,9 +216,9 @@ function servingProviders(provider: string, credential: ProviderCredential): str
     : [provider];
 }
 
-function thinkingLevels(router: RouterConfig): Record<string, ReasoningEffort[]> {
+function thinkingLevels(models: readonly RouterModelConfig[]): Record<string, ReasoningEffort[]> {
   return Object.fromEntries(
-    router.models.flatMap((model) => model.thinking ? [[model.id, model.thinking]] : []),
+    models.flatMap((model) => model.thinking ? [[model.id, model.thinking]] : []),
   );
 }
 
@@ -227,7 +239,7 @@ export async function providersWithoutCredentials(
   router: RouterConfig,
 ): Promise<string[]> {
   const missing: string[] = [];
-  for (const provider of new Set(router.models.map((model) => providerForModel(model.id)))) {
+  for (const provider of new Set(allRouterModels(router).map((model) => providerForModel(model.id)))) {
     const plans = router.subscriptions
       ? [subscriptionProviderFor(provider, "claude_code"), subscriptionProviderFor(provider, "muse_code")]
       : [];

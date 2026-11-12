@@ -62,13 +62,6 @@ func paths() (localPaths, error) {
 	}, nil
 }
 
-// ConfigPath is the router config a local gateway serves when it exists;
-// without it the gateway serves its default router.
-func ConfigPath() (string, error) {
-	p, err := paths()
-	return p.config, err
-}
-
 // LogPath is where a local gateway started in the background logs.
 func LogPath() (string, error) {
 	p, err := paths()
@@ -165,38 +158,6 @@ func ensureInstalled(ctx context.Context, cliVersion string, progress func(strin
 	return true, nil
 }
 
-// EffectiveConfig is the router config the local gateway serves, as JSON:
-// its config file when one exists, else the gateway's built-in default.
-func EffectiveConfig(ctx context.Context, cliVersion string) ([]byte, error) {
-	return printConfig(ctx, cliVersion, "--print-config")
-}
-
-// DefaultConfig is the gateway's built-in default router config, as JSON.
-func DefaultConfig(ctx context.Context, cliVersion string) ([]byte, error) {
-	return printConfig(ctx, cliVersion, "--print-default-config")
-}
-
-func printConfig(ctx context.Context, cliVersion, flag string) ([]byte, error) {
-	if err := EnsureInstalled(ctx, cliVersion, func(string) {}); err != nil {
-		return nil, err
-	}
-	cmd, err := Command(Settings{LocalKey: "unused"}, nil)
-	if err != nil {
-		return nil, err
-	}
-	cmd.Args = append(cmd.Args, flag)
-	cmd.Stdout, cmd.Stderr = nil, nil
-	out, err := cmd.Output()
-	if err != nil {
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
-			return nil, fmt.Errorf("read the gateway config: %s", strings.TrimSpace(string(exitErr.Stderr)))
-		}
-		return nil, err
-	}
-	return out, nil
-}
-
 // Healthy reports whether a gateway answers at the local URL.
 func Healthy(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
@@ -274,6 +235,8 @@ func Command(settings Settings, out io.Writer) (*exec.Cmd, error) {
 		"DARI_GATEWAY_HOST": "127.0.0.1",
 		"PORT":              strconv.Itoa(LocalPort),
 	}
+	// Earlier CLI versions wrote the chosen models here; the gateway now
+	// saves them itself, in place of this file's.
 	if _, err := os.Stat(p.config); err == nil {
 		env["DARI_GATEWAY_CONFIG"] = p.config
 	}
@@ -459,10 +422,4 @@ func Restart(ctx context.Context, settings Settings, cliVersion string) error {
 		return nil
 	}
 	return EnsureRunning(ctx, settings, cliVersion, func(string) {})
-}
-
-// CanonicalModels is the model ids Dari serves, which the local model picker
-// offers, as JSON.
-func CanonicalModels(ctx context.Context, cliVersion string) ([]byte, error) {
-	return printConfig(ctx, cliVersion, "--print-canonical-models")
 }

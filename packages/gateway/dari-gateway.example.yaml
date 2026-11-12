@@ -9,6 +9,12 @@ routers:
       - anthropic/claude-sonnet-5-5
       - id: openai/gpt-6.1-sol
         thinking: [medium, high]
+    # A coding agent's own list, served to it in place of `models`. Agents
+    # are claude_code, codex, muse_code, opencode, pi, openclaw, and hermes.
+    # agentModels:
+    #   codex:
+    #     - openai/gpt-6.1-sol
+    #     - openai/gpt-6.1-terra
     # Serve with connected Claude Code / ChatGPT subscriptions before API
     # keys (default true).
     subscriptions: true

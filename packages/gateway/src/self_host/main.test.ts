@@ -207,27 +207,115 @@ test("a provider key the provider rejects stops the gateway from starting", asyn
   expect(stderr).not.toContain("revoked");
 });
 
-test("without a config file the gateway serves the default router", async () => {
-  const printConfig = async (env: Record<string, string>, flag = "--print-config") => {
-    const child = Bun.spawn(["bun", join(import.meta.dir, "main.ts"), flag], {
-      cwd: mkdtempSync(join(tmpdir(), "dari-gateway-empty-")),
-      env: { PATH: process.env.PATH ?? "", ...env },
-      stdout: "pipe",
-      stderr: "pipe",
+// `dari gateway models` saves lists through this API. A saved list is served
+// at once in place of the config file's, and removing it serves the file's
+// again.
+test("model lists saved through the API are served until they are removed", async () => {
+  const lists = (path: string, method = "GET", models?: unknown) =>
+    fetch(`${baseUrl}${path}`, {
+      method,
+      headers: authorized(),
+      ...(models === undefined ? {} : { body: JSON.stringify({ models }) }),
     });
-    expect(await child.exited).toBe(0);
-    return JSON.parse(await new Response(child.stdout as ReadableStream).text());
+  const offered = async (agent?: string, path = "/v1/models") => {
+    const response = await fetch(`${baseUrl}${path}`, {
+      headers: { ...authorized(), ...(agent === undefined ? {} : { "x-dari-client-harness": agent }) },
+    });
+    return (await response.json() as { models: { slug: string }[] }).models.map((model) => model.slug);
   };
+  const configured = {
+    models: [{ id: "local/model-a", thinking: ["off"] }, { id: "local/model-b", thinking: ["off"] }],
+    agent_models: {},
+    chosen: true,
+  };
+  expect(await (await lists("/v1/router/models")).json()).toEqual(configured);
 
-  const defaults = await printConfig({});
-  expect(Object.keys(defaults.routers)).toEqual(["default"]);
-  expect(defaults.routers.default.models[0]).toEqual({ id: "anthropic/claude-sonnet-5-5" });
-  expect(defaults.routers.default.subscriptions).toBe(true);
+  try {
+    const codex = await lists("/v1/router/models/codex", "PUT", ["local/model-b"]);
+    expect(codex.status).toBe(200);
+    expect(await codex.json()).toEqual({ ...configured, agent_models: { codex: [{ id: "local/model-b" }] } });
+    expect(await offered("codex")).toEqual(["dari/model/local/model-b"]);
+    expect(await offered()).toEqual(["dari/model/local/model-a", "dari/model/local/model-b"]);
 
-  const configured = await printConfig({ DARI_GATEWAY_CONFIG: configPath });
-  expect(Object.keys(configured.routers)).toEqual(["default", "solo"]);
-  // The built-in default prints whatever config is set.
-  expect(await printConfig({ DARI_GATEWAY_CONFIG: configPath }, "--print-default-config")).toEqual(defaults);
+    expect((await lists("/v1/router/models", "PUT", [{ id: "local/model-c", thinking: ["off"] }])).status).toBe(200);
+    expect(await offered()).toEqual(["dari/model/local/model-c"]);
+    expect(await offered("codex")).toEqual(["dari/model/local/model-b"]);
+    // Each router keeps its own lists.
+    expect(await offered(undefined, "/solo/v1/models")).toEqual(["dari/model/local/model-b"]);
+    expect((await lists("/solo/v1/router/models", "PUT", ["local/model-a"])).status).toBe(200);
+    expect(await offered(undefined, "/solo/v1/models")).toEqual(["dari/model/local/model-a"]);
+
+    // A list the config file would refuse is refused here too, and saves nothing.
+    for (const [path, models, status] of [
+      ["/v1/router/models", [], 400],
+      ["/v1/router/models/codex", ["model-b"], 400],
+      ["/v1/router/models/cursor", ["local/model-a"], 404],
+      ["/missing/v1/router/models", ["local/model-a"], 404],
+    ] as const) {
+      expect((await lists(path, "PUT", models)).status).toBe(status);
+    }
+    const unauthorized = await fetch(`${baseUrl}/v1/router/models`, {
+      method: "PUT",
+      headers: { authorization: "Bearer not-a-key", "content-type": "application/json" },
+      body: JSON.stringify({ models: ["local/model-a"] }),
+    });
+    expect(unauthorized.status).toBe(401);
+    expect(await offered()).toEqual(["dari/model/local/model-c"]);
+    expect(await offered("codex")).toEqual(["dari/model/local/model-b"]);
+  } finally {
+    for (const path of ["/v1/router/models", "/v1/router/models/codex", "/solo/v1/router/models"]) {
+      await lists(path, "DELETE");
+    }
+  }
+  expect(await (await lists("/v1/router/models")).json()).toEqual(configured);
+  expect(await offered("codex")).toEqual(["dari/model/local/model-a", "dari/model/local/model-b"]);
+});
+
+// The CLI's model picker offers Dari's canonical models, under Dari's names.
+test("the canonical models are listed for the model picker", async () => {
+  const response = await fetch(`${baseUrl}/v1/canonical-models`, { headers: authorized() });
+  expect(response.status).toBe(200);
+  const { data } = await response.json() as { data: { id: string; name: string; thinking_levels: string[] }[] };
+  expect(data.length).toBeGreaterThan(0);
+  for (const model of data) {
+    expect(model).toEqual({
+      id: expect.stringMatching(/^[a-z0-9.-]+\/\S+$/),
+      name: expect.any(String),
+      thinking_levels: expect.any(Array),
+    });
+  }
+});
+
+// The CLI's first launch on a local gateway offers its model picker until
+// someone has chosen models.
+test("without a config file the gateway serves default models nobody chose", async () => {
+  const port = await freePort();
+  const unconfigured = Bun.spawn(["bun", join(import.meta.dir, "main.ts")], {
+    cwd: mkdtempSync(join(tmpdir(), "dari-gateway-empty-")),
+    env: { PATH: process.env.PATH ?? "", DARI_GATEWAY_KEYS: "gw-key-1", DARI_GATEWAY_DB: ":memory:", PORT: String(port) },
+    stdout: "pipe",
+    stderr: "ignore",
+  });
+  try {
+    await waitForLine(unconfigured.stdout as ReadableStream<Uint8Array>, "dari-gateway listening");
+    const url = `http://127.0.0.1:${port}/v1/router/models`;
+    const defaults = await (await fetch(url, { headers: authorized() })).json() as {
+      models: { id: string }[];
+      chosen: boolean;
+    };
+    expect(defaults.models[0]).toEqual({ id: "anthropic/claude-sonnet-5-5" });
+    expect(defaults.chosen).toBe(false);
+
+    const chosen = await fetch(url, {
+      method: "PUT",
+      headers: authorized(),
+      body: JSON.stringify({ models: ["anthropic/claude-sonnet-5-5"] }),
+    });
+    expect(await chosen.json()).toMatchObject({ chosen: true });
+  } finally {
+    unconfigured.kill();
+    await unconfigured.exited;
+  }
 });
 
 test("a config path that does not exist stops the gateway from starting", async () => {

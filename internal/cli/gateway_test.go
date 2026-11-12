@@ -478,8 +478,9 @@ func TestGatewayWithoutRoutingStartsOnFirstModel(t *testing.T) {
 	}
 }
 
-// The launcher names its agent when it lists models, so a Claude Code or Muse
-// Code plan counts toward the list; other agents name none.
+// The launcher names its agent when it lists models, so the gateway lists the
+// models it serves that agent: its own list, and a Claude Code or Muse Code
+// plan's models only for that agent. A list for no agent names none.
 func TestRouterModelsNamesTheAgent(t *testing.T) {
 	var got string
 	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -487,7 +488,7 @@ func TestRouterModelsNamesTheAgent(t *testing.T) {
 		_, _ = w.Write([]byte(gatewayCatalog))
 	}))
 	defer gw.Close()
-	for agent, want := range map[string]string{"claude": "claude_code", "muse": "muse_code", "codex": "", "pi": ""} {
+	for agent, want := range map[string]string{"claude": "claude_code", "muse": "muse_code", "codex": "codex", "pi": "pi", "hermes": "hermes", "": ""} {
 		if _, err := routerModels(context.Background(), gw.URL, gatewayTestKey, agent); err != nil {
 			t.Fatal(err)
 		}
@@ -622,6 +623,97 @@ func TestAccountsCommand(t *testing.T) {
 		cmd.SetErr(io.Discard)
 		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "needs an interactive terminal") {
 			t.Fatalf("accounts with gateway %q: error = %v", gatewayURL, err)
+		}
+	}
+}
+
+// `dari gateway models` reads and saves model lists on the gateway itself, so
+// it works the same against a local gateway and one a team runs elsewhere:
+// the gateway's own list or one agent's, and --reset to forget either.
+func TestGatewayModelsCommandSavesListsOnTheGateway(t *testing.T) {
+	var requests []string
+	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests = append(requests, strings.TrimSpace(r.Method+" "+r.URL.Path+" "+string(body)))
+		_, _ = w.Write([]byte(`{"models":[{"id":"anthropic/claude-sonnet-5-5"}],"agent_models":{"codex":[{"id":"openai/gpt-6.1-sol"}]},"chosen":true}`))
+	})))
+	defer gw.Close()
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gw.URL)
+	run := func(args ...string) string {
+		t.Helper()
+		cmd := newRootCmd("dev")
+		cmd.SetIn(strings.NewReader(""))
+		cmd.SetErr(io.Discard)
+		var stdout strings.Builder
+		cmd.SetOut(&stdout)
+		cmd.SetArgs(append([]string{"gateway", "models"}, args...))
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("gateway models %v: %v", args, err)
+		}
+		return stdout.String()
+	}
+
+	run("anthropic/claude-sonnet-5-5", "openai/gpt-6.1-sol=medium,high")
+	run("--agent", "codex", "openai/gpt-6.1-sol")
+	run("--agent", "claude", "--reset")
+	run("--reset")
+	want := []string{
+		`PUT /v1/router/models {"models":[{"id":"anthropic/claude-sonnet-5-5"},{"id":"openai/gpt-6.1-sol","thinking":["medium","high"]}]}`,
+		`PUT /v1/router/models/codex {"models":[{"id":"openai/gpt-6.1-sol"}]}`,
+		`DELETE /v1/router/models/claude_code`,
+		`DELETE /v1/router/models`,
+	}
+	if !slices.Equal(requests, want) {
+		t.Fatalf("requests = %q, want %q", requests, want)
+	}
+
+	// Without a terminal it prints what the agent is offered: its own list,
+	// else the gateway's.
+	for agent, list := range map[string]string{"codex": "openai/gpt-6.1-sol\n", "pi": "anthropic/claude-sonnet-5-5\n"} {
+		if got := run("--agent", agent); got != list {
+			t.Errorf("--agent %s printed %q, want %q", agent, got, list)
+		}
+	}
+}
+
+// A gateway released before it saved model lists answers its usual 404, and
+// one that refuses a list says why.
+func TestGatewayModelsCommandReportsWhatTheGatewayRefused(t *testing.T) {
+	for _, tc := range []struct {
+		status     int
+		body, want string
+	}{
+		{http.StatusNotFound, `{"error":{"message":"Not found","code":"not_found"}}`, "update Dari Gateway"},
+		{http.StatusBadRequest, `{"error":{"message":"Model a/b has invalid thinking levels.","code":"invalid_request_error"}}`, "Model a/b has invalid thinking levels."},
+	} {
+		gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(tc.status)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		setGatewayEnv(t, gw.URL)
+		cmd := newRootCmd("dev")
+		cmd.SetIn(strings.NewReader(""))
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs([]string{"gateway", "models", "openai/gpt-6.1-sol"})
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("HTTP %d: error = %v, want one saying %q", tc.status, err, tc.want)
+		}
+		gw.Close()
+	}
+}
+
+// Models named on the command line are checked before anything is sent.
+func TestGatewayModelArgs(t *testing.T) {
+	for _, args := range [][]string{
+		{"gpt-6.1-sol"},
+		{"openai/"},
+		{"openai/gpt-6.1-sol=huge"},
+		{"openai/gpt-6.1-sol="},
+		{"openai/gpt-6.1-sol", "openai/gpt-6.1-sol=high"},
+	} {
+		if models, err := gatewayModelArgs(args); err == nil {
+			t.Errorf("%q: accepted as %#v", args, models)
 		}
 	}
 }

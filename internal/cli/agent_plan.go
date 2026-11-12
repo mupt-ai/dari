@@ -19,21 +19,15 @@ type agentSubscriptionStatus struct {
 	AutoroutingAllowed *bool             `json:"autorouting_allowed"`
 }
 
-// routerModels builds a launch's model menu from the router's /v1/models at
-// baseURL, the same list in hosted and gateway mode: dari/routing when the
-// router may autoroute, then every enabled model.
-// clientHarnessHeader names the agent a model list is for, so the router
-// lists the models that agent's own requests can be served.
-const clientHarnessHeader = "x-dari-client-harness"
-
-// agentClientHarness is the client each agent's requests identify as.
-var agentClientHarness = map[string]string{"claude": "claude_code", "muse": "muse_code"}
-
 // errNoProviderCredentials is a gateway router with no subscription or API
 // key that can serve any of its models.
 var errNoProviderCredentials = errors.New("no connected account or API key can serve this gateway's models; " +
 	"connect one with `dari accounts` or `dari credentials subscription connect`")
 
+// routerModels builds a launch's model menu from the router's /v1/models at
+// baseURL, the same list in hosted and gateway mode: dari/routing when the
+// router may autoroute, then every enabled model. A gateway lists the models
+// it serves agent; "" names none.
 func routerModels(ctx context.Context, baseURL, key, agent string) (agents.Models, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -42,10 +36,11 @@ func routerModels(ctx context.Context, baseURL, key, agent string) (agents.Model
 		return agents.Models{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
-	// A subscription that serves only its own agent (Claude Code, Muse Code)
-	// counts toward the list only when the list is for that agent.
-	if client := agentClientHarness[agent]; client != "" {
-		req.Header.Set(clientHarnessHeader, client)
+	// The gateway lists what it serves this agent: the agent's own models
+	// when it has some, and a subscription that serves only its own agent
+	// (Claude Code, Muse Code) only for that agent.
+	if client := agentSetups[agent].codingAgent; client != "" {
+		req.Header.Set(agents.ClientHarnessHeader, client)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

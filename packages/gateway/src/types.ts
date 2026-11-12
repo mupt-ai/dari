@@ -88,7 +88,16 @@ export type PublicEvalCatalogCard = Omit<RouterEval, "scores"> & {
 // and Anthropic routing metadata.
 export type ServedDecision = RoutingDecision & { sessionPinned?: boolean };
 
-export type ClientHarness = "claude_code" | "muse_code";
+// The coding agent a request comes from. Claude Code and Muse Code are named
+// only from their own request headers, since their plans serve only them.
+export type ClientHarness =
+  | "claude_code"
+  | "codex"
+  | "muse_code"
+  | "opencode"
+  | "pi"
+  | "openclaw"
+  | "hermes";
 
 export type ResolvedRouterModelConfig = {
   provider: string;

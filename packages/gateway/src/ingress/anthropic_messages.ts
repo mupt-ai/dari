@@ -9,6 +9,7 @@ import { explicitModelId } from "../protocol/input/router_model.js";
 import { handleRoutedCompletion } from "../runtime/routed_completion.js";
 import type { SelectorBackend } from "../strategies/routing.js";
 import { claudeCodeRequestContext } from "./claude_code/request_context.js";
+import { claimedClientHarness } from "./client_harness.js";
 import {
   claudeCodeConversationIdentity,
 } from "../runtime/harness_identity/index.js";
@@ -61,7 +62,7 @@ export async function handleAnthropicMessages(
       streamBody: anthropicMessagesSseStream,
       errorResponse: anthropicErrorResponse,
       selectorBackend,
-      clientHarness: isClaudeCode ? "claude_code" : undefined,
+      clientHarness: isClaudeCode ? "claude_code" : claimedClientHarness(request.headers),
       harnessConversationIdentity: isClaudeCode
         ? claudeCodeConversationIdentity(
             request.headers,

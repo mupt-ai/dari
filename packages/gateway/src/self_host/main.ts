@@ -14,13 +14,16 @@ import { createSelfHostedPlatform } from "./platform.js";
 import { providerForModel } from "@mupt-ai/dari-router/policy-engine";
 import { checkProviderKey } from "../providers/key_check.js";
 import { CANONICAL_MODELS } from "../models/canonical.js";
-import { DEFAULT_GATEWAY_CONFIG, loadGatewayConfig, type GatewayConfig } from "./config.js";
+import { allRouterModels, loadGatewayConfig, type GatewayConfig, type RouterConfig } from "./config.js";
 import { configuredProviderApiKey, gatewayKeyIndex, providersWithoutCredentials } from "./resolve.js";
 import { PrefixStore } from "./prefix_store.js";
+import { handleRouterModelsRequest, ROUTER_MODELS_ROUTE, RouterModelStore } from "./router_models.js";
 import { SessionPinStore } from "./session_pin_store.js";
 import { handleSubscriptionRequest, SubscriptionStore } from "./subscriptions/index.js";
 
 const SUBSCRIPTION_ROUTES = "/v1/organizations/current/credentials";
+// The models Dari serves, which the Dari CLI's model picker offers.
+const CANONICAL_MODELS_ROUTE = "/v1/canonical-models";
 
 /**
  * Start a self-hosted Dari Gateway from environment variables:
@@ -28,8 +31,9 @@ const SUBSCRIPTION_ROUTES = "/v1/organizations/current/credentials";
  * - `DARI_GATEWAY_KEYS` (required): comma-separated bearer keys clients use.
  * - `DARI_GATEWAY_CONFIG`: router config file. Unset, `dari-gateway.yaml`
  *   serves when present, and otherwise the default router.
- * - `DARI_GATEWAY_DB`: SQLite database for subscriptions and prefix-cache
- *   state (default `dari-gateway.db`). It holds subscription tokens.
+ * - `DARI_GATEWAY_DB`: SQLite database for subscriptions, saved model lists,
+ *   and prefix-cache state (default `dari-gateway.db`). It holds subscription
+ *   tokens.
  * - `DARI_AUTO_ROUTING_API_KEY`: choose among a router's models with Dari
  *   Auto Routing; without it, `dari/routing` serves the first listed model.
  * - `PORT` (default 8080), `DARI_GATEWAY_HOST` (default 127.0.0.1; the container
@@ -52,6 +56,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   const subscriptions = new SubscriptionStore(db);
   const prefixes = new PrefixStore(db);
   const sessionPins = new SessionPinStore(db);
+  const routerModels = new RouterModelStore(db);
   // Pi's provider auth reads each provider's standard key variable, such as
   // OPENAI_API_KEY, from this environment only.
   const piModels = builtinModels({
@@ -62,6 +67,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   const autoRoutingKey = env.DARI_AUTO_ROUTING_API_KEY?.trim();
   const platform = createSelfHostedPlatform({
     config,
+    routerModels,
     gatewayKeys,
     subscriptions,
     prefixes,
@@ -73,7 +79,9 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   });
   // A model without a credential is dropped at request time, so a missing key
   // would otherwise surface only as a 424 on the first request.
-  for (const [routerId, router] of Object.entries(config.routers)) {
+  const routers = Object.entries(config.routers)
+    .map(([routerId, router]) => [routerId, routerModels.served(routerId, router)] as const);
+  for (const [routerId, router] of routers) {
     const missing = await providersWithoutCredentials({ config, subscriptions, providerApiKey, env }, router);
     if (missing.length > 0) {
       console.warn(
@@ -82,7 +90,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
       );
     }
   }
-  await checkConfiguredProviderKeys(config, (provider) =>
+  await checkConfiguredProviderKeys(config, routers.map(([, router]) => router), (provider) =>
     configuredProviderApiKey({ config, providerApiKey, env }, provider));
   const selectorBackend: SelectorBackend = autoRoutingKey
     ? createAutoRoutingSelectorBackend({
@@ -92,11 +100,15 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     : createPrioritySelectorBackend();
   const gateway = createRequestHandler({ platform, selectorBackend });
 
+  // Subscriptions and model lists are managed with any gateway key; every
+  // other path is the gateway's own.
   const handler = async (request: Request): Promise<Response> => {
     const { pathname } = new URL(request.url);
-    if (pathname !== SUBSCRIPTION_ROUTES && !pathname.startsWith(`${SUBSCRIPTION_ROUTES}/`)) {
-      return await gateway(request);
-    }
+    const manages = pathname === SUBSCRIPTION_ROUTES
+      || pathname.startsWith(`${SUBSCRIPTION_ROUTES}/`)
+      || pathname === CANONICAL_MODELS_ROUTE
+      || ROUTER_MODELS_ROUTE.test(pathname);
+    if (!manages) return await gateway(request);
     try {
       if (gatewayKeyIndex(gatewayKeys, bearerToken(request.headers)) === null) {
         throw new HttpError(401, "Missing or invalid gateway key.", "authentication_error");
@@ -104,7 +116,11 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     } catch (error) {
       return errorResponse(error);
     }
+    if (pathname === CANONICAL_MODELS_ROUTE && request.method === "GET") {
+      return Response.json({ data: CANONICAL_MODELS }, { headers: { "Cache-Control": "no-store" } });
+    }
     return (await handleSubscriptionRequest(request, { store: subscriptions, fetch }))
+      ?? (await handleRouterModelsRequest(request, { config, routerModels }))
       ?? errorResponse(new HttpError(404, "Not found", "not_found"));
   };
 
@@ -119,6 +135,8 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
       // The bound port, so PORT=0 reports the port the OS assigned.
       port: server.port,
       routers: Object.keys(config.routers),
+      // These serve lists saved with `dari gateway models`, not the config file's.
+      saved_model_lists: routerModels.routersWithSavedLists(),
       auto_routing: autoRoutingKey ? "dari" : "priority",
     }),
   );
@@ -131,10 +149,11 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
  */
 async function checkConfiguredProviderKeys(
   config: GatewayConfig,
+  routers: readonly RouterConfig[],
   providerApiKey: (provider: string) => Promise<string | undefined>,
 ): Promise<void> {
   const providers = new Set(
-    Object.values(config.routers).flatMap((router) => router.models.map((model) => providerForModel(model.id))),
+    routers.flatMap((router) => allRouterModels(router).map((model) => providerForModel(model.id))),
   );
   const checks = await Promise.all([...providers].map(async (provider) => {
     const endpoint = config.providers[provider];
@@ -158,27 +177,6 @@ async function checkConfiguredProviderKeys(
 
 /** Run the gateway as a process: the `dari-gateway` bin and compiled binary. */
 export async function runSelfHostedGateway(): Promise<void> {
-  // `--print-config` prints the router config the gateway would serve, as
-  // JSON, and exits; `--print-default-config` prints the built-in default.
-  // The Dari CLI edits a local gateway's models from them.
-  if (process.argv.includes("--print-canonical-models")) {
-    console.log(JSON.stringify(CANONICAL_MODELS));
-    return;
-  }
-  if (process.argv.includes("--print-default-config")) {
-    console.log(JSON.stringify(DEFAULT_GATEWAY_CONFIG));
-    return;
-  }
-  if (process.argv.includes("--print-config")) {
-    try {
-      const config = await loadGatewayConfig(process.env.DARI_GATEWAY_CONFIG?.trim() || undefined);
-      console.log(JSON.stringify(config));
-      return;
-    } catch (error) {
-      console.error(`dari-gateway: ${error instanceof Error ? error.message : String(error)}`);
-      process.exit(1);
-    }
-  }
   // Startup errors are configuration mistakes: print the message, not a stack.
   const started = await startSelfHostedGateway().catch((error: unknown) => {
     console.error(`dari-gateway: ${error instanceof Error ? error.message : String(error)}`);

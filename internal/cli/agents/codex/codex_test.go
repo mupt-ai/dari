@@ -12,7 +12,8 @@ import (
 
 func TestCodexCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer test-key" {
+		// Naming Codex gets the models a gateway lists for it.
+		if r.URL.Path != "/v1/models" || r.Header.Get("Authorization") != "Bearer test-key" || r.Header.Get("x-dari-client-harness") != "codex" {
 			t.Errorf("unexpected catalog request")
 		}
 		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/routing","context_window":272000,"auto_review_model_override":null,"support_verbosity":false,"web_search_tool_type":null,"tool_mode":null,"multi_agent_version":null}]}`))

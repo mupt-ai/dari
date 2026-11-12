@@ -42,6 +42,8 @@ func Catalog(ctx context.Context, key, baseURL string, models agents.Models) ([]
 		return nil, false, fmt.Errorf("create Codex catalog request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
+	// The catalog must hold the models a gateway lists for Codex.
+	req.Header.Set(agents.ClientHarnessHeader, "codex")
 	client := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
 	resp, err := client.Do(req)
 	if err != nil {

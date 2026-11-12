@@ -106,8 +106,11 @@ type providerEntry struct {
 	ContextLength int    `yaml:"context_length"`
 	// Hermes sends its session id in this header, which the router groups
 	// into one conversation.
-	SessionAffinityHeader string    `yaml:"session_affinity_header"`
-	Models                yaml.Node `yaml:"models"`
+	SessionAffinityHeader string `yaml:"session_affinity_header"`
+	// Hermes names itself on every request, so a gateway serves the models
+	// it lists for Hermes.
+	ExtraHeaders map[string]string `yaml:"extra_headers"`
+	Models       yaml.Node         `yaml:"models"`
 }
 
 func newProviderEntry(baseURL, key string, models agents.Models) providerEntry {
@@ -126,6 +129,7 @@ func newProviderEntry(baseURL, key string, models agents.Models) providerEntry {
 		DefaultModel:          models.Default(),
 		ContextLength:         1_000_000,
 		SessionAffinityHeader: "x-session-affinity",
+		ExtraHeaders:          map[string]string{agents.ClientHarnessHeader: "hermes"},
 		Models:                offered,
 	}
 }

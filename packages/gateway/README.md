@@ -63,7 +63,7 @@ docker run -p 8080:8080 \
 | --- | --- |
 | `DARI_GATEWAY_KEYS` | Required. Comma-separated bearer keys clients authenticate with. |
 | `DARI_GATEWAY_CONFIG` | Router config file. Default `dari-gateway.yaml`. |
-| `DARI_GATEWAY_DB` | SQLite database for subscriptions and conversation state. Default `dari-gateway.db`. It stores subscription tokens in plaintext; protect it like a secret. |
+| `DARI_GATEWAY_DB` | SQLite database for subscriptions, model lists saved with `dari gateway models`, and conversation state. Default `dari-gateway.db`. It stores subscription tokens in plaintext; protect it like a secret. |
 | `DARI_AUTO_ROUTING_API_KEY` | Optional. Select among a router's models with Dari Auto Routing. |
 | `PORT` | Listen port. Default `8080`. |
 | `DARI_GATEWAY_HOST` | Listen address. Default `127.0.0.1`, so only this machine can connect. The container image sets `0.0.0.0`; set it yourself to expose a process on your network. |
@@ -78,6 +78,8 @@ routers:
       - anthropic/claude-sonnet-5-5
       - id: openai/gpt-6.1-sol
         thinking: [medium, high]
+    agentModels:           # optional: a coding agent's own list, in place of `models`
+      codex: [openai/gpt-6.1-sol, openai/gpt-6.1-terra]
     subscriptions: true    # prefer connected subscriptions over API keys
     sessionPinning: false  # route each session and subagent once, then keep its model
   local:                   # serves /local/v1/...
@@ -89,7 +91,9 @@ providers:                 # endpoints outside the built-in catalog
     apiKeyEnv: LOCAL_API_KEY
 ```
 
-Model ids are `provider/model`. Clients send `model: "dari/routing"` to let the router choose, or `model: "dari/model/<id>"` to pin one of its models. A Claude Code subscription serves Anthropic models only for Claude Code itself; a ChatGPT subscription serves OpenAI models for every client.
+Model ids are `provider/model`. Clients send `model: "dari/routing"` to let the router choose, or `model: "dari/model/<id>"` to pin one of its models. A Claude Code subscription serves Anthropic models only for Claude Code itself; a ChatGPT subscription serves OpenAI models for every client. Each coding agent is offered the router's models that a credential can serve it, or its own `agentModels` list (`claude_code`, `codex`, `muse_code`, `opencode`, `pi`, `openclaw`, `hermes`) when the router has one.
+
+`dari gateway models` changes either list on a running gateway, with any gateway key: `dari gateway models --agent codex openai/gpt-6.1-sol`, or no models for the picker. It calls `PUT` and `DELETE /v1/router/models[/<agent>]` (`GET /v1/router/models` reads them). The gateway saves the list in its database and serves it at once in place of the config file's, until `--reset` removes it.
 
 ### Model catalog
 

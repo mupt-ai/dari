@@ -17,6 +17,9 @@ const (
 	// Activity dashboard never sees them, so status lines leave out its link.
 	NoActivityLinkEnv = "DARI_NO_ACTIVITY_LINK"
 	RoutingModel      = "dari/routing"
+	// ClientHarnessHeader names the coding agent a model list or request is
+	// for, so a gateway serves the models it lists for that agent.
+	ClientHarnessHeader = "x-dari-client-harness"
 	// ExplicitModelPrefix names one enabled model, served without routing.
 	ExplicitModelPrefix = "dari/model/"
 )

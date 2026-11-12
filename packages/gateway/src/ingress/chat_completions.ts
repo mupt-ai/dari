@@ -11,6 +11,8 @@ import {
   openCodeRequestContext,
   piRequestContext,
 } from "../runtime/harness_identity/index.js";
+import type { ClientHarness } from "../types.js";
+import { claimedClientHarness } from "./client_harness.js";
 import { parseJsonRequest } from "./json.js";
 import { museCodeClientId } from "./muse_code.js";
 
@@ -23,8 +25,16 @@ export async function handleChatCompletions(
     const apiKey = bearerToken(request.headers);
     const payload = await parseJsonRequest<ChatCompletionRequest>(request);
     const interaction = chatCompletionsToInteraction({ ...payload, source_protocol: "openai_chat" });
-    const agentContext = piRequestContext(request.headers) ?? openCodeRequestContext(request.headers);
+    const piContext = piRequestContext(request.headers);
+    const openCodeContext = openCodeRequestContext(request.headers);
+    const agentContext = piContext ?? openCodeContext;
     const museClientId = museCodeClientId(request.headers);
+    // OpenClaw and Hermes send nothing of their own that tells them apart,
+    // so the Dari CLI sets them up to name themselves.
+    const clientHarness: ClientHarness | undefined = museClientId !== undefined ? "muse_code"
+      : piContext !== undefined ? "pi"
+      : openCodeContext !== undefined ? "opencode"
+      : claimedClientHarness(request.headers);
     return await handleRoutedCompletion({
       request,
       routerId,
@@ -38,7 +48,7 @@ export async function handleChatCompletions(
       streamBody: chatCompletionsSseStream,
       errorResponse,
       selectorBackend,
-      clientHarness: museClientId === undefined ? undefined : "muse_code",
+      clientHarness,
       harnessConversationIdentity: chatCompletionsConversationIdentity(
         request.headers,
         payload.prompt_cache_key,

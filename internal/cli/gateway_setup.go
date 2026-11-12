@@ -314,71 +314,109 @@ func gatewayAgentModels(ctx context.Context, gw *gatewayConfig, launch agentLaun
 	}
 	// A local gateway's first launch chooses its models, as a hosted
 	// router's first launch does.
-	if err == nil && gw.local && agentInputIsTerminal(stdin) && !localGatewayModelsChosen() {
-		if err := chooseLocalGatewayModels(ctx, gw, stdin, stderr); err != nil {
-			return agents.Models{}, err
+	if err == nil && gw.local && agentInputIsTerminal(stdin) {
+		if lists, listsErr := fetchGatewayModelLists(ctx, gw); listsErr == nil && !lists.Chosen {
+			if err := chooseGatewayModels(ctx, gw, "", stdin, stderr); err != nil {
+				return agents.Models{}, err
+			}
+			models, err = routerModels(ctx, gw.url, gw.key, launch.name)
 		}
-		models, err = routerModels(ctx, gw.url, gw.key, launch.name)
 	}
 	return models, err
 }
 
-// localGatewayModelsChosen reports whether the local gateway serves models
-// the user chose rather than its built-in default.
-func localGatewayModelsChosen() bool {
-	path, err := gateway.ConfigPath()
-	if err != nil {
-		return false
-	}
-	_, err = os.Stat(path)
-	return err == nil
-}
-
-// gatewayModelConfig is one model of a gateway router's config.
+// gatewayModelConfig is one model of a gateway router's model list.
 type gatewayModelConfig struct {
 	ID       string   `json:"id"`
 	Thinking []string `json:"thinking,omitempty"`
 }
 
-// localGatewayModels is the local gateway's default router, as its config
-// file sets it, else the gateway's built-in default.
-func localGatewayModels(ctx context.Context) ([]gatewayModelConfig, error) {
-	return gatewayRouterModels(gateway.EffectiveConfig(ctx, cliVersion))
+// gatewayModelLists are the model lists of a gateway's default router: its
+// own, and each coding agent's that has one. Chosen is false while the router
+// serves the gateway's built-in default models.
+type gatewayModelLists struct {
+	Models      []gatewayModelConfig            `json:"models"`
+	AgentModels map[string][]gatewayModelConfig `json:"agent_models"`
+	Chosen      bool                            `json:"chosen"`
 }
 
-// gatewayRouterModels reads the default router's models from a gateway
-// config printed as JSON.
-func gatewayRouterModels(raw []byte, err error) ([]gatewayModelConfig, error) {
-	if err != nil {
-		return nil, err
+// offered is the list the router offers agent: its own when it has one, else
+// the router's. "" is no agent.
+func (lists gatewayModelLists) offered(agent string) []gatewayModelConfig {
+	if own := lists.AgentModels[agentSetups[agent].codingAgent]; len(own) > 0 {
+		return own
 	}
-	var config struct {
-		Routers map[string]struct {
-			Models []gatewayModelConfig `json:"models"`
-		} `json:"routers"`
-	}
-	if err := json.Unmarshal(raw, &config); err != nil {
-		return nil, fmt.Errorf("read the gateway config: %w", err)
-	}
-	return config.Routers["default"].Models, nil
+	return lists.Models
 }
 
-// gatewayCatalogProviders are the providers the local model picker offers:
+// gatewayModelListsPath is where a gateway serves and saves its default
+// router's own list, or agent's.
+func gatewayModelListsPath(agent string) string {
+	if agent == "" {
+		return "/v1/router/models"
+	}
+	return "/v1/router/models/" + agentSetups[agent].codingAgent
+}
+
+func fetchGatewayModelLists(ctx context.Context, gw *gatewayConfig) (gatewayModelLists, error) {
+	var lists gatewayModelLists
+	err := api.New(gw.url).WithBearer(gw.key).Do(ctx, http.MethodGet, gatewayModelListsPath(""), nil, &lists)
+	return lists, gatewayModelListsError(err)
+}
+
+// saveGatewayModels saves chosen on the gateway as its default router's own
+// list, or as agent's. A nil list removes the saved one, so the gateway goes
+// back to its config file's. The gateway serves the change at once.
+func saveGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, chosen []gatewayModelConfig) error {
+	client := api.New(gw.url).WithBearer(gw.key)
+	if chosen == nil {
+		return gatewayModelListsError(client.Do(ctx, http.MethodDelete, gatewayModelListsPath(agent), nil, nil))
+	}
+	body := map[string]any{"models": chosen}
+	return gatewayModelListsError(client.Do(ctx, http.MethodPut, gatewayModelListsPath(agent), body, nil))
+}
+
+// gatewayModelListsError is the message a gateway refused a model list with.
+// A gateway released before it saved model lists has no such path.
+func gatewayModelListsError(err error) error {
+	he := api.AsHTTPError(err)
+	if he == nil {
+		return err
+	}
+	var refused struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal([]byte(he.Detail), &refused)
+	switch {
+	case refused.Error.Code == "not_found":
+		return errors.New("this gateway does not save model lists yet; update Dari Gateway, or set `models` in its config file")
+	case refused.Error.Message != "":
+		return errors.New(refused.Error.Message)
+	}
+	return api.HumanError(err)
+}
+
+// gatewayCatalogProviders are the providers the gateway model picker offers:
 // those in the gateway's bundled catalog that take a subscription or one API
 // key.
 const gatewayCatalogProviders = "anthropic,openai,deepseek,xai,meta,fireworks"
 
-// chooseLocalGatewayModels opens the hosted router's model picker over the
-// gateway's catalog, then saves the choice as the local gateway's config and
-// restarts it.
-func chooseLocalGatewayModels(ctx context.Context, gw *gatewayConfig, stdin io.Reader, stderr io.Writer) error {
+// chooseGatewayModels opens the hosted router's model picker over the
+// gateway's catalog and saves the choice on the gateway. The choice is the
+// gateway's models, or with agent that agent's own list, which it is served
+// in place of them.
+func chooseGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, stdin io.Reader, stderr io.Writer) error {
 	if err := gw.ensure(ctx, stderr); err != nil {
 		return err
 	}
-	current, err := localGatewayModels(ctx)
+	lists, err := fetchGatewayModelLists(ctx, gw)
 	if err != nil {
 		return err
 	}
+	current := lists.offered(agent)
 	var catalog struct {
 		Data []struct {
 			ID             string   `json:"id"`
@@ -403,20 +441,18 @@ func chooseLocalGatewayModels(ctx context.Context, gw *gatewayConfig, stdin io.R
 	// Only Dari's canonical models are offered, as on a hosted router. A
 	// canonical model newer than the bundled catalog is still served by the
 	// gateway, so it is offered with Dari's own name and thinking levels.
-	canonicalRaw, err := gateway.CanonicalModels(ctx, cliVersion)
-	if err != nil {
-		return err
+	var canonical struct {
+		Data []struct {
+			ID             string   `json:"id"`
+			Name           string   `json:"name"`
+			ThinkingLevels []string `json:"thinking_levels"`
+		} `json:"data"`
 	}
-	var canonical []struct {
-		ID             string   `json:"id"`
-		Name           string   `json:"name"`
-		ThinkingLevels []string `json:"thinking_levels"`
-	}
-	if err := json.Unmarshal(canonicalRaw, &canonical); err != nil {
-		return fmt.Errorf("read the canonical models: %w", err)
+	if err := client.Do(ctx, http.MethodGet, "/v1/canonical-models", nil, &canonical); err != nil {
+		return gatewayModelListsError(err)
 	}
 	canonicalIDs := map[string]bool{}
-	for _, model := range canonical {
+	for _, model := range canonical.Data {
 		canonicalIDs[model.ID] = true
 	}
 	offered := []agentModel{}
@@ -425,7 +461,7 @@ func chooseLocalGatewayModels(ctx context.Context, gw *gatewayConfig, stdin io.R
 			offered = append(offered, model)
 		}
 	}
-	for _, model := range canonical {
+	for _, model := range canonical.Data {
 		if _, ok := known[model.ID]; !ok {
 			known[model.ID] = model.ThinkingLevels
 			offered = append(offered, agentModel{ID: model.ID, DisplayName: model.Name, Provider: providerOf(model.ID), SupportedLevels: model.ThinkingLevels})
@@ -476,9 +512,14 @@ func chooseLocalGatewayModels(ctx context.Context, gw *gatewayConfig, stdin io.R
 		}
 		return sortName(models[i]) < sortName(models[j])
 	})
-	choices, err := selectAgentModels(stdin, stderr, "Models", []string{
-		"  Models from a provider serve once it has a connected account or API key.",
-	}, false, models, defaults, currentLevels, nil, nil)
+	title, saved := "Models", "Models"
+	note := []string{"  Models from a provider serve once it has a connected account or API key."}
+	if agent != "" {
+		title = "Models for " + agentSetups[agent].label
+		saved = agentSetups[agent].label + " models"
+		note = append(note, fmt.Sprintf("  %s is offered these in place of the gateway's models. Undo with `dari gateway models --agent %s --reset`.", agentSetups[agent].label, agent))
+	}
+	choices, err := selectAgentModels(stdin, stderr, title, note, false, models, defaults, currentLevels, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -494,19 +535,11 @@ func chooseLocalGatewayModels(ctx context.Context, gw *gatewayConfig, stdin io.R
 	for _, choice := range choices {
 		chosen = append(chosen, gatewayModelConfig{ID: choice.ID, Thinking: choice.Levels})
 	}
-	path, err := gateway.ConfigPath()
-	if err != nil {
+	if err := saveGatewayModels(ctx, gw, agent, chosen); err != nil {
 		return err
 	}
-	raw, err := json.MarshalIndent(map[string]any{"routers": map[string]any{"default": map[string]any{"models": chosen}}}, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(path, append(raw, '\n'), 0o600); err != nil {
-		return err
-	}
-	agentStep(stderr, fmt.Sprintf("Models: %d selected", len(chosen)))
-	return gateway.Restart(ctx, gw.settings, cliVersion)
+	agentStep(stderr, fmt.Sprintf("%s: %d selected", saved, len(chosen)))
+	return nil
 }
 
 // providerOf is the provider prefix of a provider/model id.
@@ -528,7 +561,7 @@ func position(ids []string, id string) int {
 // Autorouting plan does. On a local gateway it also adds the chosen models no
 // connected account or API key serves yet, so the agent can list every chosen
 // model, and names them.
-func reportGatewayModels(ctx context.Context, gw *gatewayConfig, models agents.Models, stderr io.Writer) agents.Models {
+func reportGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, models agents.Models, stderr io.Writer) agents.Models {
 	if !models.Routing && len(models.Enabled) > 0 {
 		hint := "Switch models with /model"
 		if gw.local {
@@ -539,11 +572,11 @@ func reportGatewayModels(ctx context.Context, gw *gatewayConfig, models agents.M
 	if !gw.local {
 		return models
 	}
-	chosen, err := localGatewayModels(ctx)
+	lists, err := fetchGatewayModelLists(ctx, gw)
 	if err != nil {
 		return models
 	}
-	for _, model := range chosen {
+	for _, model := range lists.offered(agent) {
 		if !slices.Contains(models.Enabled, model.ID) {
 			models.Unavailable = append(models.Unavailable, model.ID)
 		}

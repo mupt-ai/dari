@@ -14,8 +14,8 @@ import { listModelCatalog } from "../models/catalog.js";
 import { modelSupportsImageInput } from "../providers/model_capabilities.js";
 import { modelMetadataLookup } from "../providers/pi.js";
 import { resolveRouter } from "../strategies/routing.js";
-import type { ClientHarness } from "../types.js";
 import { anthropicModelsResponse } from "./anthropic_models.js";
+import { namedClientHarness } from "./client_harness.js";
 import { codexModelsResponse } from "./codex_models.js";
 
 export async function handleModels(request: Request, routerId: string): Promise<Response> {
@@ -29,7 +29,9 @@ export async function handleModels(request: Request, routerId: string): Promise<
     const apiKey = anthropicClient ? anthropicToken(request.headers) : bearerToken(request.headers);
     // Resolution authenticates the key and confirms the router exists even
     // when the response body (Anthropic shape) does not depend on it.
-    const clientHarness = listedClientHarness(request.headers);
+    // A model list is for the agent the Dari CLI names: it changes only what
+    // is listed, and each request is still recognized by its own headers.
+    const clientHarness = namedClientHarness(request.headers);
     const router = await resolveRouter({ routerId, apiKey, ...(clientHarness ? { clientHarness } : {}) });
     const query = new URL(request.url).searchParams;
     if (query.get("detail") === "1") {
@@ -66,15 +68,4 @@ export async function handleModels(request: Request, routerId: string): Promise<
     });
     return response;
   }
-}
-
-// The Dari CLI names the agent a model list is for, so subscriptions that
-// serve only that agent (a Claude Code or Muse Code plan) count toward the
-// list as they will for its requests. It changes only what is listed: each
-// request is still recognized by its own headers.
-const CLIENT_HARNESS_HEADER = "x-dari-client-harness";
-
-function listedClientHarness(headers: Headers): ClientHarness | undefined {
-  const value = headers.get(CLIENT_HARNESS_HEADER)?.trim();
-  return value === "claude_code" || value === "muse_code" ? value : undefined;
 }

@@ -5,6 +5,7 @@ import { HttpError } from "../http/errors.js";
 import type { ResolveRouterRequest } from "../platform/platform.js";
 import { parseGatewayConfig } from "./config.js";
 import { providersWithoutCredentials, resolveSelfHostedRouter, type SelfHostedResolverDeps } from "./resolve.js";
+import { RouterModelStore } from "./router_models.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 import { codexAccessToken, tokens } from "./subscriptions/test_support.js";
 
@@ -15,6 +16,7 @@ function deps(overrides: {
   config?: unknown;
   autoRouting?: boolean;
 } = {}): SelfHostedResolverDeps & { subscriptions: SubscriptionStore } {
+  const db = new Database(":memory:");
   return {
     config: parseGatewayConfig(overrides.config ?? {
       routers: {
@@ -26,8 +28,9 @@ function deps(overrides: {
         },
       },
     }),
+    routerModels: new RouterModelStore(db),
     gatewayKeys: ["gw-1", "gw-2"],
-    subscriptions: new SubscriptionStore(new Database(":memory:")),
+    subscriptions: new SubscriptionStore(db),
     prefixHits: () => [],
     providerApiKey: async (provider) => overrides.apiKeys?.[provider],
     autoRouting: overrides.autoRouting ?? false,
@@ -220,6 +223,12 @@ describe("parseGatewayConfig", () => {
     expect(() =>
       parseGatewayConfig({ routers: { default: { models: ["a/b"] } }, providers: { a: {} } }),
     ).toThrow("baseUrl");
+    expect(() =>
+      parseGatewayConfig({ routers: { default: { models: ["a/b"], agentModels: { cursor: ["a/b"] } } } }),
+    ).toThrow("unknown coding agent");
+    expect(() =>
+      parseGatewayConfig({ routers: { default: { models: ["a/b"], agentModels: { codex: [] } } } }),
+    ).toThrow("agentModels.codex");
   });
 
   test("applies router defaults", () => {
@@ -227,6 +236,7 @@ describe("parseGatewayConfig", () => {
       routers: {
         default: {
           models: [{ id: "a/b" }],
+          agentModels: {},
           retries: 1,
           subscriptions: true,
           sessionPinning: false,
@@ -236,6 +246,36 @@ describe("parseGatewayConfig", () => {
       providers: {},
     });
   });
+});
+
+// A coding agent with its own list on the router is served that list, at its
+// own thinking levels and on its own providers; every other client is served
+// the router's models.
+test("serves a coding agent its own model list", async () => {
+  const resolver = deps({
+    apiKeys: { anthropic: "sk-ant", openai: "sk-openai", deepseek: "sk-deepseek" },
+    config: {
+      routers: {
+        default: {
+          models: ["anthropic/claude-sonnet-4-5", { id: "openai/gpt-5.5", thinking: ["medium"] }],
+          agentModels: {
+            codex: [{ id: "openai/gpt-5.5", thinking: ["high"] }, "deepseek/deepseek-chat"],
+          },
+        },
+      },
+    },
+  });
+
+  const codex = await resolveSelfHostedRouter(resolver, request({ clientHarness: "codex" }));
+  expect(codex.enabled_models).toEqual(["openai/gpt-5.5", "deepseek/deepseek-chat"]);
+  expect(codex.model_thinking_levels).toEqual({ "openai/gpt-5.5": ["high"] });
+  expect(Object.keys(codex.provider_keys).sort()).toEqual(["deepseek", "openai"]);
+
+  for (const clientHarness of ["pi", undefined] as const) {
+    const other = await resolveSelfHostedRouter(resolver, request({ clientHarness }));
+    expect(other.enabled_models).toEqual(["anthropic/claude-sonnet-4-5", "openai/gpt-5.5"]);
+    expect(other.model_thinking_levels).toEqual({ "openai/gpt-5.5": ["medium"] });
+  }
 });
 
 // Without Dari Auto Routing, dari/routing only serves the first model, so

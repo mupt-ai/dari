@@ -73,7 +73,7 @@ type agentProviderCredential struct {
 }
 
 // agentKeyCredentialsPageOnly need more than one key, so they are connected
-// on the Credentials page of the web app instead of the Accounts page.
+// on the Subscriptions & Keys page of the web app instead of the Accounts page.
 var agentKeyCredentialsPageOnly = []string{"azure", "amazon-bedrock"}
 
 // agentAPIKeys are the organization's saved API keys, the first per provider.
@@ -117,7 +117,7 @@ func connectAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader
 		}
 	}
 	options = append(options, agentChoiceOption{label: "Back"})
-	where := "on the Credentials page of the Dari web app"
+	where := "on the Subscriptions & Keys page of the Dari web app"
 	if page := agentWebAppURL(ctx, client, "/credentials"); page != "" {
 		where = "at " + page
 	}

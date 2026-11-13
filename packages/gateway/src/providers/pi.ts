@@ -114,6 +114,11 @@ function piStreamSimple(
 ): AssistantMessageEventStream {
   const api = PI_APIS[String(model.api)];
   if (!api) throw new Error(`No Pi API implementation for ${String(model.api)}.`);
+  // The Anthropic SDK adds ANTHROPIC_CUSTOM_HEADERS from the process
+  // environment to every request. A gateway started from a Claude Code
+  // session inherits Dari's own `Authorization` there, which would replace
+  // the credential the gateway resolved; upstream headers are the gateway's.
+  delete process.env.ANTHROPIC_CUSTOM_HEADERS;
   return api.streamSimple(model as unknown as Model<Api>, normalizeContext(context as unknown as Context), options);
 }
 

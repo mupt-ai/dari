@@ -167,6 +167,16 @@ test("a supplied Claude Code plan serves Claude Code clients", async () => {
   expect(calls[0]).toMatchObject({ authorization: "Bearer sk-ant-oat01-plan", apiKey: null });
 });
 
+test("headers a Claude Code session exported never reach the provider", async () => {
+  // `dari claude` puts Dari's own key here for the Claude Code process.
+  process.env.ANTHROPIC_CUSTOM_HEADERS = "Authorization: Bearer dari_session\nX-Team: core";
+  supplied = { [CLAUDE]: { apiKey: "sk-ant-oat01-plan", subscription: "anthropic_claude_code" } };
+  const response = await messages(CLAUDE, { claudeCode: true });
+  expect(response.status).toBe(200);
+  await response.text();
+  expect(calls[0]).toMatchObject({ authorization: "Bearer sk-ant-oat01-plan", apiKey: null });
+});
+
 test("Claude Code's tool-result clearing reaches its plan with the paired beta", async () => {
   supplied = { [CLAUDE]: { apiKey: "sk-ant-oat01-plan", subscription: "anthropic_claude_code" } };
   const contextManagement = { edits: [{ type: "clear_tool_uses_20250919" }] };

@@ -106,9 +106,9 @@ function appendAnthropicMessage(
     });
     return;
   }
-  if (!Array.isArray(value) || value.length === 0) {
+  if (!Array.isArray(value)) {
     throw invalidRequest(
-      `messages[${messageIndex}].content must be a string or a non-empty array.`,
+      `messages[${messageIndex}].content must be a string or an array.`,
       `messages.${messageIndex}.content`
     );
   }

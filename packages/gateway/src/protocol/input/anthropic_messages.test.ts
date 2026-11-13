@@ -172,6 +172,20 @@ test("Anthropic Messages ingress preserves Claude Code interactive system messag
   ]);
 });
 
+test("Anthropic Messages ingress accepts an empty content array, as Anthropic does after Claude Code compaction", () => {
+  const request = anthropicMessagesToInteraction({
+    model: "dari/routing",
+    max_tokens: 4096,
+    messages: [
+      { role: "user", content: "Summary of the earlier conversation." },
+      { role: "assistant", content: [] },
+      { role: "user", content: "Continue." },
+    ],
+  });
+
+  expect(request.items.map((item) => item.type === "message" && item.role)).toEqual(["user", "user"]);
+});
+
 test("Anthropic Messages ingress preserves an explicit thinking budget", () => {
   const request = anthropicMessagesToInteraction({
     model: "dari/routing",

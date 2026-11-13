@@ -13,7 +13,14 @@ import {
   type OAuthFetch,
   type SubscriptionProvider,
 } from "./oauth.js";
-import { isHeld, type SubscriptionCredential, type SubscriptionStore, currentUsage } from "./store.js";
+import { canonicalModelName } from "../../models/canonical.js";
+import {
+  activeModelHolds,
+  currentUsage,
+  isHeld,
+  type SubscriptionCredential,
+  type SubscriptionStore,
+} from "./store.js";
 
 export type SubscriptionHttpDeps = {
   store: SubscriptionStore;
@@ -188,6 +195,13 @@ function credentialBody(credential: SubscriptionCredential, active: boolean, now
     last_used_at: credential.lastUsedAt?.toISOString() ?? null,
     unavailable_until: held ? credential.unavailableUntil!.toISOString() : null,
     unavailable_reason: held ? credential.unavailableReason : null,
+    // Models at their own usage limit; the plan still serves the others.
+    model_holds: activeModelHolds(credential, now).map((hold) => ({
+      model: hold.model,
+      display_name: canonicalModelName(hold.model),
+      unavailable_until: hold.until.toISOString(),
+      reason: hold.reason,
+    })),
     subscription_active: active,
     // The share of its tightest window the plan last reported used, while
     // that window has not reset; null when it reports none.

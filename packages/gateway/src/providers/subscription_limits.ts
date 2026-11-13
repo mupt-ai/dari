@@ -10,8 +10,12 @@ export type SubscriptionUsageLimit = {
   oauthProvider: SubscriptionOAuthProvider;
   resetsAt: Date;
   reason: string;
-  // The platform made the user's next subscription active, so a retry
-  // succeeds on it.
+  // Set when only this model is at its own limit (such as a weekly cap on one
+  // model family): the plan still serves the router's other models.
+  model?: string;
+  // A retry is served: the platform made the user's next subscription active,
+  // or, for a model limit, held only that model so the router's other models
+  // serve.
   switched?: boolean;
 };
 
@@ -131,6 +135,8 @@ export function subscriptionOAuthProviderFor(
 export function detectSubscriptionUsageLimit(args: {
   provider: string;
   keySource: ProviderKeySource;
+  // The routed model, named on a limit that covers only it.
+  model: string;
   captured: CapturedProviderResponse | undefined;
   failure: Record<string, unknown>;
   now?: Date;
@@ -139,14 +145,21 @@ export function detectSubscriptionUsageLimit(args: {
   if (oauthProvider === null) return null;
   const now = args.now ?? new Date();
   if (oauthProvider === "anthropic_claude_code") {
-    return anthropicUsageLimit(args.captured, now);
+    return anthropicUsageLimit(args.captured, args.model, now);
   }
   if (oauthProvider === "meta_muse") return museUsageLimit(args.captured, now);
-  return codexUsageLimit(args.captured, providerFailureMessage(args.failure), now);
+  return codexUsageLimit(args.captured, providerFailureMessage(args.failure), args.model, now);
 }
+
+// Claude Code plans also cap some model families on their own
+// (`seven_day_opus`, `seven_day_sonnet`). The representative claim names the
+// window that refused, and `-fallback: available` says another model can still
+// serve; either way the rest of the plan is not exhausted.
+const ANTHROPIC_MODEL_CLAIM = /^(?:five_hour|seven_day)_(?:opus|sonnet|haiku|fable|mythos)(?:_|$)/;
 
 function anthropicUsageLimit(
   captured: CapturedProviderResponse | undefined,
+  model: string,
   now: Date,
 ): SubscriptionUsageLimit | null {
   if (captured === undefined || captured.status !== 429) return null;
@@ -158,10 +171,15 @@ function anthropicUsageLimit(
     return null;
   }
   const claim = captured.headers.get("anthropic-ratelimit-unified-representative-claim");
+  const modelLimit = (claim !== null && ANTHROPIC_MODEL_CLAIM.test(claim))
+    || captured.headers.get("anthropic-ratelimit-unified-fallback") === "available";
   return {
     oauthProvider: "anthropic_claude_code",
     resetsAt: resetFromUnixSeconds(captured.headers.get("anthropic-ratelimit-unified-reset"), now),
-    reason: claim ? `Claude Code ${claim.replaceAll("_", " ")} usage limit reached.` : "Claude Code usage limit reached.",
+    reason: claim
+      ? `Claude Code ${claim.replaceAll("_", " ")} usage limit reached.`
+      : modelLimit ? `Claude Code usage limit for ${model} reached.` : "Claude Code usage limit reached.",
+    ...(modelLimit ? { model } : {}),
   };
 }
 
@@ -171,6 +189,7 @@ const CODEX_LIMIT_MESSAGE = /usage_limit_reached|usage_not_included|hit your Cha
 function codexUsageLimit(
   captured: CapturedProviderResponse | undefined,
   failureMessage: string,
+  model: string,
   now: Date,
 ): SubscriptionUsageLimit | null {
   if (captured !== undefined && captured.status === 429) {
@@ -178,11 +197,10 @@ function codexUsageLimit(
     const code = typeof error?.code === "string" ? error.code : "";
     if (error !== null && (CODEX_LIMIT_CODES.has(code) || failureMessage.match(CODEX_LIMIT_MESSAGE))) {
       const plan = typeof error.plan_type === "string" ? ` (${error.plan_type.toLowerCase()} plan)` : "";
-      return {
-        oauthProvider: "openai_codex",
-        resetsAt: laterReset(error.resets_at, captured.headers, now),
-        reason: `ChatGPT usage limit reached${plan}.`,
-      };
+      const resetsAt = laterReset(error.resets_at, captured.headers, now);
+      return codexModelLimitExhausted(captured.headers)
+        ? { oauthProvider: "openai_codex", resetsAt, reason: `ChatGPT usage limit for ${model} reached${plan}.`, model }
+        : { oauthProvider: "openai_codex", resetsAt, reason: `ChatGPT usage limit reached${plan}.` };
     }
     return null;
   }
@@ -192,6 +210,21 @@ function codexUsageLimit(
     resetsAt: new Date(now.getTime() + DEFAULT_USAGE_LIMIT_WINDOW_MS),
     reason: "ChatGPT usage limit reached.",
   };
+}
+
+// The ChatGPT backend reports each limit as its own header family,
+// `x-<limit>-primary-used-percent`, the plan's own being `x-codex-*`. A refusal
+// while only another family is spent is that model's own cap.
+function codexModelLimitExhausted(headers: Headers): boolean {
+  let plan = false;
+  let other = false;
+  headers.forEach((value, name) => {
+    const family = /^x-(.+)-(?:primary|secondary)-used-percent$/.exec(name.toLowerCase())?.[1];
+    if (family === undefined || !(Number(value) >= 100)) return;
+    if (family === "codex") plan = true;
+    else other = true;
+  });
+  return other && !plan;
 }
 
 function museUsageLimit(
@@ -262,6 +295,7 @@ export function failureWithSubscriptionUsageLimit(
       oauth_provider: limit.oauthProvider,
       resets_at: limit.resetsAt.toISOString(),
       reason: limit.reason,
+      ...(limit.model !== undefined ? { model: limit.model } : {}),
       ...(limit.switched === true ? { switched: true } : {}),
     },
   };
@@ -284,6 +318,7 @@ export function subscriptionUsageLimitFromFailure(
     oauthProvider: oauthProvider as SubscriptionOAuthProvider,
     resetsAt,
     reason: typeof marker.reason === "string" ? marker.reason : "Subscription usage limit reached.",
+    ...(typeof marker.model === "string" ? { model: marker.model } : {}),
     ...(marker.switched === true ? { switched: true } : {}),
   };
 }
@@ -295,7 +330,8 @@ export function subscriptionUsageLimitFromFailure(
  */
 export function subscriptionUsageLimitMessage(limit: SubscriptionUsageLimit, accountsUrl?: string): string {
   const label = SUBSCRIPTION_LABEL[limit.oauthProvider];
-  const reached = `Your ${label} subscription usage limit is reached. It resets at ${limit.resetsAt.toISOString()}. `;
+  const scope = limit.model === undefined ? "" : ` for ${limit.model}`;
+  const reached = `Your ${label} subscription usage limit${scope} is reached. It resets at ${limit.resetsAt.toISOString()}. `;
   if (accountsUrl === undefined) {
     return reached
       + `To keep going now, add another ${label} subscription or mark this one available early with \`dari accounts\`.`;
@@ -317,7 +353,8 @@ export function codexUsageLimitError(limit: SubscriptionUsageLimit, accountsUrl?
   body: Record<string, unknown>;
   headers: Record<string, string>;
 } | null {
-  if (limit.oauthProvider !== "openai_codex") return null;
+  // Codex would show a per-model limit as the whole plan's.
+  if (limit.oauthProvider !== "openai_codex" || limit.model !== undefined) return null;
   const promo = accountsUrl === undefined
     ? "Add another ChatGPT subscription with `dari accounts`"
     : `Add another ChatGPT subscription at ${accountsUrl}?buy=openai_codex`;
@@ -329,6 +366,10 @@ export function codexUsageLimitError(limit: SubscriptionUsageLimit, accountsUrl?
 
 export function subscriptionSwitchedMessage(limit: SubscriptionUsageLimit): string {
   const label = SUBSCRIPTION_LABEL[limit.oauthProvider];
+  if (limit.model !== undefined) {
+    return `Your ${label} subscription usage limit for ${limit.model} is reached; it resets at `
+      + `${limit.resetsAt.toISOString()}. Dari routes to other models until then; retry the request.`;
+  }
   return `Your ${label} subscription usage limit is reached. `
     + `Dari switched to your next connected ${label} subscription; retry the request.`;
 }

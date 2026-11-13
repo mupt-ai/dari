@@ -17,13 +17,20 @@ const NOW = new Date("2026-09-19T12:00:00Z");
 const RESET_SECONDS = Math.floor(NOW.getTime() / 1000) + 3600 * 3;
 const FAILURE = { stopReason: "error", errorMessage: "429 rate limit" };
 
+const MODEL = "anthropic/claude-fable-5";
+
+// Every case but the per-model ones routes the same model.
+function detectLimit(args: Omit<Parameters<typeof detectSubscriptionUsageLimit>[0], "model"> & { model?: string }) {
+  return detectSubscriptionUsageLimit({ model: MODEL, ...args });
+}
+
 function captured(status: number, headers: Record<string, string>, body = ""): CapturedProviderResponse {
   return { status, headers: new Headers(headers), bodyText: body };
 }
 
 describe("detectSubscriptionUsageLimit", () => {
   test("ignores router-owned keys", () => {
-    expect(detectSubscriptionUsageLimit({
+    expect(detectLimit({
       provider: "anthropic",
       keySource: "user",
       captured: captured(429, { "anthropic-ratelimit-unified-status": "rejected" }),
@@ -33,7 +40,7 @@ describe("detectSubscriptionUsageLimit", () => {
   });
 
   test("recognizes a rejected Claude Code unified window with its reset time", () => {
-    const limit = detectSubscriptionUsageLimit({
+    const limit = detectLimit({
       provider: "anthropic",
       keySource: "subscription",
       captured: captured(429, {
@@ -52,14 +59,14 @@ describe("detectSubscriptionUsageLimit", () => {
   });
 
   test("treats an Anthropic 429 without a rejected unified status as transient", () => {
-    expect(detectSubscriptionUsageLimit({
+    expect(detectLimit({
       provider: "anthropic",
       keySource: "subscription",
       captured: captured(429, { "anthropic-ratelimit-unified-status": "allowed" }),
       failure: FAILURE,
       now: NOW,
     })).toBeNull();
-    expect(detectSubscriptionUsageLimit({
+    expect(detectLimit({
       provider: "anthropic",
       keySource: "subscription",
       captured: captured(529, { "anthropic-ratelimit-unified-status": "rejected" }),
@@ -69,7 +76,7 @@ describe("detectSubscriptionUsageLimit", () => {
   });
 
   test("falls back to the default window when Anthropic omits the reset", () => {
-    const limit = detectSubscriptionUsageLimit({
+    const limit = detectLimit({
       provider: "anthropic",
       keySource: "subscription",
       captured: captured(429, { "anthropic-ratelimit-unified-status": "rejected" }),
@@ -80,7 +87,7 @@ describe("detectSubscriptionUsageLimit", () => {
   });
 
   test("recognizes the ChatGPT usage-limit body over SSE", () => {
-    const limit = detectSubscriptionUsageLimit({
+    const limit = detectLimit({
       provider: "openai-codex",
       keySource: "subscription",
       captured: captured(429, {}, JSON.stringify({
@@ -103,7 +110,7 @@ describe("detectSubscriptionUsageLimit", () => {
 
   test("holds a ChatGPT plan until the later of resets_at and Retry-After", () => {
     const limitBody = JSON.stringify({ error: { code: "usage_limit_reached", resets_at: RESET_SECONDS } });
-    const detect = (headers: Record<string, string>) => detectSubscriptionUsageLimit({
+    const detect = (headers: Record<string, string>) => detectLimit({
       provider: "openai-codex",
       keySource: "subscription",
       captured: captured(429, headers, limitBody),
@@ -119,7 +126,7 @@ describe("detectSubscriptionUsageLimit", () => {
     );
     expect(detect({ "retry-after-ms": String(3600 * 4 * 1000) })).toEqual(new Date(NOW.getTime() + 3600 * 4 * 1000));
     // Only Retry-After present.
-    expect(detectSubscriptionUsageLimit({
+    expect(detectLimit({
       provider: "openai-codex",
       keySource: "subscription",
       captured: captured(429, { "retry-after": "120" }, JSON.stringify({ error: { code: "usage_limit_reached" } })),
@@ -129,7 +136,7 @@ describe("detectSubscriptionUsageLimit", () => {
   });
 
   test("ignores a Codex 429 that is not a plan limit", () => {
-    expect(detectSubscriptionUsageLimit({
+    expect(detectLimit({
       provider: "openai-codex",
       keySource: "subscription",
       captured: captured(429, {}, JSON.stringify({ error: { code: "slow_down", message: "Too many requests" } })),
@@ -138,7 +145,7 @@ describe("detectSubscriptionUsageLimit", () => {
     })).toBeNull();
     // A ChatGPT per-minute 429 is transient; holding the subscription would
     // skip a still-valid plan until Mark Available or the default hour.
-    expect(detectSubscriptionUsageLimit({
+    expect(detectLimit({
       provider: "openai-codex",
       keySource: "subscription",
       captured: captured(429, {}, JSON.stringify({ error: { code: "rate_limit_exceeded", message: "Too many requests" } })),
@@ -148,7 +155,7 @@ describe("detectSubscriptionUsageLimit", () => {
   });
 
   test("holds a Muse Code plan on a 429 until Meta's reset, or for the default window", () => {
-    const withReset = detectSubscriptionUsageLimit({
+    const withReset = detectLimit({
       provider: "meta",
       keySource: "subscription",
       captured: captured(429, {}, JSON.stringify({ error: { code: "rate_limit_exceeded", resets_at: RESET_SECONDS } })),
@@ -160,7 +167,7 @@ describe("detectSubscriptionUsageLimit", () => {
       resetsAt: new Date(RESET_SECONDS * 1000),
       reason: "Muse Code usage limit reached.",
     });
-    const retryAfter = detectSubscriptionUsageLimit({
+    const retryAfter = detectLimit({
       provider: "meta",
       keySource: "subscription",
       captured: captured(429, { "retry-after": "120" }, "{}"),
@@ -168,7 +175,7 @@ describe("detectSubscriptionUsageLimit", () => {
       now: NOW,
     });
     expect(retryAfter?.resetsAt).toEqual(new Date(NOW.getTime() + 120_000));
-    const bare = detectSubscriptionUsageLimit({
+    const bare = detectLimit({
       provider: "meta",
       keySource: "subscription",
       captured: captured(429, {}, "not json"),
@@ -182,7 +189,7 @@ describe("detectSubscriptionUsageLimit", () => {
 
   test("a Meta API key or a non-429 failure is not a plan limit", () => {
     for (const [keySource, status] of [["user", 429], ["subscription", 500]] as const) {
-      expect(detectSubscriptionUsageLimit({
+      expect(detectLimit({
         provider: "meta",
         keySource,
         captured: captured(status, {}, "{}"),
@@ -193,7 +200,7 @@ describe("detectSubscriptionUsageLimit", () => {
   });
 
   test("recognizes the Codex WebSocket usage-limit error from its message alone", () => {
-    const limit = detectSubscriptionUsageLimit({
+    const limit = detectLimit({
       provider: "openai-codex",
       keySource: "subscription",
       captured: undefined,
@@ -208,7 +215,7 @@ describe("detectSubscriptionUsageLimit", () => {
   });
 
   test("recognizes the production Codex 502 message after stream normalization", () => {
-    const limit = detectSubscriptionUsageLimit({
+    const limit = detectLimit({
       provider: "openai-codex",
       keySource: "subscription",
       captured: captured(502, {}, "Bad Gateway"),
@@ -224,6 +231,89 @@ describe("detectSubscriptionUsageLimit", () => {
       resetsAt: new Date(NOW.getTime() + DEFAULT_USAGE_LIMIT_WINDOW_MS),
       reason: "ChatGPT usage limit reached.",
     });
+  });
+});
+
+// A plan can cap one model family on its own; only that model leaves routing.
+describe("per-model usage limits", () => {
+  const anthropic = (headers: Record<string, string>) => detectLimit({
+    provider: "anthropic",
+    keySource: "subscription",
+    captured: captured(429, {
+      "anthropic-ratelimit-unified-status": "rejected",
+      "anthropic-ratelimit-unified-reset": String(RESET_SECONDS),
+      ...headers,
+    }),
+    failure: FAILURE,
+    now: NOW,
+  });
+
+  test("a Claude Code model-family window holds only the routed model", () => {
+    expect(anthropic({ "anthropic-ratelimit-unified-representative-claim": "seven_day_opus" })).toEqual({
+      oauthProvider: "anthropic_claude_code",
+      resetsAt: new Date(RESET_SECONDS * 1000),
+      reason: "Claude Code seven day opus usage limit reached.",
+      model: MODEL,
+    });
+    expect(anthropic({ "anthropic-ratelimit-unified-representative-claim": "seven_day_fable" })?.model).toBe(MODEL);
+    // The limiter offering a fallback model means the plan itself has room.
+    expect(anthropic({ "anthropic-ratelimit-unified-fallback": "available" })).toMatchObject({
+      model: MODEL,
+      reason: `Claude Code usage limit for ${MODEL} reached.`,
+    });
+  });
+
+  test("plan-wide Claude Code windows still hold the whole plan", () => {
+    for (const claim of ["five_hour", "seven_day", "seven_day_overage_included", "seven_day_oauth_apps"]) {
+      expect(anthropic({ "anthropic-ratelimit-unified-representative-claim": claim })?.model).toBeUndefined();
+    }
+  });
+
+  test("a ChatGPT refusal with only another limit family spent holds only the routed model", () => {
+    const body = JSON.stringify({ error: { code: "usage_limit_reached", resets_at: RESET_SECONDS } });
+    const codex = (headers: Record<string, string>) => detectLimit({
+      provider: "openai-codex",
+      keySource: "subscription",
+      model: "openai/gpt-5.3-codex-spark",
+      captured: captured(429, headers, body),
+      failure: FAILURE,
+      now: NOW,
+    });
+    expect(codex({
+      "x-codex-primary-used-percent": "40",
+      "x-codex-bengalfox-primary-used-percent": "100",
+    })).toEqual({
+      oauthProvider: "openai_codex",
+      resetsAt: new Date(RESET_SECONDS * 1000),
+      reason: "ChatGPT usage limit for openai/gpt-5.3-codex-spark reached.",
+      model: "openai/gpt-5.3-codex-spark",
+    });
+    // The plan's own family spent is the plan's limit, whatever else is.
+    expect(codex({
+      "x-codex-secondary-used-percent": "100",
+      "x-codex-bengalfox-primary-used-percent": "100",
+    })?.model).toBeUndefined();
+    expect(codex({})?.model).toBeUndefined();
+  });
+
+  test("a model limit tells the client the retry routes elsewhere, not to buy a plan", () => {
+    const limit = {
+      oauthProvider: "openai_codex" as const,
+      resetsAt: new Date(RESET_SECONDS * 1000),
+      reason: "ChatGPT usage limit for openai/gpt-5.3-codex-spark reached.",
+      model: "openai/gpt-5.3-codex-spark",
+      switched: true,
+    };
+    expect(subscriptionUsageLimitFromFailure(failureWithSubscriptionUsageLimit(FAILURE, limit))).toEqual(limit);
+    expect(subscriptionSwitchedMessage(limit)).toBe(
+      "Your ChatGPT subscription usage limit for openai/gpt-5.3-codex-spark is reached; it resets at "
+        + `${limit.resetsAt.toISOString()}. Dari routes to other models until then; retry the request.`,
+    );
+    // Codex would render its own notice as if the whole plan were spent.
+    expect(codexUsageLimitError(limit)).toBeNull();
+    expect(subscriptionUsageLimitMessage(limit)).toStartWith(
+      "Your ChatGPT subscription usage limit for openai/gpt-5.3-codex-spark is reached.",
+    );
   });
 });
 

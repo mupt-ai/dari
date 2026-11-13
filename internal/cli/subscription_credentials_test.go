@@ -40,6 +40,10 @@ func multipleSubscriptionsHandler(t *testing.T, seen map[string]map[string]any) 
 				map[string]any{
 					"name": "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN", "credential_scope": "user",
 					"oauth_provider": "anthropic_claude_code", "created_at": "2026-10-01T00:00:00Z", "subscription_active": true,
+					"model_holds": []any{
+						map[string]any{"model": "anthropic/claude-fable-5", "unavailable_until": "2099-10-16T12:00:00Z", "reason": "Claude Code seven day opus usage limit reached."},
+						map[string]any{"model": "anthropic/claude-opus-5", "unavailable_until": "2020-10-16T12:00:00Z", "reason": "Claude Code seven day opus usage limit reached."},
+					},
 				},
 				map[string]any{
 					"name": "META_MUSE_OAUTH_TOKEN", "credential_scope": "user", "oauth_provider": "meta_muse",
@@ -81,7 +85,8 @@ func TestSubscriptionListShowsConnectionOrderWithActiveAndHeld(t *testing.T) {
 	var listed struct {
 		Subscriptions []struct {
 			Name, Provider, Status string
-			AccountEmail           *string `json:"account_email"`
+			AccountEmail           *string                 `json:"account_email"`
+			ModelHolds             []subscriptionModelHold `json:"model_holds"`
 		} `json:"subscriptions"`
 	}
 	if err := json.Unmarshal(output, &listed); err != nil {
@@ -103,6 +108,13 @@ func TestSubscriptionListShowsConnectionOrderWithActiveAndHeld(t *testing.T) {
 	}
 	if email := listed.Subscriptions[3].AccountEmail; email == nil || *email != "second@example.test" {
 		t.Fatalf("account_email = %v", email)
+	}
+	// A model at its own limit leaves the plan active; a reset hold is gone.
+	if holds := listed.Subscriptions[0].ModelHolds; len(holds) != 1 || holds[0].Model != "anthropic/claude-fable-5" {
+		t.Fatalf("model_holds = %+v", holds)
+	}
+	if holds := listed.Subscriptions[2].ModelHolds; holds == nil || len(holds) != 0 {
+		t.Fatalf("held plan model_holds = %+v, want empty", holds)
 	}
 }
 

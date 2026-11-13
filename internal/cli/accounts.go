@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -146,14 +148,18 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 			}
 			keys = agentAPIKeys(listedKeys.Credentials)
 		}
-		lines := agentAccountLines(subscriptions, keys, len(page.providers) > 1)
+		keyNames := []string{}
+		for _, provider := range slices.Sorted(maps.Keys(keys)) {
+			keyNames = append(keyNames, cmp.Or(keys[provider].Label, keys[provider].Name, provider))
+		}
 		if page.local() {
 			for _, key := range localProviderKeys {
 				if page.gw.settings.ProviderKeys[key.env] != "" {
-					lines = slices.Insert(lines, len(lines)-1, "  "+key.name+"  "+ansiGray+"API key"+ansiReset)
+					keyNames = append(keyNames, key.name)
 				}
 			}
 		}
+		lines := agentAccountLines(subscriptions, keyNames, len(page.providers) > 1)
 		connected := len(subscriptions) > 0 || len(keys) > 0
 
 		options := []agentChoiceOption{}
@@ -315,7 +321,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 	add("Reconnect", func() error {
 		return connectAgentPersonalSubscription(ctx, provider, page.client, stdin, stderr, subscription.Name)
 	})
-	if subscriptionStatus(subscription) == "held" {
+	if subscriptionStatus(subscription) == "held" || len(activeModelHolds(subscription, time.Now())) > 0 {
 		add("Mark available", func() error {
 			var updated map[string]any
 			return api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
@@ -339,7 +345,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 		return api.HumanError(page.client.Do(ctx, http.MethodDelete, path+"?scope=user", nil, nil))
 	})
 	options = append(options, agentChoiceOption{label: "Back"})
-	choice, err := runAgentChoiceTUI(stdin, stderr, name, agentSubscriptionLines([]subscriptionCredential{subscription}, true), options)
+	choice, err := runAgentChoiceTUI(stdin, stderr, name, append(subscriptionLines(subscription, true), ""), options)
 	if err != nil || choice == len(actions) {
 		return err
 	}
@@ -403,24 +409,28 @@ func subscriptionName(subscription subscriptionCredential) string {
 	return subscription.Name
 }
 
-// subscriptionDetails is a subscription's plan, how much of each quota
-// window is used, and its renewal, when the provider reports them. A window
-// at its limit says so; the others still show their headroom.
+const usageLimitReached = "Limit reached"
+
+// subscriptionDetails is one line each for how much of each quota window is
+// used, each model at its own limit, and the plan's renewal, when the
+// provider reports them. A window at its limit says so; the others still
+// show their headroom.
 func subscriptionDetails(subscription subscriptionCredential) []string {
 	details := []string{}
-	if plan := subscription.SafeMetadata["plan"]; plan != "" {
-		details = append(details, plan)
-	}
 	for _, window := range subscriptionUsageWindows(subscription, time.Now()) {
 		resets, _ := time.Parse(time.RFC3339Nano, window.ResetsAt)
 		usage := fmt.Sprintf("%.0f%% used", window.Utilization*100)
 		if window.Utilization >= 1 {
-			usage = "limit reached"
+			usage = usageLimitReached
 		}
-		details = append(details, fmt.Sprintf("%s %s, resets %s", usageWindowLabel(window.Minutes), usage, usageResetTime(resets)))
+		details = append(details, usageWindowLabel(window.Minutes)+" · "+usage+" · Resets "+usageResetTime(resets))
+	}
+	for _, hold := range activeModelHolds(subscription, time.Now()) {
+		resets, _ := time.Parse(time.RFC3339Nano, hold.UnavailableUntil)
+		details = append(details, cmp.Or(hold.DisplayName, hold.Model)+" · "+usageLimitReached+" · Resets "+usageResetTime(resets))
 	}
 	if renews, err := time.Parse(time.RFC3339, subscription.SafeMetadata["renews_at"]); err == nil && renews.After(time.Now()) {
-		details = append(details, "renews "+renews.Local().Format("Jan 2"))
+		details = append(details, "Renews "+renews.Local().Format("Jan 2"))
 	}
 	return details
 }
@@ -487,11 +497,11 @@ func subscriptionUsageWindows(subscription subscriptionCredential, now time.Time
 	return limited
 }
 
-// usageWindowLabel names a quota window by its length: 5h, weekly, 30d.
+// usageWindowLabel names a quota window by its length: 5h, Weekly, 30d.
 func usageWindowLabel(minutes int) string {
 	switch {
 	case minutes == 7*24*60:
-		return "weekly"
+		return "Weekly"
 	case minutes%(24*60) == 0:
 		return fmt.Sprintf("%dd", minutes/(24*60))
 	case minutes%60 == 0:

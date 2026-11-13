@@ -44,9 +44,12 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
         apiKey: await freshAccessToken(deps.subscriptions, next, { fetch: deps.fetch }),
       };
     },
-    markSubscriptionUnavailable: async (hold) =>
-      hold.credentialId !== undefined &&
-      deps.subscriptions.markUnavailable(hold.credentialId, hold.limit.resetsAt, hold.limit.reason),
+    async markSubscriptionUnavailable({ credentialId, limit }) {
+      if (credentialId === undefined) return false;
+      return limit.model === undefined
+        ? deps.subscriptions.markUnavailable(credentialId, limit.resetsAt, limit.reason)
+        : deps.subscriptions.holdModel(credentialId, limit.model, limit.resetsAt, limit.reason);
+    },
     async recordUsage() {
       // Resolution never reports a "managed" key source here.
       throw new Error("The self-hosted gateway has no managed provider keys to account.");

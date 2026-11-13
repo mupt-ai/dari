@@ -17,7 +17,8 @@
  * `store.ts` for how usage, resets, and conversations decide it. Successful
  * responses report usage through `store.recordUsage`. When a provider reports a usage limit,
  * `store.markUnavailable` holds that subscription until its reset and says
- * whether another one can serve the retry.
+ * whether another one can serve the retry; a limit on one model only
+ * (`store.holdModel`) holds that model, and routing serves the others.
  */
 export { freshAccessToken } from "./access.js";
 export { handleSubscriptionRequest, type SubscriptionHttpDeps } from "./http.js";
@@ -38,7 +39,9 @@ export {
 } from "./oauth.js";
 export {
   SubscriptionStore,
+  activeModelHolds,
   isHeld,
   type PendingOAuthSession,
   type SubscriptionCredential,
+  type SubscriptionModelHold,
 } from "./store.js";

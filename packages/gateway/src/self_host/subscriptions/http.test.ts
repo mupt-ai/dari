@@ -20,6 +20,7 @@ const CLI_CREDENTIAL_FIELDS = [
   "last_used_at",
   "unavailable_until",
   "unavailable_reason",
+  "model_holds",
   "subscription_active",
   "usage",
   "auto_redeem_resets",
@@ -87,6 +88,7 @@ describe("connecting", () => {
         last_used_at: null,
         unavailable_until: null,
         unavailable_reason: null,
+        model_holds: [],
         subscription_active: true,
         usage: null,
         auto_redeem_resets: false,
@@ -165,8 +167,9 @@ describe("managing", () => {
     const g = gateway([claudeToken("one@example.com"), claudeToken("two@example.com")]);
     await connectClaude(g);
     await connectClaude(g);
-    const [first] = g.store.list();
+    const [first, second] = g.store.list();
     g.store.markUnavailable(first!.id, new Date("2026-10-20T17:00:00Z"), "usage_limit", now);
+    g.store.holdModel(second!.id, "anthropic/claude-fable-5", new Date("2026-10-21T12:00:00Z"), "seven day fable", now);
 
     const listed = await g.call("GET", "");
     expect(listed!.status).toBe(200);
@@ -178,6 +181,14 @@ describe("managing", () => {
     expect(listed!.body.credentials.map((c: any) => [c.name, c.subscription_active, c.unavailable_until])).toEqual([
       ["ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN", false, "2026-10-20T17:00:00.000Z"],
       ["ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN_2", true, null],
+    ]);
+    expect(listed!.body.credentials[1].model_holds).toEqual([
+      {
+        model: "anthropic/claude-fable-5",
+        display_name: "Claude Fable 5",
+        unavailable_until: "2026-10-21T12:00:00.000Z",
+        reason: "seven day fable",
+      },
     ]);
   });
 

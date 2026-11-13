@@ -19,7 +19,8 @@
  *   used last.
  * - When every subscription is past the threshold, the least used serves.
  * A hold ends on its own once `unavailable_until` passes; reported usage
- * stops counting once its window resets.
+ * stops counting once its window resets. A model hold (one model at its own
+ * limit) leaves the subscription serving its other models.
  */
 import type { Database } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -48,12 +49,20 @@ export type SubscriptionCredential = {
   expiresAt: Date;
   unavailableUntil: Date | null;
   unavailableReason: string | null;
+  // Models at their own usage limit on this plan, including expired holds.
+  modelHolds: SubscriptionModelHold[];
   // The last usage a response reported, and when.
   usage: (SubscriptionUsage & { observedAt: Date }) | null;
   position: number;
   createdAt: Date;
   updatedAt: Date;
   lastUsedAt: Date | null;
+};
+
+export type SubscriptionModelHold = {
+  model: string;
+  until: Date;
+  reason: string;
 };
 
 export type PendingOAuthSession = {
@@ -87,19 +96,21 @@ type CredentialRow = {
   usage_resets_at: number | null;
   usage_observed_at: number | null;
   usage_windows: string | null;
+  model_holds: string | null;
   position: number;
   created_at: number;
   updated_at: number;
   last_used_at: number | null;
 };
 
-// Usage columns added after the table first shipped; existing databases gain
-// them on open.
-const USAGE_COLUMNS = {
+// Columns added after the table first shipped; existing databases gain them
+// on open.
+const ADDED_COLUMNS = {
   usage_utilization: "REAL",
   usage_resets_at: "INTEGER",
   usage_observed_at: "INTEGER",
   usage_windows: "TEXT",
+  model_holds: "TEXT",
 } as const;
 
 type SessionRow = {
@@ -128,6 +139,7 @@ export class SubscriptionStore {
       usage_resets_at INTEGER,
       usage_observed_at INTEGER,
       usage_windows TEXT,
+      model_holds TEXT,
       position INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -136,7 +148,7 @@ export class SubscriptionStore {
     const columns = new Set(
       db.query<{ name: string }, []>("PRAGMA table_info(subscription_credentials)").all().map((column) => column.name),
     );
-    for (const [column, type] of Object.entries(USAGE_COLUMNS)) {
+    for (const [column, type] of Object.entries(ADDED_COLUMNS)) {
       if (!columns.has(column)) db.run(`ALTER TABLE subscription_credentials ADD COLUMN ${column} ${type}`);
     }
     db.run(`CREATE TABLE IF NOT EXISTS subscription_conversation_pins (
@@ -266,14 +278,15 @@ export class SubscriptionStore {
 
       if (existing !== null) {
         // Another (or an unidentified) account must not inherit the previous
-        // account's hold, reported usage, or conversations (whose cache is
+        // account's holds, reported usage, or conversations (whose cache is
         // the previous account's).
         const sameAccount = tokens.accountEmail !== null && tokens.accountEmail === existing.accountEmail;
         const usage = sameAccount ? existing.usage : null;
         this.db.run(
           `UPDATE subscription_credentials SET access_token = ?, refresh_token = ?, expires_at = ?,
              account_id = ?, account_email = ?, unavailable_until = ?, unavailable_reason = ?,
-             usage_utilization = ?, usage_resets_at = ?, usage_observed_at = ?, usage_windows = ?, updated_at = ?
+             usage_utilization = ?, usage_resets_at = ?, usage_observed_at = ?, usage_windows = ?, model_holds = ?,
+             updated_at = ?
            WHERE id = ?`,
           [
             tokens.accessToken,
@@ -287,6 +300,7 @@ export class SubscriptionStore {
             usage?.resetsAt.getTime() ?? null,
             usage?.observedAt.getTime() ?? null,
             usage === null ? null : windowsJson(usage),
+            sameAccount ? modelHoldsJson(existing.modelHolds) : null,
             now.getTime(),
             existing.id,
           ],
@@ -378,12 +392,34 @@ export class SubscriptionStore {
     return this.activeCredential(credential.provider, now) !== null;
   }
 
-  /** Clear a usage-limit hold. Null when the subscription is not connected. */
+  /**
+   * Hold one model at its own usage limit on a subscription, which keeps
+   * serving its other models. A hold only grows, like the plan's. Returns
+   * whether the subscription is connected.
+   */
+  holdModel(id: string, model: string, until: Date, reason: string, now = new Date()): boolean {
+    const credential = this.get(id);
+    if (credential === null) return false;
+    const current = activeModelHolds(credential, now);
+    const existing = current.find((hold) => hold.model === model);
+    if (existing === undefined || until > existing.until) {
+      const holds = [...current.filter((hold) => hold.model !== model), { model, until, reason }];
+      this.db.run("UPDATE subscription_credentials SET model_holds = ?, updated_at = ? WHERE id = ?", [
+        modelHoldsJson(holds),
+        now.getTime(),
+        id,
+      ]);
+    }
+    return true;
+  }
+
+  /** Clear a subscription's usage-limit holds. Null when it is not connected. */
   markAvailable(name: string, now = new Date()): SubscriptionCredential | null {
     const credential = this.getByName(name);
     if (credential === null) return null;
     this.db.run(
-      "UPDATE subscription_credentials SET unavailable_until = NULL, unavailable_reason = NULL, updated_at = ? WHERE id = ?",
+      `UPDATE subscription_credentials SET unavailable_until = NULL, unavailable_reason = NULL, model_holds = NULL,
+         updated_at = ? WHERE id = ?`,
       [now.getTime(), credential.id],
     );
     return this.get(credential.id);
@@ -430,6 +466,13 @@ export class SubscriptionStore {
 
 export function isHeld(credential: SubscriptionCredential, now: Date): boolean {
   return credential.unavailableUntil !== null && credential.unavailableUntil > now;
+}
+
+/** The models held at their own limit on a subscription now, by model. */
+export function activeModelHolds(credential: SubscriptionCredential, now: Date): SubscriptionModelHold[] {
+  return credential.modelHolds
+    .filter((hold) => hold.until > now)
+    .sort((a, b) => a.model.localeCompare(b.model));
 }
 
 /** The usage a subscription last reported, while its window has not reset. */
@@ -512,6 +555,7 @@ function credentialFromRow(row: CredentialRow): SubscriptionCredential {
         observedAt: new Date(row.usage_observed_at),
         windows: parseWindows(row.usage_windows),
       },
+    modelHolds: parseModelHolds(row.model_holds),
     position: row.position,
     createdAt: new Date(row.created_at),
     updatedAt: new Date(row.updated_at),
@@ -521,6 +565,17 @@ function credentialFromRow(row: CredentialRow): SubscriptionCredential {
 
 function windowsJson(usage: SubscriptionUsage): string {
   return JSON.stringify(usage.windows.map((window) => ({ ...window, resetsAt: window.resetsAt.getTime() })));
+}
+
+function modelHoldsJson(holds: SubscriptionModelHold[]): string | null {
+  if (holds.length === 0) return null;
+  return JSON.stringify(holds.map((hold) => ({ ...hold, until: hold.until.getTime() })));
+}
+
+function parseModelHolds(value: string | null): SubscriptionModelHold[] {
+  if (value === null) return [];
+  return (JSON.parse(value) as Array<{ model: string; until: number; reason: string }>)
+    .map((hold) => ({ ...hold, until: new Date(hold.until) }));
 }
 
 // Rows recorded before windows were stored have none.

@@ -49,7 +49,7 @@ import {
 import type { NextSubscription } from "../platform/platform.js";
 import { providerResponseCaptureFromError, type ProviderResponseCapture } from "./response_capture.js";
 import { createStreamFinalizer } from "./stream_finalization.js";
-import { readCodexUsage } from "./codex_usage.js";
+import { readCodexModelLimitReset, readCodexUsage } from "./codex_usage.js";
 import {
   detectSubscriptionUsageLimit,
   codexUsageLimitError,
@@ -60,6 +60,7 @@ import {
   subscriptionUsageLimitFromFailure,
   subscriptionSwitchedMessage,
   subscriptionUsageLimitMessage,
+  type SubscriptionUsageLimit,
 } from "./subscription_limits.js";
 
 export type ProviderChoice = {
@@ -718,14 +719,16 @@ async function providerFailedAttempt(
   execution: ProviderExecution,
   responseCapture: ProviderResponseCapture | undefined,
 ): Promise<ProviderAttemptFailure> {
-  const limit = detectSubscriptionUsageLimit({
+  const detected = detectSubscriptionUsageLimit({
     provider: execution.provider,
     keySource: execution.providerKeySource,
+    model: execution.model,
     captured: responseCapture?.last,
     failure: message,
   });
-  if (limit === null) {
+  if (detected === null) {
     const status = responseCapture?.last?.status;
+    if (execution.providerKeySource === "subscription") logUnclassifiedRefusal(execution, responseCapture);
     // The customer's own key was refused: theirs to fix, not a gateway fault.
     const rejected = execution.providerKeySource === "user" && (status === 401 || status === 403);
     return {
@@ -737,10 +740,15 @@ async function providerFailedAttempt(
       retryable: !isPromptPolicyRejection(message),
     };
   }
+  const limit = detected.oauthProvider === "openai_codex" && detected.model === undefined
+      && execution.subscriptionUserId !== undefined
+    ? await withCodexModelLimit(detected, execution)
+    : detected;
   // Retrying an exhausted plan cannot succeed. The platform learns about it
   // before this request returns so the next resolve already serves the
   // user's next subscription, or the model's API credential when the router
-  // allows subscription API fallback for it.
+  // allows subscription API fallback for it. A limit on one model holds only
+  // that model, and the next resolve routes to the others.
   const switched = execution.subscriptionUserId !== undefined
     && await holdSubscription({
       userId: execution.subscriptionUserId,
@@ -748,8 +756,9 @@ async function providerFailedAttempt(
       limit,
     });
   // Nothing reached the client yet, so the same request is retried on the
-  // next plan at once when the platform names it.
-  const nextSubscription = switched
+  // next plan at once when the platform names it. The same plan still serves
+  // after a model limit, so there is no next plan to retry on.
+  const nextSubscription = switched && limit.model === undefined
     ? await nextSubscriptionFor(execution)
     : undefined;
   return {
@@ -806,6 +815,49 @@ function usageHasTokens(usage: unknown): boolean {
     const value = counts[key];
     return typeof value === "number" && Number.isFinite(value) && value > 0;
   });
+}
+
+// Codex's WebSocket transport carries no headers, and a refusal over HTTP may
+// carry none of the per-limit families, so the usage report tells whether the
+// plan or only this model's own cap is spent. Unknown keeps the plan hold.
+async function withCodexModelLimit(
+  limit: SubscriptionUsageLimit,
+  execution: ProviderExecution,
+): Promise<SubscriptionUsageLimit> {
+  try {
+    const resetsAt = await readCodexModelLimitReset({
+      accessToken: execution.apiKey,
+      baseUrl: execution.endpoint?.baseUrl ?? execution.config?.base_url ?? undefined,
+    });
+    if (resetsAt === null) return limit;
+    return { ...limit, model: execution.model, resetsAt, reason: `ChatGPT usage limit for ${execution.model} reached.` };
+  } catch (error) {
+    console.error("codex usage report for a usage limit failed", error);
+    return limit;
+  }
+}
+
+// A subscription refusal no rule recognizes may be a usage limit in a shape
+// not seen yet (a new per-model cap). Log what identifies one, never content.
+function logUnclassifiedRefusal(
+  execution: ProviderExecution,
+  responseCapture: ProviderResponseCapture | undefined,
+): void {
+  const captured = responseCapture?.last;
+  if (captured === undefined || (captured.status !== 403 && captured.status !== 429)) return;
+  // Claude Code's per-minute limit, a known transient refusal.
+  if (captured.headers.get("anthropic-ratelimit-unified-status")?.startsWith("allowed")) return;
+  const headers: Record<string, string> = {};
+  captured.headers.forEach((value, name) => {
+    if (/ratelimit|rate-limit|used-percent|reset|retry-after|limit-name/i.test(name)) headers[name] = value;
+  });
+  console.warn("unclassified subscription refusal", JSON.stringify({
+    provider: execution.provider,
+    model: execution.model,
+    status: captured.status,
+    headers,
+    body: captured.bodyText.slice(0, 500),
+  }));
 }
 
 function isPromptPolicyRejection(message: Record<string, unknown>): boolean {

@@ -270,22 +270,49 @@ func TestMuseCodeSubscriptionRetriesWhileMetaApprovalIsPending(t *testing.T) {
 	}
 }
 
-func TestAgentSubscriptionLinesListInRoutingOrder(t *testing.T) {
+func TestAgentAccountLinesListSubscriptionsInRoutingOrderThenKeys(t *testing.T) {
 	label := "Work"
-	lines := agentSubscriptionLines(personalSubscriptions([]subscriptionCredential{
+	resets := time.Now().Add(2 * time.Hour)
+	lines := agentAccountLines(personalSubscriptions([]subscriptionCredential{
 		{Name: "CLAUDE_2", OAuthProvider: claudeSubscription.id, CredentialScope: "user", CreatedAt: "2026-02", Label: &label},
-		{Name: "CODEX", OAuthProvider: codexSubscription.id, CredentialScope: "user", CreatedAt: "2026-01", SubscriptionActive: true, SafeMetadata: map[string]string{"account_email": "me@example.test"}},
-		{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, CredentialScope: "user", CreatedAt: "2026-01"},
+		{Name: "CODEX", OAuthProvider: codexSubscription.id, CredentialScope: "user", CreatedAt: "2026-01", SubscriptionActive: true, SafeMetadata: map[string]string{"account_email": "me@example.test", "plan": "Plus"}},
+		{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, CredentialScope: "user", CreatedAt: "2026-01", Usage: &subscriptionUsage{Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339)}},
 		{Name: "TEAM", OAuthProvider: codexSubscription.id, CredentialScope: "organization"},
 		{Name: "MUSE", OAuthProvider: museSubscription.id, CredentialScope: "user", CreatedAt: "2026-03"},
-	}), true)
+	}), []string{"Vercel AI Gateway"}, true)
 	got := stripANSI(strings.Join(lines, "\n"))
-	want := "  Claude Code  CLAUDE\n  Claude Code  Work\n  Muse Code    MUSE\n  ChatGPT      me@example.test\n"
+	want := "\n  Subscriptions\n" +
+		"  • Claude Code  CLAUDE\n" +
+		"    › 5h · 40% used · Resets " + usageResetTime(resets) + "\n" +
+		"  • Claude Code  Work\n" +
+		"  • Muse Code  MUSE\n" +
+		"  • ChatGPT  me@example.test  Plus\n" +
+		"\n  API Keys\n" +
+		"  • Vercel AI Gateway\n"
 	if got != want {
-		t.Fatalf("lines:\n%q\nwant:\n%q", got, want)
+		t.Fatalf("lines:\n%s\nwant:\n%s", got, want)
 	}
-	if empty := stripANSI(strings.Join(agentSubscriptionLines(nil, false), "\n")); !strings.Contains(empty, "No accounts connected yet.") {
+	// Only sections with something to show appear.
+	if keysOnly := stripANSI(strings.Join(agentAccountLines(nil, []string{"OpenAI"}, true), "\n")); strings.Contains(keysOnly, "Subscriptions") {
+		t.Fatalf("keys only: %q", keysOnly)
+	}
+	if empty := stripANSI(strings.Join(agentAccountLines(nil, nil, false), "\n")); !strings.Contains(empty, "No accounts connected yet.") {
 		t.Fatalf("empty list: %q", empty)
+	}
+}
+
+func TestSubscriptionLinesMarkEveryLimitReached(t *testing.T) {
+	resets := time.Now().Add(72 * time.Hour)
+	lines := subscriptionLines(subscriptionCredential{
+		OAuthProvider: claudeSubscription.id,
+		SafeMetadata:  map[string]string{"account_email": "you@example.com", "plan": "Max"},
+		ModelHolds:    []subscriptionModelHold{{Model: "anthropic/claude-fable-5", DisplayName: "Claude Fable 5", UnavailableUntil: resets.Format(time.RFC3339)}},
+	}, false)
+	if len(lines) != 2 || stripANSI(lines[0]) != "  • you@example.com  Max" {
+		t.Fatalf("lines = %q", lines)
+	}
+	if !strings.Contains(lines[1], ansiRed+"Limit reached") {
+		t.Fatalf("limit not highlighted: %q", lines[1])
 	}
 }
 
@@ -306,7 +333,7 @@ func TestAgentSubscriptionProvidersMatchTheAgent(t *testing.T) {
 func TestSubscriptionDetailsShowPlanAndRenewal(t *testing.T) {
 	renews := time.Now().Add(72 * time.Hour)
 	got := subscriptionDetails(subscriptionCredential{SubscriptionActive: true, SafeMetadata: map[string]string{"plan": "Pro", "renews_at": renews.Format(time.RFC3339)}})
-	want := []string{"Pro", "renews " + renews.Local().Format("Jan 2")}
+	want := []string{"Renews " + renews.Local().Format("Jan 2")}
 	if !slices.Equal(got, want) {
 		t.Fatalf("details = %q, want %q", got, want)
 	}
@@ -320,7 +347,7 @@ func TestSubscriptionDetailsShowPlanAndRenewal(t *testing.T) {
 func TestSubscriptionDetailsNameUsageReportedWithoutWindows(t *testing.T) {
 	resets := time.Now().Add(2 * time.Hour)
 	got := subscriptionDetails(subscriptionCredential{Usage: &subscriptionUsage{Utilization: 0.62, ResetsAt: resets.Format(time.RFC3339)}})
-	if want := []string{"5h 62% used, resets " + usageResetTime(resets)}; !slices.Equal(got, want) {
+	if want := []string{"5h · 62% used · Resets " + usageResetTime(resets)}; !slices.Equal(got, want) {
 		t.Fatalf("details = %q, want %q", got, want)
 	}
 	expired := subscriptionDetails(subscriptionCredential{Usage: &subscriptionUsage{Utilization: 1, ResetsAt: time.Now().Add(-time.Minute).Format(time.RFC3339)}})
@@ -341,7 +368,7 @@ func TestSubscriptionDetailsShowEveryUsageWindow(t *testing.T) {
 		},
 	}
 	got := subscriptionDetails(subscriptionCredential{Usage: usage})
-	want := []string{"5h 99% used, resets " + usageResetTime(fiveHours), "weekly 20% used, resets " + usageResetTime(week)}
+	want := []string{"5h · 99% used · Resets " + usageResetTime(fiveHours), "Weekly · 20% used · Resets " + usageResetTime(week)}
 	if !slices.Equal(got, want) {
 		t.Fatalf("details = %q, want %q", got, want)
 	}
@@ -349,9 +376,26 @@ func TestSubscriptionDetailsShowEveryUsageWindow(t *testing.T) {
 	// weekly window still shows its headroom.
 	held := fiveHours.Format(time.RFC3339)
 	got = subscriptionDetails(subscriptionCredential{Usage: usage, UnavailableUntil: &held})
-	want = []string{"5h limit reached, resets " + usageResetTime(fiveHours), "weekly 20% used, resets " + usageResetTime(week)}
+	want = []string{"5h · Limit reached · Resets " + usageResetTime(fiveHours), "Weekly · 20% used · Resets " + usageResetTime(week)}
 	if !slices.Equal(got, want) {
 		t.Fatalf("held details = %q, want %q", got, want)
+	}
+}
+
+func TestSubscriptionDetailsShowEachModelAtItsLimit(t *testing.T) {
+	resets := time.Now().Add(72 * time.Hour)
+	got := subscriptionDetails(subscriptionCredential{ModelHolds: []subscriptionModelHold{
+		{Model: "anthropic/claude-fable-5", DisplayName: "Claude Fable 5", UnavailableUntil: resets.Format(time.RFC3339), Reason: "Claude Code seven day fable usage limit reached."},
+		// A server that sends no display name shows the id.
+		{Model: "anthropic/claude-opus-5-5", UnavailableUntil: resets.Format(time.RFC3339)},
+		{Model: "anthropic/claude-opus-5", UnavailableUntil: time.Now().Add(-time.Minute).Format(time.RFC3339)},
+	}})
+	want := []string{
+		"Claude Fable 5 · Limit reached · Resets " + usageResetTime(resets),
+		"anthropic/claude-opus-5-5 · Limit reached · Resets " + usageResetTime(resets),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("details = %q, want %q", got, want)
 	}
 }
 
@@ -362,13 +406,13 @@ func TestSubscriptionDetailsNameAHoldWithoutUsage(t *testing.T) {
 		provider, until, want string
 	}{
 		{"openai_codex", soon, "5h"},
-		{"openai_codex", later, "weekly"},
+		{"openai_codex", later, "Weekly"},
 		// Muse Code plans have only the five hour window.
 		{"meta_muse", later, "5h"},
 	}
 	for _, c := range cases {
 		got := subscriptionDetails(subscriptionCredential{OAuthProvider: c.provider, UnavailableUntil: &c.until})
-		if len(got) != 1 || !strings.HasPrefix(got[0], c.want+" limit reached, resets ") {
+		if len(got) != 1 || !strings.HasPrefix(got[0], c.want+" · Limit reached · Resets ") {
 			t.Fatalf("%s held until %s: details = %q", c.provider, c.until, got)
 		}
 	}

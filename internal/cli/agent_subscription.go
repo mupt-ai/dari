@@ -1,12 +1,8 @@
 package cli
 
 import (
-	"cmp"
 	"context"
-	"fmt"
 	"io"
-	"maps"
-	"slices"
 	"strings"
 
 	"github.com/mupt-ai/dari/internal/api"
@@ -62,49 +58,46 @@ func agentSubscriptionProviders(agent string) []agentSubscriptionProvider {
 	return agentSetups[agent].subscriptions
 }
 
-// agentAccountLines lists the connected subscriptions, then API keys.
-func agentAccountLines(subscriptions []subscriptionCredential, keys map[string]agentProviderCredential, showProvider bool) []string {
-	if len(keys) == 0 {
-		return agentSubscriptionLines(subscriptions, showProvider)
+// agentAccountLines is the Accounts page's summary: a Subscriptions section,
+// in the order routing uses them, then an API Keys section, each shown only
+// when it has something.
+func agentAccountLines(subscriptions []subscriptionCredential, keys []string, showProvider bool) []string {
+	if len(subscriptions) == 0 && len(keys) == 0 {
+		return []string{"  " + ansiGray + "No accounts connected yet." + ansiReset, ""}
 	}
 	lines := []string{}
 	if len(subscriptions) > 0 {
-		lines = agentSubscriptionLines(subscriptions, showProvider)
-		lines = lines[:len(lines)-1]
+		lines = append(lines, "", "  "+ansiBold+"Subscriptions"+ansiReset)
+		for _, subscription := range subscriptions {
+			lines = append(lines, subscriptionLines(subscription, showProvider)...)
+		}
 	}
-	for _, provider := range slices.Sorted(maps.Keys(keys)) {
-		key := keys[provider]
-		lines = append(lines, "  "+cmp.Or(key.Label, key.Name, provider)+"  "+ansiGray+"API key"+ansiReset)
+	if len(keys) > 0 {
+		lines = append(lines, "", "  "+ansiBold+"API Keys"+ansiReset)
+		for _, key := range keys {
+			lines = append(lines, "  "+ansiGray+"•"+ansiReset+" "+key)
+		}
 	}
 	return append(lines, "")
 }
 
-// agentSubscriptionLines lists subscriptions in the order routing uses them,
-// naming each one's provider when the page offers more than one.
-func agentSubscriptionLines(subscriptions []subscriptionCredential, showProvider bool) []string {
-	if len(subscriptions) == 0 {
-		return []string{"  " + ansiGray + "No accounts connected yet." + ansiReset, ""}
+// subscriptionLines is one subscription: its provider, name, and plan, then
+// a line for each quota window, each model at its own limit, and its renewal.
+func subscriptionLines(subscription subscriptionCredential, showProvider bool) []string {
+	header := "  " + ansiGray + "•" + ansiReset + " "
+	if showProvider {
+		header += subscriptionProviderFor(subscription.OAuthProvider).name + "  "
 	}
-	names := make([]string, len(subscriptions))
-	width := 0
-	for i, subscription := range subscriptions {
-		names[i] = subscriptionName(subscription)
-		width = max(width, len(names[i]))
+	header += subscriptionName(subscription)
+	if plan := subscription.SafeMetadata["plan"]; plan != "" {
+		header += "  " + ansiGray + plan + ansiReset
 	}
-	lines := []string{}
-	for i, subscription := range subscriptions {
-		line := "  "
-		if showProvider {
-			line += fmt.Sprintf("%-11s  ", subscriptionProviderFor(subscription.OAuthProvider).name)
-		}
-		if details := subscriptionDetails(subscription); len(details) > 0 {
-			line += fmt.Sprintf("%-*s  %s", width, names[i], ansiGray+strings.Join(details, " · ")+ansiReset)
-		} else {
-			line += names[i]
-		}
-		lines = append(lines, line)
+	lines := []string{header}
+	for _, detail := range subscriptionDetails(subscription) {
+		detail = strings.Replace(detail, usageLimitReached, ansiRed+usageLimitReached+ansiGray, 1)
+		lines = append(lines, "    "+ansiGray+"› "+detail+ansiReset)
 	}
-	return append(lines, "")
+	return lines
 }
 
 // subscriptionProviderFor names the provider of a stored subscription.

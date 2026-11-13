@@ -171,6 +171,22 @@ describe("resolveSelfHostedRouter", () => {
     expect(exhausted).toMatchObject({ status: 424, code: "personal_subscription_unavailable" });
   });
 
+  test("a model held at its own limit leaves routing while the plan serves the rest", async () => {
+    const resolver = deps({
+      config: { routers: { default: { models: ["anthropic/claude-sonnet-5-5", "anthropic/claude-fable-5"] } } },
+    });
+    const plan = resolver.subscriptions.connect(tokens({ expiresAt: FUTURE }), null)!;
+    resolver.subscriptions.holdModel(plan.id, "anthropic/claude-fable-5", FUTURE, "seven day fable");
+    const resolved = await resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code" }));
+    expect(resolved.enabled_models).toEqual(["anthropic/claude-sonnet-5-5"]);
+    expect(resolved.provider_key_sources).toEqual({ anthropic: "subscription" });
+
+    resolver.subscriptions.holdModel(plan.id, "anthropic/claude-sonnet-5-5", FUTURE, "seven day sonnet");
+    const exhausted = await rejection(resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code" })));
+    expect(exhausted).toMatchObject({ status: 424, code: "personal_subscription_unavailable" });
+    expect(exhausted.message).toContain("Every connected Claude Code subscription is at its usage limit for the models");
+  });
+
   test("routers can opt out of subscriptions", async () => {
     const resolver = deps({
       apiKeys: { anthropic: "sk-ant" },

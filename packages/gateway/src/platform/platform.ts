@@ -58,6 +58,9 @@ export type GatewayPlatform = {
   /**
    * Hold an exhausted personal subscription until it resets. Resolves whether
    * another connected subscription for the same provider can serve a retry.
+   * A limit naming a `model` holds only that model on the subscription, which
+   * keeps serving the router's other models; it resolves whether the hold
+   * landed, since those models then serve a retry.
    */
   markSubscriptionUnavailable(hold: SubscriptionHold): Promise<boolean>;
   /**

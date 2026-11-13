@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { codexUsageFromReport, readCodexUsage } from "./codex_usage.js";
+import { codexModelLimitResetFromReport, codexUsageFromReport, readCodexUsage } from "./codex_usage.js";
 
 const NOW = new Date("2026-11-10T12:00:00Z");
 const NOW_SECONDS = NOW.getTime() / 1000;
@@ -43,4 +43,26 @@ test("asks the ChatGPT backend at most once a minute per subscription, as the ac
     url: "https://chatgpt.com/backend-api/wham/usage",
     headers: { Authorization: `Bearer ${token}`, "ChatGPT-Account-Id": "acct_1" },
   });
+});
+
+test("a spent additional limit with room on the plan is a per-model limit until its reset", () => {
+  const plan = { primary_window: { used_percent: 30, reset_at: NOW_SECONDS + 3600 } };
+  const spark = {
+    limit_name: "GPT-5.3-Codex-Spark",
+    rate_limit: {
+      limit_reached: true,
+      primary_window: { used_percent: 100, reset_at: NOW_SECONDS + 7200 },
+      secondary_window: { used_percent: 100, reset_at: NOW_SECONDS + 86_400 },
+    },
+  };
+  expect(codexModelLimitResetFromReport({ rate_limit: plan, additional_rate_limits: [spark] }, NOW))
+    .toEqual(new Date((NOW_SECONDS + 86_400) * 1000));
+  // The plan's own limit spent is the plan's refusal.
+  expect(codexModelLimitResetFromReport({
+    rate_limit: { limit_reached: true, primary_window: { used_percent: 100, reset_at: NOW_SECONDS + 3600 } },
+    additional_rate_limits: [spark],
+  }, NOW)).toBeNull();
+  // Nothing spent anywhere cannot say which model.
+  expect(codexModelLimitResetFromReport({ rate_limit: plan, additional_rate_limits: [] }, NOW)).toBeNull();
+  expect(codexModelLimitResetFromReport({}, NOW)).toBeNull();
 });

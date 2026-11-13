@@ -277,16 +277,19 @@ var subscriptionProviders = map[string]agentSubscriptionProvider{
 }
 
 type subscriptionCredential struct {
-	Name               string            `json:"name"`
-	Label              *string           `json:"label"`
-	SafeMetadata       map[string]string `json:"safe_metadata"`
-	CredentialScope    string            `json:"credential_scope"`
-	OAuthProvider      string            `json:"oauth_provider"`
-	CreatedAt          string            `json:"created_at"`
-	LastUsedAt         *string           `json:"last_used_at"`
-	UnavailableUntil   *string           `json:"unavailable_until"`
-	UnavailableReason  *string           `json:"unavailable_reason"`
-	SubscriptionActive bool              `json:"subscription_active"`
+	Name              string            `json:"name"`
+	Label             *string           `json:"label"`
+	SafeMetadata      map[string]string `json:"safe_metadata"`
+	CredentialScope   string            `json:"credential_scope"`
+	OAuthProvider     string            `json:"oauth_provider"`
+	CreatedAt         string            `json:"created_at"`
+	LastUsedAt        *string           `json:"last_used_at"`
+	UnavailableUntil  *string           `json:"unavailable_until"`
+	UnavailableReason *string           `json:"unavailable_reason"`
+	// ModelHolds are models at their own usage limit while the plan still
+	// serves the rest; routing skips each until its reset.
+	ModelHolds         []subscriptionModelHold `json:"model_holds"`
+	SubscriptionActive bool                    `json:"subscription_active"`
 	// Usage is how much of its quota the plan last reported used.
 	Usage            *subscriptionUsage `json:"usage"`
 	AutoRedeemResets bool               `json:"auto_redeem_resets"`
@@ -298,6 +301,15 @@ type subscriptionUsage struct {
 	Utilization float64                   `json:"utilization"`
 	ResetsAt    string                    `json:"resets_at"`
 	Windows     []subscriptionUsageWindow `json:"windows"`
+}
+
+type subscriptionModelHold struct {
+	Model string `json:"model"`
+	// DisplayName is the model's catalog name; servers before it was added
+	// send only the id.
+	DisplayName      string `json:"display_name"`
+	UnavailableUntil string `json:"unavailable_until"`
+	Reason           string `json:"reason"`
 }
 
 type subscriptionUsageWindow struct {
@@ -317,7 +329,7 @@ func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
 	cmd.AddCommand(
 		newSubscriptionListCmd(gf),
 		newSubscriptionConnectCmd(gf),
-		newSubscriptionCredentialCmd(gf, "mark-available", "Clear a usage-limit hold so routers can use the subscription again",
+		newSubscriptionCredentialCmd(gf, "mark-available", "Clear a subscription's usage-limit holds, its own and its models', so routers can use it again",
 			http.MethodPost, func(name string) string { return url.PathEscape(name) + "/mark-available" }),
 		newSubscriptionCredentialCmd(gf, "disconnect", "Disconnect a subscription from Dari",
 			http.MethodDelete, func(name string) string { return url.PathEscape(name) + "?scope=user" }),
@@ -349,6 +361,7 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 					"status":             subscriptionStatus(subscription),
 					"unavailable_until":  subscription.UnavailableUntil,
 					"unavailable_reason": subscription.UnavailableReason,
+					"model_holds":        activeModelHolds(subscription, time.Now()),
 					"last_used_at":       subscription.LastUsedAt,
 					"usage":              subscription.Usage,
 					"auto_redeem_resets": subscription.AutoRedeemResets,
@@ -519,6 +532,17 @@ func subscriptionAlias(oauthProvider string) string {
 		}
 	}
 	return oauthProvider
+}
+
+// activeModelHolds is the subscription's model holds that have not reset.
+func activeModelHolds(subscription subscriptionCredential, now time.Time) []subscriptionModelHold {
+	holds := []subscriptionModelHold{}
+	for _, hold := range subscription.ModelHolds {
+		if until, err := time.Parse(time.RFC3339Nano, hold.UnavailableUntil); err == nil && until.After(now) {
+			holds = append(holds, hold)
+		}
+	}
+	return holds
 }
 
 func subscriptionStatus(subscription subscriptionCredential) string {

@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
-import { currentUsage, SubscriptionStore } from "./store.js";
+import { activeModelHolds, currentUsage, SubscriptionStore } from "./store.js";
 import { tokens } from "./test_support.js";
 
 const now = new Date("2026-10-20T12:00:00Z");
@@ -139,6 +139,27 @@ describe("holds", () => {
     expect(store.activeCredential("anthropic_claude_code", now)?.id).toBe(credentials[0]!.id);
     expect(store.markAvailable("MISSING", now)).toBeNull();
     expect(store.markUnavailable("cred_missing", later(1), "usage_limit", now)).toBe(false);
+  });
+
+  test("a model hold leaves the subscription serving, only grows, and clears with mark available", () => {
+    const { store, credentials } = connected("one@example.com");
+    const id = credentials[0]!.id;
+    const held = (at: Date) => activeModelHolds(store.get(id)!, at).map((hold) => [hold.model, hold.until]);
+    expect(store.holdModel(id, "anthropic/claude-opus-5-5", later(600), "seven day opus", now)).toBe(true);
+    store.holdModel(id, "anthropic/claude-opus-5-5", later(5), "seven day opus", now);
+    store.holdModel(id, "anthropic/claude-fable-5", later(30), "seven day fable", now);
+    expect(held(now)).toEqual([
+      ["anthropic/claude-fable-5", later(30)],
+      ["anthropic/claude-opus-5-5", later(600)],
+    ]);
+    expect(store.activeCredential("anthropic_claude_code", now)?.id).toBe(id);
+    expect(held(later(31))).toEqual([["anthropic/claude-opus-5-5", later(600)]]);
+    // The same account reconnecting keeps them; mark available clears them.
+    store.connect(tokens({ accessToken: "fresh" }), null, later(1));
+    expect(held(now)).toHaveLength(2);
+    store.markAvailable("anthropic_claude_code_oauth_token", now);
+    expect(held(now)).toEqual([]);
+    expect(store.holdModel("cred_missing", "anthropic/claude-fable-5", later(1), "limit", now)).toBe(false);
   });
 });
 

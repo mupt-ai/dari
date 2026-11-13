@@ -11,16 +11,21 @@ import { tokens } from "./subscriptions/test_support.js";
  * A self-hosted gateway, run through its entrypoint as its own process so no
  * other test file's module mocks reach it, serving two Claude Code plans
  * (access tokens `sk-ant-oat01-a` and `-b`) against a local stand-in for
- * Anthropic. `upstream` answers each provider call given the plan's token.
+ * Anthropic. `upstream` answers each provider call given the plan's token
+ * and the native model it asks for. The router lists `models`.
  */
-export async function startSubscriptionGateway(upstream: (token: string) => Response) {
+export async function startSubscriptionGateway(
+  upstream: (token: string, model: string) => Response,
+  models: string[] = ["anthropic/claude-sonnet-5-5"],
+) {
   const served: string[] = [];
   const provider = Bun.serve({
     port: 0,
-    fetch(request) {
+    async fetch(request) {
       const token = (request.headers.get("authorization") ?? "").replace(/^Bearer /, "");
       served.push(token);
-      return upstream(token);
+      const body = await request.json() as { model?: string };
+      return upstream(token, body.model ?? "");
     },
   });
   const dir = mkdtempSync(join(tmpdir(), "dari-gateway-plans-"));
@@ -34,7 +39,7 @@ export async function startSubscriptionGateway(upstream: (token: string) => Resp
   writeFileSync(configPath, `
 routers:
   default:
-    models: [anthropic/claude-sonnet-5-5]
+    models: [${models.join(", ")}]
 providers:
   anthropic:
     baseUrl: http://127.0.0.1:${provider.port}
@@ -60,8 +65,9 @@ providers:
     planIds: plans.map((plan) => plan.id),
     // The plans as the gateway stored them.
     plan: (id: string) => new SubscriptionStore(new Database(dbPath)).get(id),
-    // One Claude Code request in the conversation `sessionId` starts.
-    claudeCode: async (sessionId: string, text: string) =>
+    // One Claude Code request in the conversation `sessionId` starts, for
+    // `model` or, by default, routed.
+    claudeCode: async (sessionId: string, text: string, model = "dari/model/anthropic/claude-sonnet-5-5") =>
       await fetch(`${baseUrl}/v1/messages`, {
         method: "POST",
         headers: {
@@ -73,7 +79,7 @@ providers:
           "x-claude-code-session-id": sessionId,
         },
         body: JSON.stringify({
-          model: "dari/model/anthropic/claude-sonnet-5-5",
+          model,
           max_tokens: 64,
           stream: true,
           messages: [{ role: "user", content: text }],

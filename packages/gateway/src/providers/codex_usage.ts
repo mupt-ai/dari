@@ -1,4 +1,9 @@
-import { CODEX_USAGE_WINDOWS, type SubscriptionUsage, subscriptionUsageFromWindows } from "./subscription_limits.js";
+import {
+  CODEX_USAGE_WINDOWS,
+  DEFAULT_USAGE_LIMIT_WINDOW_MS,
+  type SubscriptionUsage,
+  subscriptionUsageFromWindows,
+} from "./subscription_limits.js";
 
 // Codex calls run over a WebSocket that bypasses fetch, so a ChatGPT plan's
 // usage never reaches the gateway as response headers. The ChatGPT backend's
@@ -22,7 +27,59 @@ export async function readCodexUsage(args: {
   const last = readAt.get(args.credentialId);
   if (last !== undefined && now - last < CODEX_USAGE_INTERVAL_MS) return null;
   readAt.set(args.credentialId, now);
+  return codexUsageFromReport(await fetchCodexUsageReport(args), new Date(now));
+}
 
+/**
+ * When a ChatGPT usage-limit refusal came from a per-model cap rather than the
+ * plan's own limit, that cap's reset; null when the plan itself is spent or
+ * the report names no spent cap. The report lists those caps as
+ * `additional_rate_limits` beside the plan's `rate_limit`.
+ */
+export async function readCodexModelLimitReset(args: {
+  accessToken: string;
+  baseUrl?: string;
+  now?: Date;
+  fetch?: typeof fetch;
+}): Promise<Date | null> {
+  return codexModelLimitResetFromReport(await fetchCodexUsageReport(args), args.now ?? new Date());
+}
+
+export function codexModelLimitResetFromReport(report: unknown, now: Date): Date | null {
+  if (!isRecord(report) || limitSpent(report.rate_limit)) return null;
+  const spent = (Array.isArray(report.additional_rate_limits) ? report.additional_rate_limits : [])
+    .map((limit) => isRecord(limit) ? limit.rate_limit : undefined)
+    .filter(limitSpent);
+  if (spent.length === 0) return null;
+  const resets = spent.flatMap((limit) => limitWindows(limit))
+    .filter((window) => window.used >= 100 && window.resetAt !== null && window.resetAt > now)
+    .map((window) => window.resetAt!.getTime());
+  return new Date(resets.length > 0 ? Math.max(...resets) : now.getTime() + DEFAULT_USAGE_LIMIT_WINDOW_MS);
+}
+
+function limitSpent(limit: unknown): boolean {
+  if (!isRecord(limit)) return false;
+  return limit.limit_reached === true || limit.allowed === false
+    || limitWindows(limit).some((window) => window.used >= 100);
+}
+
+function limitWindows(limit: unknown): Array<{ used: number; resetAt: Date | null }> {
+  if (!isRecord(limit)) return [];
+  return CODEX_USAGE_WINDOWS.flatMap(([name]) => {
+    const window = limit[`${name}_window`];
+    if (!isRecord(window) || typeof window.used_percent !== "number") return [];
+    return [{
+      used: window.used_percent,
+      resetAt: typeof window.reset_at === "number" ? new Date(window.reset_at * 1000) : null,
+    }];
+  });
+}
+
+async function fetchCodexUsageReport(args: {
+  accessToken: string;
+  baseUrl?: string;
+  fetch?: typeof fetch;
+}): Promise<unknown> {
   const accountId = codexAccountId(args.accessToken);
   const response = await (args.fetch ?? globalThis.fetch)(
     `${(args.baseUrl ?? DEFAULT_CODEX_BASE_URL).replace(/\/$/, "")}/wham/usage`,
@@ -36,7 +93,7 @@ export async function readCodexUsage(args: {
     },
   );
   if (!response.ok) throw new Error(`Codex usage report failed with status ${response.status}.`);
-  return codexUsageFromReport(await response.json(), new Date(now));
+  return await response.json();
 }
 
 /** Every Codex window with a future reset, or null when the report has none. */

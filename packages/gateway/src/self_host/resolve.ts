@@ -20,6 +20,7 @@ import {
 } from "./config.js";
 import type { RouterModelStore } from "./router_models.js";
 import {
+  activeModelHolds,
   freshAccessToken,
   type OAuthFetch,
   type SubscriptionCredential,
@@ -109,7 +110,15 @@ export async function resolveSelfHostedRouter(
     credentials.set(provider, apiKey ? { key: apiKey, source: "user" } : null);
   }
 
-  const models = listed.filter((model) => credentials.get(providerForModel(model.id)) != null);
+  // A model at its own limit on the serving plan leaves routing until it resets.
+  const models = listed.filter((model) => {
+    const credential = credentials.get(providerForModel(model.id));
+    if (credential == null) return false;
+    const plan = credential.subscription;
+    if (plan === undefined || !activeModelHolds(plan, now).some((hold) => hold.model === model.id)) return true;
+    exhausted.add(plan.provider);
+    return false;
+  });
   if (models.length === 0) {
     const missing = [...credentials].filter(([, credential]) => credential == null).map(([provider]) => provider);
     throw unavailableRouterError(request.routerId, exhausted, missing);
@@ -264,7 +273,7 @@ function unavailableRouterError(
       .join(" and ");
     return new HttpError(
       424,
-      `Every connected ${plans} subscription is at its usage limit, and no API key can serve router ${routerId} instead.${missingNote}`,
+      `Every connected ${plans} subscription is at its usage limit for the models router ${routerId} lists, and no API key can serve them instead.${missingNote}`,
       "personal_subscription_unavailable",
     );
   }

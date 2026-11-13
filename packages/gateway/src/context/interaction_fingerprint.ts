@@ -341,9 +341,10 @@ function fingerprintChatInputSteps(
       pendingReasoningItemIndex = -1;
       continue;
     }
-    if (item.type === "reasoning_configuration") {
+    if (item.type === "reasoning_configuration" || item.type === "compaction") {
       // Configuration updates change execution effort without becoming part
       // of the conversational identity, just like request-level effort.
+      // Native compaction state is opaque and replaced on every compaction.
       flushReasoning();
       continue;
     }
@@ -424,7 +425,7 @@ function fingerprintSteps(
       });
       continue;
     }
-    if (item.type === "reasoning_configuration") {
+    if (item.type === "reasoning_configuration" || item.type === "compaction") {
       continue;
     }
     if (item.type === "tool_result") {

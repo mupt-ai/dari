@@ -56,6 +56,11 @@ export function modelSupportsReasoningConfigurationUpdate(
     && metadata.model.compat.supportsReasoningConfigurationUpdate === true;
 }
 
+// OpenAI's own Responses endpoints read and write native `compaction` items.
+export function modelSupportsNativeCompaction(metadata: ModelCapabilityMetadata): boolean {
+  return modelSupportsHostedWebSearch(metadata);
+}
+
 export function modelSupportsHostedWebSearch(metadata: ModelCapabilityMetadata): boolean {
   return (
     (metadata.model.provider === "openai" && metadata.model.api === "openai-responses")

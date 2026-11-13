@@ -619,7 +619,17 @@ test("Responses ingress rejects malformed function arguments", () => {
   }
 });
 
-test.each(["agent_message", "local_shell_call", "tool_search_call", "compaction", "context_compaction"])(
+test("Responses ingress carries native compaction items verbatim", () => {
+  const compaction = { type: "compaction", id: "cmp_1", encrypted_content: "opaque" };
+  const request = openAIResponsesToInteraction({
+    model: "dari/routing",
+    input: [compaction, { role: "user", content: "next" }, { type: "compaction_trigger" }],
+  });
+  expect(request.items[0]).toEqual({ type: "compaction", payload: compaction });
+  expect(request.items[2]).toEqual({ type: "compaction", payload: { type: "compaction_trigger" } });
+});
+
+test.each(["agent_message", "local_shell_call", "tool_search_call", "compaction_summary", "context_compaction"])(
   "Responses ingress rejects unsupported %s items explicitly",
   (type) => {
     expect(() => openAIResponsesToInteraction({ model: "dari/routing", input: [{ type }] })).toThrow(

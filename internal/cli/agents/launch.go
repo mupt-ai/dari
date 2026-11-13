@@ -37,6 +37,9 @@ type Models struct {
 	// Saved is the model the agent itself saved as the user's last pick (its
 	// /model choice). A launch starts on it while it is on the menu.
 	Saved string
+	// RemoteCompaction is set when the router accepts Codex's native
+	// (compaction_trigger) compaction protocol.
+	RemoteCompaction bool
 }
 
 // Default is the model a launch starts on: the user's saved pick while the

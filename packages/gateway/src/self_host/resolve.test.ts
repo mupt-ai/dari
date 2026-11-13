@@ -240,6 +240,7 @@ describe("parseGatewayConfig", () => {
           retries: 1,
           subscriptions: true,
           sessionPinning: false,
+          nativeCompaction: false,
           zdr: false,
         },
       },

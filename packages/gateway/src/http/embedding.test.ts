@@ -4,7 +4,7 @@ import { join } from "node:path";
 // The embedding cases drive the real Pi transport, which other test files
 // replace with process-wide module mocks, so they run in their own process.
 // The .cases.ts suffix keeps Bun from also running them in this one.
-for (const cases of ["embedding.cases.ts", "meta_provider.cases.ts", "supplied_subscriptions.cases.ts", "session_pinning.cases.ts"]) {
+for (const cases of ["embedding.cases.ts", "meta_provider.cases.ts", "supplied_subscriptions.cases.ts", "session_pinning.cases.ts", "native_compaction.cases.ts"]) {
   test(`${cases} pass in an isolated process`, async () => {
     const run = Bun.spawn(["bun", "test", `./${join("src", "http", cases)}`], {
       cwd: join(import.meta.dir, "..", ".."),

@@ -44,7 +44,7 @@ func TestCodexInstalledStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	if err := Setup(home, base, "test-key", agents.RoutingModel, catalog, disableWebSearch); err != nil {
+	if err := Setup(home, base, "test-key", agents.RoutingModel, catalog, disableWebSearch, false); err != nil {
 		t.Fatal(err)
 	}
 	command.Env = agents.WithEnvironment(command.Env, map[string]string{"CODEX_HOME": home})

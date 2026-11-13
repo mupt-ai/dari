@@ -271,9 +271,9 @@ func TestRouterCreateSendsEvalScoreImputationOnlyWhenSet(t *testing.T) {
 	}
 }
 
-func TestRouterCreateSendsSessionPinning(t *testing.T) {
+func TestRouterCreateSendsSessionPinningAndNativeCompaction(t *testing.T) {
 	manifestPath := filepath.Join(t.TempDir(), "router.yml")
-	manifest := "name: Manifest Router\nenabled_models:\n  - openai/gpt-5.5\nprovider_key_sources:\n  openai: managed\nsession_pinning: true\n"
+	manifest := "name: Manifest Router\nenabled_models:\n  - openai/gpt-5.5\nprovider_key_sources:\n  openai: managed\nsession_pinning: true\nnative_compaction: true\n"
 	if err := os.WriteFile(manifestPath, []byte(manifest), 0o644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestRouterCreateSendsSessionPinning(t *testing.T) {
 		want any // nil means the field is omitted
 	}{
 		{name: "flag omitted", args: []string{"router", "create", "Flag Router", "--model", "openai/gpt-5.5", "--managed-key", "openai"}},
-		{name: "flag set", args: []string{"router", "create", "Flag Router", "--model", "openai/gpt-5.5", "--managed-key", "openai", "--session-pinning"}, want: true},
+		{name: "flag set", args: []string{"router", "create", "Flag Router", "--model", "openai/gpt-5.5", "--managed-key", "openai", "--session-pinning", "--native-compaction"}, want: true},
 		{name: "manifest", args: []string{"router", "create", "--from-file", manifestPath}, want: true},
 	}
 	for _, tt := range tests {
@@ -305,8 +305,10 @@ func TestRouterCreateSendsSessionPinning(t *testing.T) {
 			if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
 				t.Fatalf("dari router create: %v", err)
 			}
-			if got := body["session_pinning"]; got != tt.want {
-				t.Fatalf("session_pinning = %#v, want %#v", got, tt.want)
+			for _, field := range []string{"session_pinning", "native_compaction"} {
+				if got := body[field]; got != tt.want {
+					t.Fatalf("%s = %#v, want %#v", field, got, tt.want)
+				}
 			}
 		})
 	}
@@ -972,6 +974,7 @@ func TestRouterUpdateOverlaysCurrentConfig(t *testing.T) {
 		"--allow-long-context=false",
 		"--eval-score-imputation=false",
 		"--session-pinning",
+		"--native-compaction=false",
 	})
 	if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
 		t.Fatalf("dari router update: %v", err)
@@ -984,6 +987,7 @@ func TestRouterUpdateOverlaysCurrentConfig(t *testing.T) {
 		"allow_long_context":    false,
 		"eval_score_imputation": false,
 		"session_pinning":       true,
+		"native_compaction":     false,
 	}
 	if !reflect.DeepEqual(body, want) {
 		t.Fatalf("update body = %#v, want %#v", body, want)

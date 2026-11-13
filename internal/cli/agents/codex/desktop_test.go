@@ -16,7 +16,7 @@ func TestSetupReplacesTopLevelModelAndRemoveRestoresConfig(t *testing.T) {
 	}
 
 	for range 2 {
-		if err := Setup(home, "https://routing.dari.dev/rtr_1", "dari_key", "dari/routing", []byte(`{"models":[]}`), true); err != nil {
+		if err := Setup(home, "https://routing.dari.dev/rtr_1", "dari_key", "dari/routing", []byte(`{"models":[]}`), true, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -71,18 +71,18 @@ func TestSetupRefusesDariProviderHeadersWithCommentsOrQuotes(t *testing.T) {
 		"[ model_providers.\"dari\" ]",
 		"[model_providers.dari.auth]",
 	} {
-		_, err := setupConfig(header+"\nname = \"x\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false)
+		_, err := setupConfig(header+"\nname = \"x\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false, false)
 		if err == nil || !strings.Contains(err.Error(), "already defines") {
 			t.Errorf("setupConfig(%q) error = %v, want refusal", header, err)
 		}
 	}
-	if _, err := setupConfig("[model_providers.other]\nname = \"x\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false); err != nil {
+	if _, err := setupConfig("[model_providers.other]\nname = \"x\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false, false); err != nil {
 		t.Errorf("unrelated provider table refused: %v", err)
 	}
 }
 
 func TestSetupDisablesTopLevelProfileAndRestoresIt(t *testing.T) {
-	config, err := setupConfig("profile = \"work\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false)
+	config, err := setupConfig("profile = \"work\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestSetupDisablesTopLevelProfileAndRestoresIt(t *testing.T) {
 }
 
 func TestSetupKeepsWebSearchUnlessItDisablesIt(t *testing.T) {
-	config, err := setupConfig("web_search = \"cached\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false)
+	config, err := setupConfig("web_search = \"cached\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestSetupKeepsWebSearchUnlessItDisablesIt(t *testing.T) {
 
 func TestRemoveSetupDeletesConfigItCreated(t *testing.T) {
 	home := t.TempDir()
-	if err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), false); err != nil {
+	if err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), false, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RemoveSetup(home); err != nil {
@@ -122,7 +122,7 @@ func TestRemoveSetupDeletesConfigItCreated(t *testing.T) {
 // markers.
 func TestRemoveSetupNeverLeavesTheCatalogNamed(t *testing.T) {
 	home := t.TempDir()
-	if err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), false); err != nil {
+	if err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), false, false); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(home, "config.toml")
@@ -155,7 +155,7 @@ func TestSetupRefusesUserDefinedDariProvider(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), false)
+	err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), false, false)
 	if err == nil || !strings.Contains(err.Error(), "[model_providers.dari]") {
 		t.Fatalf("Setup() error = %v", err)
 	}
@@ -165,7 +165,7 @@ func TestSetupRefusesUserDefinedDariProvider(t *testing.T) {
 // the tables it adds inside the trailing block; a later setup or removal
 // keeps them.
 func TestSetupKeepsWhatCodexAddedInsideItsBlocks(t *testing.T) {
-	config, err := setupConfig("", "https://routing.dari.dev", "dak_1", "dari/routing", "/tmp/catalog.json", false)
+	config, err := setupConfig("", "https://routing.dari.dev", "dak_1", "dari/routing", "/tmp/catalog.json", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestSetupKeepsWhatCodexAddedInsideItsBlocks(t *testing.T) {
 	if got := SavedModel(home); got != "dari/model/a/b" {
 		t.Fatalf("SavedModel = %q", got)
 	}
-	again, err := setupConfig(config, "http://127.0.0.1:7340", "dgw", SavedModel(home), "/tmp/catalog.json", false)
+	again, err := setupConfig(config, "http://127.0.0.1:7340", "dgw", SavedModel(home), "/tmp/catalog.json", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,5 +189,18 @@ func TestSetupKeepsWhatCodexAddedInsideItsBlocks(t *testing.T) {
 	}
 	if removed := removeSetup(again); !strings.Contains(removed, "[tui]") || strings.Contains(removed, "model_providers.dari") {
 		t.Fatalf("removal = %q", removed)
+	}
+}
+
+func TestSetupDeclaresRemoteCompactionOnlyWhenTheRouterAcceptsIt(t *testing.T) {
+	const line = `capabilities = { remote_compaction = "v2" }`
+	for _, remote := range []bool{false, true} {
+		config, err := setupConfig("", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false, remote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(config, line) != remote {
+			t.Fatalf("remoteCompaction=%v config:\n%s", remote, config)
+		}
 	}
 }

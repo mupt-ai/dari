@@ -139,6 +139,10 @@ export type ResolvedRouter = {
   // Route each session's (and each subagent's) first turn, then serve that
   // pair for the rest of the session instead of selecting or leasing.
   session_pinning?: boolean;
+  // Let Codex compact context server-side with the provider's native
+  // compaction; requests carrying compaction state route only to models that
+  // support it.
+  native_compaction?: boolean;
   primary_retries?: number;
   // Serve only the requested `dari/model/<id>` at the requested thinking
   // level: no selector, lease, or personal subscription the platform did not

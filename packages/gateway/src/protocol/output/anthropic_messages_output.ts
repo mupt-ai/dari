@@ -11,6 +11,8 @@ export function anthropicMessageId(requestId: string): string {
 export function anthropicContent(output: InteractionOutput): Array<Record<string, unknown>> {
   const content: Array<Record<string, unknown>> = [];
   for (const item of output.items) {
+    // Native compaction state is OpenAI Responses-only.
+    if (item.type === "compaction") continue;
     if (item.type === "reasoning") {
       content.push(anthropicReasoningBlock(item));
       continue;

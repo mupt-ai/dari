@@ -186,6 +186,19 @@ export function buildContext(
       toolCalls.set(item.callId, { id, name });
       continue;
     }
+    if (item.type === "compaction") {
+      // Routing narrows compaction-bearing requests to native-compaction targets.
+      if (!isOpenAIResponsesApi(target.api)) {
+        throw new HttpError(400, "Native compaction state can only be sent to OpenAI Responses models.", "unsupported_response_item", "input");
+      }
+      assistantFor(item.source ?? target).content.push({
+        type: "providerItem",
+        item: item.payload,
+        name: "providerItem",
+        arguments: item.payload,
+      });
+      continue;
+    }
     if (item.type === "hosted_tool_call") {
       if (item.tool === "server_tool_use" || item.tool === "tool_search") {
         // Server tool use and tool search results are Anthropic-specific.

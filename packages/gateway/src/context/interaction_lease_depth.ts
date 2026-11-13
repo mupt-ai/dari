@@ -71,7 +71,7 @@ export function interactionLeaseFenceDepth(
       continue;
     }
 
-    if (item.type === "reasoning_configuration") {
+    if (item.type === "reasoning_configuration" || item.type === "compaction") {
       continue;
     }
 

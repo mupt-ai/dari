@@ -126,3 +126,13 @@ func TestCodexLaunchClassification(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigureAlwaysDeclaresTheRoutersRemoteCompaction(t *testing.T) {
+	for remote, want := range map[bool]string{false: `"unsupported"`, true: `"v2"`} {
+		command := agents.Command{}
+		Configure(&command, "https://routing.dari.dev", agents.Models{Routing: true, RemoteCompaction: remote})
+		if !strings.Contains(strings.Join(command.Args, " "), "model_providers.dari.capabilities.remote_compaction="+want) {
+			t.Fatalf("remoteCompaction=%v args: %v", remote, command.Args)
+		}
+	}
+}

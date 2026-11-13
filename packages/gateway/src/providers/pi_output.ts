@@ -154,6 +154,7 @@ function openAIProviderResponseToInteractionOutput(
         arguments: parsed,
       }, source, tools);
     }
+    if (value.type === "compaction") return { type: "compaction" as const, payload: { ...value }, source };
     if (value.type === "web_search_call") {
       return {
         type: "hosted_tool_call" as const,

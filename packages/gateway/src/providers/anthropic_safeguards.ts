@@ -1,6 +1,6 @@
 import { isRecord } from "@mupt-ai/dari-router/policy-engine";
 
-import type { AnthropicSafeguards, InteractionRequest } from "../interaction/types.js";
+import type { AnthropicContextManagement, AnthropicSafeguards, InteractionRequest } from "../interaction/types.js";
 import type { ProviderFetch } from "./response_capture.js";
 
 // Claude Code's auto mode asks the Anthropic API to run its dangerous-tool-use
@@ -19,6 +19,33 @@ export function forwardsAnthropicSafeguards(
     model.provider === "anthropic" &&
     model.api === "anthropic-messages"
   );
+}
+
+// Claude Code's tool-result clearing (`context_management`) runs inside the
+// Anthropic API. Only Anthropic's own Messages endpoint gets it; other
+// providers serve the full history, as Claude Code expects when no
+// `context_management` comes back.
+export function forwardsAnthropicContextManagement(
+  request: Pick<InteractionRequest, "anthropicContextManagement">,
+  model: Record<string, unknown>,
+): boolean {
+  return (
+    request.anthropicContextManagement !== undefined &&
+    model.provider === "anthropic" &&
+    model.api === "anthropic-messages"
+  );
+}
+
+export function payloadWithContextManagement(
+  payload: Record<string, unknown>,
+  contextManagement: AnthropicContextManagement,
+): Record<string, unknown> {
+  const betas = Array.isArray(payload.betas) ? payload.betas : [];
+  return {
+    ...payload,
+    context_management: contextManagement.contextManagement,
+    betas: [...new Set([...betas, ...contextManagement.betas])],
+  };
 }
 
 export function payloadWithSafeguards(

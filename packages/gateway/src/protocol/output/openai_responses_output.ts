@@ -26,6 +26,7 @@ export function openAIResponsesOutputItem(
   if (item.type === "message") return responseMessageItem(output, item, index);
   if (item.type === "reasoning") return responseReasoningItem(output, item, index);
   if (item.type === "hosted_tool_call") return responseHostedToolCallItem(item);
+  if (item.type === "compaction") return item.payload;
   return responseToolCallItem(item);
 }
 

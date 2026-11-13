@@ -8,7 +8,7 @@ import { createRequestHandler } from "./handler.js";
 
 // An embedder supplies a subscription per request through
 // resolveProviderCredential; a strict router serves its pinned model on it.
-type ProviderCall = { url: string; authorization: string | null; apiKey: string | null; model: unknown; clientId?: string };
+type ProviderCall = { url: string; authorization: string | null; apiKey: string | null; model: unknown; clientId?: string; contextManagement?: unknown; beta?: string | null };
 
 const calls: ProviderCall[] = [];
 const records: RequestRecord[] = [];
@@ -41,6 +41,9 @@ beforeAll(() => {
       apiKey: request.headers.get("x-api-key"),
       model: body.model,
       ...(request.headers.has("x-client-id") ? { clientId: request.headers.get("x-client-id")! } : {}),
+      ...(body.context_management !== undefined
+        ? { contextManagement: body.context_management, beta: request.headers.get("anthropic-beta") }
+        : {}),
     });
     return new URL(request.url).pathname.endsWith("/messages")
       ? messagesResponse(String(body.model))
@@ -162,6 +165,16 @@ test("a supplied Claude Code plan serves Claude Code clients", async () => {
   expect(credentialRequests[0]!.clientHarness).toBe("claude_code");
   expect(calls).toHaveLength(1);
   expect(calls[0]).toMatchObject({ authorization: "Bearer sk-ant-oat01-plan", apiKey: null });
+});
+
+test("Claude Code's tool-result clearing reaches its plan with the paired beta", async () => {
+  supplied = { [CLAUDE]: { apiKey: "sk-ant-oat01-plan", subscription: "anthropic_claude_code" } };
+  const contextManagement = { edits: [{ type: "clear_tool_uses_20250919" }] };
+  const response = await messages(CLAUDE, { claudeCode: true, contextManagement });
+  expect(response.status).toBe(200);
+  await response.text();
+  expect(calls[0]!.contextManagement).toEqual(contextManagement);
+  expect(calls[0]!.beta).toContain("context-management-2025-06-27");
 });
 
 test("a supplied Claude Code plan never serves other clients", async () => {
@@ -291,7 +304,10 @@ async function chat(model: string, args: { museCode?: boolean } = {}): Promise<R
   }));
 }
 
-async function messages(model: string, args: { claudeCode: boolean }): Promise<Response> {
+async function messages(
+  model: string,
+  args: { claudeCode: boolean; contextManagement?: Record<string, unknown> },
+): Promise<Response> {
   const claudeCodeHeaders = {
     "user-agent": "claude-cli/2.1.300 (external, cli)",
     "x-app": "cli",
@@ -304,12 +320,14 @@ async function messages(model: string, args: { claudeCode: boolean }): Promise<R
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
       ...(args.claudeCode ? claudeCodeHeaders : {}),
+      ...(args.contextManagement ? { "anthropic-beta": "context-management-2025-06-27" } : {}),
     },
     body: JSON.stringify({
       model: `dari/model/${model}`,
       max_tokens: 64,
       stream: true,
       messages: [{ role: "user", content: "hello" }],
+      ...(args.contextManagement ? { context_management: args.contextManagement } : {}),
     }),
   }));
 }

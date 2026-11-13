@@ -88,12 +88,16 @@ function codexCatalogEntry(args: CodexCatalogEntry): Record<string, unknown> {
 /* `dari/routing` comes first while the router may autoroute (the Codex
    launcher patches it); each enabled model follows as `dari/model/<id>` so
    Codex's /model menu can switch to it. The `dari` launchers build every
-   agent's model menu from this list. */
+   agent's model menu from this list. `remote_compaction` tells the
+   launcher which Codex provider compaction protocol the router accepts. */
 export function codexModelsResponse(
-  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed">,
-  imageInputFor: (model: string) => boolean
+  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed" | "native_compaction">,
+  imageInputFor: (model: string) => boolean,
+  nativeCompactionFor: (model: string) => boolean = () => false,
 ): Record<string, unknown> {
+  const remoteCompaction = router.native_compaction === true && router.enabled_models.some(nativeCompactionFor);
   return {
+    remote_compaction: remoteCompaction ? "v2" : "unsupported",
     models: [
       ...(router.autorouting_enabled === false || router.routing_listed === false ? [] : [codexCatalogEntry({
         slug: CANONICAL_ROUTER_MODEL,

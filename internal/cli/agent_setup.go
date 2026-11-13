@@ -180,7 +180,7 @@ func applyAgentSetup(ctx context.Context, name, key, baseURL string, models agen
 		if err != nil {
 			return err
 		}
-		return codex.Setup(home, baseURL, key, models.Default(), catalog, disableWebSearch)
+		return codex.Setup(home, baseURL, key, models.Default(), catalog, disableWebSearch, models.RemoteCompaction)
 	case "openclaw":
 		executable, err := agentExecutable(name)
 		if err != nil {

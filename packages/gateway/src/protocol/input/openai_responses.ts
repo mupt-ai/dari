@@ -36,9 +36,7 @@ const UNSUPPORTED_INPUT_ITEM_TYPES = new Set([
   "local_shell_call_output",
   "tool_search_call",
   "tool_search_output",
-  "compaction",
   "compaction_summary",
-  "compaction_trigger",
   "context_compaction",
 ]);
 const CLIENT_TURN_ID_MAX_LENGTH = 200;
@@ -232,6 +230,7 @@ function responseItem(value: unknown, itemIndex: number, hostedReplayId?: string
   if (UNSUPPORTED_INPUT_ITEM_TYPES.has(type)) {
     throw new HttpError(400, `Responses input item type '${type}' is not supported by this router MVP.`, "unsupported_response_item", "input");
   }
+  if (type === "compaction" || type === "compaction_trigger") return { type: "compaction", payload: { ...value } };
   if (type === "reasoning") return reasoningItem(value);
   if (type === "configuration_update") return reasoningConfigurationItem(value);
   if (type === "web_search_call") return hostedWebSearchCallItem(value, itemIndex, hostedReplayId);

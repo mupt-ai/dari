@@ -352,6 +352,33 @@ test("does not overwrite hosted search when Pi text precedes the provider messag
   ]);
 });
 
+for (const [label, source, terminalOutput] of [
+  ["OpenAI", OPENAI, true],
+  ["Codex, whose terminal response omits output", OPENAI_CODEX, false],
+] as const) {
+  test(`relays a native compaction item verbatim from ${label}`, async () => {
+    const compaction = { type: "compaction", id: "cmp_provider", encrypted_content: "provider-ciphertext" };
+    const events = await streamEvents([
+      {
+        type: "provider_event",
+        event: { type: "response.output_item.done", output_index: 0, item: compaction },
+      },
+      {
+        type: "provider_event",
+        event: {
+          type: "response.completed",
+          response: { id: "resp_provider", status: "completed", output: terminalOutput ? [compaction] : [] },
+        },
+      },
+      { type: "done", message: piMessage([]) },
+    ], source);
+
+    expect(events.filter((event) => event.event === "response.failed")).toHaveLength(0);
+    expect(outputDone(events)).toMatchObject([{ output_index: 0, item: compaction }]);
+    expect(completed(events).output).toEqual([compaction]);
+  });
+}
+
 test("emits an incomplete terminal response when the provider reaches its length limit", async () => {
   const events = await streamEvents([
     { type: "done", message: piMessage([{ type: "text", text: "Partial" }], "length") },

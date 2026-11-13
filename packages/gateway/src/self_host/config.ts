@@ -22,6 +22,7 @@ import type { ClientHarness } from "../types.js";
  *         - openai/gpt-6.1-sol
  *     subscriptions: true   # serve with connected Claude Code / ChatGPT plans
  *     sessionPinning: false # route each session and subagent once, then keep its model
+ *     nativeCompaction: false # let Codex compact server-side with the provider's native compaction
  * providers:                # optional: OpenAI-compatible or self-run endpoints
  *   local:
  *     baseUrl: http://localhost:8000/v1
@@ -57,6 +58,7 @@ export type RouterConfig = {
   retries: number;
   subscriptions: boolean;
   sessionPinning: boolean;
+  nativeCompaction: boolean;
   zdr: boolean;
 };
 
@@ -191,6 +193,7 @@ function parseRouter(id: string, raw: unknown): RouterConfig {
     retries: optionalRetries(raw.retries, `routers.${id}.retries`) ?? 1,
     subscriptions: optionalBoolean(raw.subscriptions, `routers.${id}.subscriptions`) ?? true,
     sessionPinning: optionalBoolean(raw.sessionPinning, `routers.${id}.sessionPinning`) ?? false,
+    nativeCompaction: optionalBoolean(raw.nativeCompaction, `routers.${id}.nativeCompaction`) ?? false,
     zdr: optionalBoolean(raw.zdr, `routers.${id}.zdr`) ?? false,
   };
 }

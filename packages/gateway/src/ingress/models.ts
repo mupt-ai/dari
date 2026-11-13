@@ -11,7 +11,7 @@ import { errorResponse } from "../http/errors.js";
 import { captureRequestError } from "../observability/errors.js";
 import { anthropicErrorResponse } from "./anthropic_messages.js";
 import { listModelCatalog } from "../models/catalog.js";
-import { modelSupportsImageInput } from "../providers/model_capabilities.js";
+import { modelSupportsImageInput, modelSupportsNativeCompaction } from "../providers/model_capabilities.js";
 import { modelMetadataLookup } from "../providers/pi.js";
 import { resolveRouter } from "../strategies/routing.js";
 import { anthropicModelsResponse } from "./anthropic_models.js";
@@ -51,7 +51,8 @@ export async function handleModels(request: Request, routerId: string): Promise<
     }
     const metadataLookup = modelMetadataLookup(router.model_configs);
     const imageInputFor = (model: string) => modelSupportsImageInput(metadataLookup(model));
-    return Response.json(codexModelsResponse(router, imageInputFor), {
+    const nativeCompactionFor = (model: string) => modelSupportsNativeCompaction(metadataLookup(model));
+    return Response.json(codexModelsResponse(router, imageInputFor, nativeCompactionFor), {
       headers: {
         "Cache-Control": "no-store",
       },

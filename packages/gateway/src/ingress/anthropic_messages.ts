@@ -14,7 +14,7 @@ import {
   claudeCodeConversationIdentity,
 } from "../runtime/harness_identity/index.js";
 import { parseJsonRequest } from "./json.js";
-import type { AnthropicSafeguards, ReasoningControls } from "../interaction/types.js";
+import type { AnthropicContextManagement, AnthropicSafeguards, ReasoningControls } from "../interaction/types.js";
 
 type AnthropicErrorType =
   | "authentication_error"
@@ -26,6 +26,7 @@ type AnthropicErrorType =
 
 const LEGACY_CLAUDE_CODE_BETA = "claude-code-20250219";
 const SAFEGUARDS_BETA_PREFIX = "dangerous-tool-use-";
+const CONTEXT_MANAGEMENT_BETA_PREFIX = "context-management-";
 
 export async function handleAnthropicMessages(
   request: Request,
@@ -38,9 +39,12 @@ export async function handleAnthropicMessages(
     const interaction = anthropicMessagesToInteraction(rawPayload);
     const isClaudeCode = isClaudeCodeRequest(request.headers);
     const anthropicSafeguards = safeguardsFrom(rawPayload, request.headers);
-    const forwarded = anthropicSafeguards === undefined
-      ? interaction
-      : { ...interaction, anthropicSafeguards };
+    const anthropicContextManagement = contextManagementFrom(rawPayload, request.headers);
+    const forwarded = {
+      ...interaction,
+      ...(anthropicSafeguards === undefined ? {} : { anthropicSafeguards }),
+      ...(anthropicContextManagement === undefined ? {} : { anthropicContextManagement }),
+    };
     const payload = isClaudeCode
       ? {
           ...forwarded,
@@ -114,6 +118,18 @@ function safeguardsFrom(
     beta.startsWith(SAFEGUARDS_BETA_PREFIX)
   );
   return betas.length === 0 ? undefined : { safeguards: payload.safeguards, betas };
+}
+
+// Same pairing for server-side context editing.
+function contextManagementFrom(
+  payload: Record<string, unknown>,
+  headers: Headers,
+): AnthropicContextManagement | undefined {
+  if (!isRecord(payload.context_management)) return undefined;
+  const betas = [...anthropicBetas(headers)].filter((beta) =>
+    beta.startsWith(CONTEXT_MANAGEMENT_BETA_PREFIX)
+  );
+  return betas.length === 0 ? undefined : { contextManagement: payload.context_management, betas };
 }
 
 function anthropicBetas(headers: Headers): Set<string> {

@@ -16,7 +16,7 @@ import (
 // Configure selects the launch's default model through Codex config overrides
 // that point at the router at baseURL, leaving the user's Codex config untouched.
 func Configure(command *agents.Command, baseURL string, models agents.Models) {
-	command.Args = agents.InsertBeforeDoubleDash(command.Args, []string{
+	args := []string{
 		"--config", "model=" + strconv.Quote(models.Default()),
 		"--config", `model_provider="dari"`,
 		"--config", `model_reasoning_summary="none"`,
@@ -24,7 +24,14 @@ func Configure(command *agents.Command, baseURL string, models agents.Models) {
 		"--config", `model_providers.dari.base_url="` + baseURL + `/v1"`,
 		"--config", `model_providers.dari.env_key="DARI_ROUTING_API_KEY"`,
 		"--config", `model_providers.dari.wire_api="responses"`,
-	})
+	}
+	// Always explicit, so a stale `dari setup` config.toml cannot keep it on.
+	remoteCompaction := "unsupported"
+	if models.RemoteCompaction {
+		remoteCompaction = "v2"
+	}
+	args = append(args, "--config", `model_providers.dari.capabilities.remote_compaction="`+remoteCompaction+`"`)
+	command.Args = agents.InsertBeforeDoubleDash(command.Args, args)
 }
 
 // Catalog fetches the router's Codex model catalog, narrowed to the models

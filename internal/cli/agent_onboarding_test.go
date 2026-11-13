@@ -1704,11 +1704,13 @@ func TestAgentSessionPinningKeepsTheRoutersModeWithoutTerminal(t *testing.T) {
 	}
 }
 
-func TestAgentRouterUpdateKeepsTheRoutersSessionPinning(t *testing.T) {
-	body := agentRouterUpdateBody(agentRouter{Name: "Default", SessionPinning: true}, nil, nil)
+func TestAgentRouterUpdateKeepsTheRoutersSessionSettings(t *testing.T) {
+	body := agentRouterUpdateBody(agentRouter{Name: "Default", SessionPinning: true, NativeCompaction: true}, nil, nil)
 	encoded, _ := json.Marshal(body)
-	if !strings.Contains(string(encoded), `"session_pinning":true`) {
-		t.Errorf("payload drops session_pinning: %s", encoded)
+	for _, field := range []string{`"session_pinning":true`, `"native_compaction":true`} {
+		if !strings.Contains(string(encoded), field) {
+			t.Errorf("payload drops %s: %s", field, encoded)
+		}
 	}
 }
 

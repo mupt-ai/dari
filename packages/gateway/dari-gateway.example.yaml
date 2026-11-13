@@ -21,6 +21,10 @@ routers:
     # Route each session's first turn, then keep that model for the whole
     # session; each subagent is routed once on its own (default false).
     sessionPinning: false
+    # Let Codex compact context server-side with the provider's native
+    # compaction; requests carrying compaction state are routed only to
+    # models that support it (default false).
+    nativeCompaction: false
 
   local:
     models:

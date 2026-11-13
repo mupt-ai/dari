@@ -166,6 +166,7 @@ func TestBuildAgentCommandKeepsDariSettingsLast(t *testing.T) {
 				"--config", `model_providers.dari.base_url="https://routing.dari.dev/v1"`,
 				"--config", `model_providers.dari.env_key="DARI_ROUTING_API_KEY"`,
 				"--config", `model_providers.dari.wire_api="responses"`,
+				"--config", `model_providers.dari.capabilities.remote_compaction="unsupported"`,
 			},
 			wantEnv: map[string]string{},
 		},

@@ -30,6 +30,7 @@ import {
   modelSupportsDocumentInput,
   modelSupportsImageInput,
   modelSupportsHostedWebSearch,
+  modelSupportsNativeCompaction,
   modelSupportsReasoningConfigurationUpdate,
   providerApiCanSerializeResponseFormat,
 } from "../providers/model_capabilities.js";
@@ -180,7 +181,12 @@ export async function buildRoutingContext(args: {
       || hit.conversation_id === args.explicitConversationId,
   );
   const prepared = prepareCandidates({
-    candidateModels: documentCapableModels,
+    candidateModels: nativeCompactionCandidates(
+      documentCapableModels,
+      args.interaction,
+      args.credentials.native_compaction === true,
+      (model) => modelSupportsNativeCompaction(metadataLookup(model)),
+    ),
     metadataLookup: capabilityLookup,
     requiredCapabilities: imageFilter.requiredCapabilities,
     requestedReasoningEffort: args.interaction.reasoning?.effort,
@@ -331,6 +337,33 @@ function documentCapableCandidates(
       400,
       "This conversation contains a PDF document, but no enabled model on this router accepts PDF input.",
       "no_document_capable_candidates",
+    );
+  }
+  return capable;
+}
+
+// Native compaction state is opaque to every provider but OpenAI, so a
+// conversation carrying it routes only among models that can read it.
+function nativeCompactionCandidates(
+  candidateModels: string[],
+  interaction: InteractionRequest,
+  enabled: boolean,
+  supportsNativeCompaction: (model: string) => boolean,
+): string[] {
+  if (!interaction.items.some((item) => item.type === "compaction")) return candidateModels;
+  if (!enabled) {
+    throw new HttpError(
+      400,
+      "This conversation contains native compaction state, but native compaction is disabled on this router.",
+      "native_compaction_disabled",
+    );
+  }
+  const capable = candidateModels.filter(supportsNativeCompaction);
+  if (capable.length === 0) {
+    throw new HttpError(
+      400,
+      "This conversation contains native compaction state, but no enabled model on this router supports native compaction.",
+      "no_native_compaction_candidates",
     );
   }
   return capable;

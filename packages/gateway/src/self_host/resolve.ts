@@ -128,6 +128,7 @@ export async function resolveSelfHostedRouter(
     zdr: router.zdr,
     speculative_routing: false,
     session_pinning: router.sessionPinning,
+    native_compaction: router.nativeCompaction,
     primary_retries: router.retries,
     routing_strategy: "dari",
     custom_config: null,

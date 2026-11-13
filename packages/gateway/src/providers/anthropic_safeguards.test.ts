@@ -152,3 +152,33 @@ test("fast mode keeps the safeguards beta alongside its own", async () => {
   expect(betas).toContain("dangerous-tool-use-2026-09-03");
   expect(requests[0]!.body.safeguards).toEqual(SAFEGUARDS);
 });
+
+const CONTEXT_MANAGEMENT = {
+  edits: [{ type: "clear_tool_uses_20250919", trigger: { type: "tool_uses", value: 30 }, keep: { type: "tool_uses", value: 10 } }],
+};
+const CONTEXT_REQUEST: InteractionRequest = {
+  ...REQUEST,
+  anthropicSafeguards: undefined,
+  anthropicContextManagement: { contextManagement: CONTEXT_MANAGEMENT, betas: ["context-management-2025-06-27"] },
+};
+
+test("Claude Code's context editing reaches Anthropic with its beta", async () => {
+  const requests: Array<{ headers: Headers; body: Record<string, unknown> }> = [];
+  const { events } = await streamInteractionModel({
+    model: "anthropic/claude-sonnet-4-6",
+    request: CONTEXT_REQUEST,
+    apiKey: "sk-ant-api-test",
+    fetch: anthropicFetch(requests),
+  });
+  for await (const _ of events) { /* drain */ }
+
+  expect(requests[0]!.body.context_management).toEqual(CONTEXT_MANAGEMENT);
+  expect(requests[0]!.headers.get("anthropic-beta")).toContain("context-management-2025-06-27");
+});
+
+test("context editing stays off requests that are not served by Anthropic's API", async () => {
+  const options = buildOptions(CONTEXT_REQUEST, "sk-test", "openai/gpt-5.5-pro", modelFixtures["openai/gpt-5.5-pro"]!, piFixture);
+  const onPayload = options.onPayload as ((payload: unknown) => unknown) | undefined;
+  const patched = await onPayload?.({ model: "gpt-5.5-pro", input: [] });
+  expect(JSON.stringify(patched ?? {})).not.toContain("context_management");
+});

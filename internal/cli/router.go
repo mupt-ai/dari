@@ -102,6 +102,7 @@ type routerCreateRequest struct {
 	AllowLongContext      bool                `json:"allow_long_context,omitempty"`
 	EvalScoreImputation   *bool               `json:"eval_score_imputation,omitempty"`
 	SessionPinning        bool                `json:"session_pinning,omitempty"`
+	NativeCompaction      bool                `json:"native_compaction,omitempty"`
 	Name                  string              `json:"name"`
 	EnabledModels         []string            `json:"enabled_models"`
 	ModelProviders        map[string]string   `json:"model_providers,omitempty"`
@@ -122,6 +123,7 @@ type routerUpdateRequest struct {
 	AllowLongContext      *bool             `json:"allow_long_context,omitempty"`
 	EvalScoreImputation   *bool             `json:"eval_score_imputation,omitempty"`
 	SessionPinning        *bool             `json:"session_pinning,omitempty"`
+	NativeCompaction      *bool             `json:"native_compaction,omitempty"`
 	Name                  string            `json:"name"`
 	EnabledModels         []string          `json:"enabled_models"`
 	ProviderKeys          map[string]string `json:"provider_keys,omitempty"`
@@ -143,6 +145,7 @@ type routerCreateManifest struct {
 	AllowLongContext              bool                `yaml:"allow_long_context"`
 	EvalScoreImputation           *bool               `yaml:"eval_score_imputation"`
 	SessionPinning                bool                `yaml:"session_pinning"`
+	NativeCompaction              bool                `yaml:"native_compaction"`
 	Name                          string              `yaml:"name"`
 	EnabledModels                 []string            `yaml:"enabled_models"`
 	ModelProviders                map[string]string   `yaml:"model_providers"`
@@ -162,6 +165,7 @@ type routerConfigFlags struct {
 	allowLongContext      bool
 	evalScoreImputation   bool
 	sessionPinning        bool
+	nativeCompaction      bool
 	models                []string
 	subscriptionProviders []string
 	apiFallbackModels     []string
@@ -189,6 +193,7 @@ func (rf *routerConfigFlags) register(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&rf.allowLongContext, name("allow-long-context"), false, "Allow provider long-context surcharges (off by default)")
 	cmd.Flags().BoolVar(&rf.evalScoreImputation, name("eval-score-imputation"), true, "Estimate missing eval scores for a model and thinking level from related measured scores (on by default)")
 	cmd.Flags().BoolVar(&rf.sessionPinning, name("session-pinning"), false, "Route once when a session starts and keep that model for the whole session; each subagent is routed once when it starts (off by default)")
+	cmd.Flags().BoolVar(&rf.nativeCompaction, name("native-compaction"), false, "Let Codex compact context server-side with the provider's native compaction; requests carrying compaction state are routed only to models that support it (off by default)")
 	cmd.Flags().StringSliceVar(&rf.subscriptionProviders, name("subscription"), nil, "Serve this provider's models from the attributed user's personal subscription: openai, anthropic, or meta (repeatable or comma-separated). The provider's --provider-credential or --managed-key choice becomes its API fallback credential. On update this replaces the list; an empty value clears it")
 	cmd.Flags().StringSliceVar(&rf.apiFallbackModels, name("api-fallback"), nil, "Keep this subscription model running on the provider's API credential while the subscription is unavailable; models without it pause until the subscription is back (repeatable or comma-separated). On update this replaces the list; an empty value clears it")
 }
@@ -313,6 +318,7 @@ func newRouterCreateCmd(gf *globalFlags) *cobra.Command {
 			body := routerCreateRequest{
 				AllowLongContext: rf.allowLongContext,
 				SessionPinning:   rf.sessionPinning,
+				NativeCompaction: rf.nativeCompaction,
 				Name:             strings.TrimSpace(args[0]),
 				EnabledModels:    rf.models,
 			}
@@ -416,6 +422,9 @@ func newRouterUpdateCmd(gf *globalFlags) *cobra.Command {
 			}
 			if cmd.Flags().Changed("session-pinning") {
 				body.SessionPinning = &rf.sessionPinning
+			}
+			if cmd.Flags().Changed("native-compaction") {
+				body.NativeCompaction = &rf.nativeCompaction
 			}
 			if body.SubscriptionProviders, body.SubscriptionAPIFallbackModels, err = rf.subscriptionSettings(cmd); err != nil {
 				return err
@@ -746,6 +755,7 @@ func (manifest routerCreateManifest) createRequest(path string, resolveCatalogDe
 		AllowLongContext:    manifest.AllowLongContext,
 		EvalScoreImputation: manifest.EvalScoreImputation,
 		SessionPinning:      manifest.SessionPinning,
+		NativeCompaction:    manifest.NativeCompaction,
 		EnabledModels:       models,
 		ModelProviders:      modelProviders,
 	}

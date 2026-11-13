@@ -179,6 +179,8 @@ dari router delete <router-id-or-endpoint>
 
 Set `session_pinning: true` in `router.yml`, or pass `--session-pinning` to `dari router create` or `dari router update`, to route once per session and keep that model for the whole session; each subagent is routed once when it starts. It is off by default; `--session-pinning=false` turns it off on update.
 
+Set `native_compaction: true` in `router.yml`, or pass `--native-compaction` to `dari router create` or `dari router update`, to let Codex compact context server-side with the provider's native compaction; requests carrying compaction state are routed only to models that support it. It is off by default; `--native-compaction=false` turns it off on update.
+
 ## Examples
 
 - Managed-router manifests: https://github.com/mupt-ai/dari/tree/main/packages/router/examples/managed

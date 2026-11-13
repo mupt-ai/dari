@@ -246,8 +246,8 @@ class ResponsesAccumulator {
 
     if (type === "response.output_item.added" && isRecord(event.item)) {
       const index = providerOutputIndex(event);
-      if (event.item.type === "web_search_call") {
-        const item = providerHostedToolCall(event.item, this.args.source);
+      if (event.item.type === "web_search_call" || event.item.type === "compaction") {
+        const item = providerPassthroughItem(event.item, this.args.source);
         this.items.set(index, item);
         this.addedIndexes.add(index);
         send(type, providerEventPayload(event));
@@ -277,8 +277,8 @@ class ResponsesAccumulator {
         this.applyProviderMessageAnnotations(index, event.item);
         return;
       }
-      if (event.item.type !== "web_search_call") return;
-      this.items.set(index, providerHostedToolCall(event.item, this.args.source));
+      if (event.item.type !== "web_search_call" && event.item.type !== "compaction") return;
+      this.items.set(index, providerPassthroughItem(event.item, this.args.source));
       if (!this.addedIndexes.has(index)) {
         this.addedIndexes.add(index);
         send("response.output_item.added", { output_index: index, item: event.item });
@@ -553,10 +553,12 @@ function providerEventPayload(event: Record<string, unknown>): Record<string, un
   return payload;
 }
 
-function providerHostedToolCall(
+// Provider output items the gateway relays verbatim instead of synthesizing.
+function providerPassthroughItem(
   item: Record<string, unknown>,
   source: ProviderIdentity
-): Extract<InteractionOutputItem, { type: "hosted_tool_call" }> {
+): InteractionOutputItem {
+  if (item.type === "compaction") return { type: "compaction", payload: { ...item }, source };
   if (item.type !== "web_search_call" || typeof item.id !== "string" || !item.id) {
     throw new Error("OpenAI provider web search item is malformed.");
   }

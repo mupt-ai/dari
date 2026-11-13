@@ -70,7 +70,7 @@ func Home() (string, error) {
 // Setup makes Dari the default provider in home's config.toml, with the
 // catalog from Catalog as the model menu. The key is written inline because
 // the Codex app does not inherit shell environment variables.
-func Setup(home, baseURL, key, model string, catalog []byte, disableWebSearch bool) error {
+func Setup(home, baseURL, key, model string, catalog []byte, disableWebSearch, remoteCompaction bool) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return fmt.Errorf("create Codex config directory: %w", err)
 	}
@@ -83,7 +83,7 @@ func Setup(home, baseURL, key, model string, catalog []byte, disableWebSearch bo
 	if err != nil {
 		return err
 	}
-	config, err := setupConfig(existing, baseURL, key, model, catalogPath, disableWebSearch)
+	config, err := setupConfig(existing, baseURL, key, model, catalogPath, disableWebSearch, remoteCompaction)
 	if err != nil {
 		return err
 	}
@@ -134,7 +134,7 @@ func withoutCatalog(config, catalogPath string) string {
 	return strings.Join(kept, "\n")
 }
 
-func setupConfig(existing, baseURL, key, model, catalogPath string, disableWebSearch bool) (string, error) {
+func setupConfig(existing, baseURL, key, model, catalogPath string, disableWebSearch, remoteCompaction bool) (string, error) {
 	replaced := replacedKeys
 	if disableWebSearch {
 		replaced = append(slices.Clone(replacedKeys), "web_search")
@@ -171,8 +171,11 @@ func setupConfig(existing, baseURL, key, model, catalogPath string, disableWebSe
 		"base_url = " + strconv.Quote(baseURL+"/v1"),
 		"experimental_bearer_token = " + strconv.Quote(key),
 		`wire_api = "responses"`,
-		setupEnd,
 	}
+	if remoteCompaction {
+		provider = append(provider, `capabilities = { remote_compaction = "v2" }`)
+	}
+	provider = append(provider, setupEnd)
 	rest := strings.TrimRight(strings.Join(lines, "\n"), "\n")
 	config := strings.Join(top, "\n") + "\n"
 	if rest != "" {

@@ -111,6 +111,7 @@ type agentRouter struct {
 	SubscriptionProviders         []string            `json:"subscription_providers"`
 	SubscriptionAPIFallbackModels []string            `json:"subscription_api_fallback_models"`
 	SessionPinning                bool                `json:"session_pinning"`
+	NativeCompaction              bool                `json:"native_compaction"`
 }
 
 type agentModel struct {
@@ -168,6 +169,7 @@ type agentRouterUpdateRequest struct {
 	// Omitted keeps the router's current API fallback models.
 	SubscriptionAPIFallbackModels []string `json:"subscription_api_fallback_models,omitempty"`
 	SessionPinning                bool     `json:"session_pinning"`
+	NativeCompaction              bool     `json:"native_compaction"`
 }
 
 // Omitting subscription_api_fallback_models keeps the router's current ones.
@@ -1302,6 +1304,7 @@ func agentRouterUpdateBody(
 		ProviderKeySources:  providerSources,
 		ModelThinkingLevels: choiceLevels(choices),
 		SessionPinning:      current.SessionPinning,
+		NativeCompaction:    current.NativeCompaction,
 	}
 }
 

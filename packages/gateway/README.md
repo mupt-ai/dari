@@ -82,6 +82,7 @@ routers:
       codex: [openai/gpt-6.1-sol, openai/gpt-6.1-terra]
     subscriptions: true    # prefer connected subscriptions over API keys
     sessionPinning: false  # route each session and subagent once, then keep its model
+    nativeCompaction: false # let Codex compact server-side; compacted requests route only to supporting models
   local:                   # serves /local/v1/...
     models: [local/qwen3-coder]
 
@@ -129,6 +130,7 @@ Platforms can also:
 - implement `resolveProviderCredential({ provider, model, routerId, organizationId, apiKey, clientHarness? })` to supply a per-request `{ apiKey, baseUrl?, headers?, subscription? }`, such as a tenant's own key, in place of the router's resolved key. With `subscription` (`"openai_codex"`, `"anthropic_claude_code"`, or `"meta_muse"`), `apiKey` is that plan's access token: Codex's `auth.json` `tokens.access_token`, the token `claude setup-token` prints, or the Model API key a Meta sign-in mints. The platform keeps it fresh. Strict routers serve these supplied plans, but never subscriptions the gateway resolved itself. A plan serves only its own provider's models; a Claude Code plan serves only Claude Code clients, and a Muse Code plan only Muse Code clients (recognized by their `x-client-id`);
 - resolve routers with `strict: true` to serve only the requested `dari/model/<id>` at the requested thinking level, with no selector, lease, or personal subscription. Set `strict_providers: ["openai"]` on the resolved router to permit any bundled-catalog model from that provider without enumerating `enabled_models`. Use `dari/model/openai/gpt-6.1-sol`; bare IDs and unknown models remain refused. This grant is ignored on non-strict routers and does not discover uncatalogued models;
 - resolve routers with `session_pinning: true` to route each session once and serve that pair for the rest of the session. Each subagent (Claude Code agent id, Codex subagent thread, OpenCode child session) is routed once on its own. Pins are kept through `readSessionPin` and `writeSessionPin`, keyed by router and an opaque pin key; background requests and `dari/model/<id>` requests never use them;
+- resolve routers with `native_compaction: true` to let Codex compact context server-side with the provider's native compaction. Requests carrying compaction state are routed only to models that support it;
 - read exact usage from `recordRequest`: the summary carries input, output, cache-read, and cache-write tokens and `total_cost_usd`, preferring the provider's billed cost (`cost_source: "provider"`, from OpenRouter and Vercel AI Gateway). Each record also carries the router's non-secret routing settings as `router` (enabled models, thinking levels, and the strict, speculative-routing, and session-pinning flags). Failed and aborted requests are recorded too;
 - attribute cost with `X-Dari-Tags: run=r1,trial=3`, which is parsed into `RequestRecord.tags` and the `recordUsage` payload's `tags`.
 

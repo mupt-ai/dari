@@ -131,7 +131,17 @@ export type InteractionHostedToolCall = {
   serverToolResult?: InteractionToolReference[];
 };
 
+// OpenAI-native compaction state carried verbatim: a `compaction_trigger`
+// request item or the opaque `compaction` item that replaces compacted
+// history. Only OpenAI Responses targets can read it.
+export type InteractionCompaction = {
+  type: "compaction";
+  payload: Record<string, unknown>;
+  source?: ProviderIdentity;
+};
+
 export type InteractionItem =
+  | InteractionCompaction
   | InteractionMessage
   | InteractionReasoning
   | InteractionToolCall
@@ -140,6 +150,7 @@ export type InteractionItem =
   | InteractionHostedToolCall;
 
 export type InteractionOutputItem =
+  | InteractionCompaction
   | InteractionMessage
   | InteractionReasoning
   | InteractionToolCall
@@ -236,6 +247,13 @@ export type AnthropicSafeguards = {
   betas: string[];
 };
 
+// Anthropic server-side context editing (`context_management`, e.g. Claude
+// Code's tool-result clearing) with its paired beta.
+export type AnthropicContextManagement = {
+  contextManagement: Record<string, unknown>;
+  betas: string[];
+};
+
 export type InteractionRequest = {
   sourceProtocol: SourceProtocol;
   requestPurpose?: InteractionRequestPurpose;
@@ -245,6 +263,7 @@ export type InteractionRequest = {
   // Muse Code's own x-client-id, which Meta attributes its requests by.
   museCodeClientId?: string;
   anthropicSafeguards?: AnthropicSafeguards;
+  anthropicContextManagement?: AnthropicContextManagement;
   model?: string;
   instructions?: string;
   items: InteractionItem[];

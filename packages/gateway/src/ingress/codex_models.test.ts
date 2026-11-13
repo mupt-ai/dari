@@ -64,3 +64,12 @@ test("routers without autorouting list only their explicit models", () => {
     expect((response.models as Array<Record<string, unknown>>).map((model) => model.slug)).toEqual(["dari/model/bounded"]);
   }
 });
+
+test("Codex learns the router's native compaction protocol from the catalog", () => {
+  expect(codexModelsResponse({ enabled_models: ["test"], model_configs: { test: config } }, () => false).remote_compaction)
+    .toBe("unsupported");
+  const router = { enabled_models: ["test"], model_configs: { test: config }, native_compaction: true };
+  expect(codexModelsResponse(router, () => false, () => true).remote_compaction).toBe("v2");
+  // No enabled model could read the compaction items Codex would send.
+  expect(codexModelsResponse(router, () => false, () => false).remote_compaction).toBe("unsupported");
+});

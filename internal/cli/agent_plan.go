@@ -64,11 +64,12 @@ func routerModels(ctx context.Context, baseURL, key, agent string) (agents.Model
 		Models []struct {
 			Slug string `json:"slug"`
 		} `json:"models"`
+		RemoteCompaction string `json:"remote_compaction"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&catalog); err != nil {
 		return agents.Models{}, fmt.Errorf("decode router models: %w", err)
 	}
-	models := agents.Models{}
+	models := agents.Models{RemoteCompaction: catalog.RemoteCompaction == "v2"}
 	for _, model := range catalog.Models {
 		if model.Slug == agents.RoutingModel {
 			models.Routing = true

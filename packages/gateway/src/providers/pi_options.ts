@@ -9,7 +9,12 @@ import { effectiveReasoningForModel, validateReasoningEffortForModel } from "./r
 import { isBedrockApi, isOpenAIResponsesApi } from "./model_capabilities.js";
 import type { ResolvedProviderAuth } from "../types.js";
 import type { ProviderFetch } from "./response_capture.js";
-import { forwardsAnthropicSafeguards, payloadWithSafeguards } from "./anthropic_safeguards.js";
+import {
+  forwardsAnthropicContextManagement,
+  forwardsAnthropicSafeguards,
+  payloadWithContextManagement,
+  payloadWithSafeguards,
+} from "./anthropic_safeguards.js";
 
 type PiOptionsSupport = {
   getSupportedThinkingLevels?: (model: Record<string, unknown>) => string[];
@@ -104,7 +109,16 @@ export function buildOptions(
   if (safeguards !== undefined && forwardsAnthropicSafeguards(request, model)) {
     patches.push((payload) => payloadWithSafeguards(payload, safeguards));
   }
+  const contextManagement = request.anthropicContextManagement;
+  if (contextManagement !== undefined && forwardsAnthropicContextManagement(request, model)) {
+    patches.push((payload) => payloadWithContextManagement(payload, contextManagement));
+  }
 
+  // Pi keeps only the content it models, so native compaction output reaches
+  // the client from the provider's own output items.
+  if (isOpenAIResponsesApi(api) && request.items.some((item) => item.type === "compaction")) {
+    options.emitProviderEvents = true;
+  }
   if (isOpenAIResponsesApi(api) && requiredCapabilitiesFor(request).includes("openai_hosted_web_search")) {
     options.emitProviderEvents = true;
     const hosted = request.tools.flatMap((tool) => tool.kind === "hosted" ? [{ ...tool.config }] : []);

@@ -44,15 +44,6 @@ export async function routeDecision(
       "custom_config_missing",
     );
   }
-  if (custom && resolution.candidates.length === 0) {
-    const error = new HttpError(
-      502,
-      "No custom routing rule or default model/thinking-level pair is routable for this request.",
-      "custom_no_routable_candidates",
-    ) as HttpError & { decisionDetails?: Record<string, unknown> };
-    error.decisionDetails = { custom_rules: custom.audit };
-    throw error;
-  }
 
   const relevance = args.selectorBackend.evalRelevance !== undefined
     && resolution.candidates.length > 1

@@ -10,4 +10,3 @@ provider_key_sources:
   fireworks: user
 provider_key_envs:
   fireworks: FIREWORKS_API_KEY
-routing_strategy: dari

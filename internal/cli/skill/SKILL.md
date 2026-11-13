@@ -27,7 +27,6 @@ enabled_models:
 provider_key_sources:
   openai: managed
   anthropic: managed
-routing_strategy: dari
 ```
 
 Create it:
@@ -74,19 +73,35 @@ dari router create ./router.yml
 
 Never commit provider keys or `.env` files.
 
-## Custom Rules
+## Role Models
 
-Use `routing_strategy: custom` and `custom_config` for natural-language routing rules:
+Dari routes every request by default. Pin the main agent or subagents (including Claude Code workflow agents) to one enabled model with `role_models`; a pinned role is served that model directly, whatever model the client asked for. Leave a role unset or `null` to route it. Background requests such as compaction are unaffected.
 
 ```yaml
-routing_strategy: custom
+role_models:
+  main: anthropic/claude-sonnet-5
+  subagent: deepseek-ai/DeepSeek-V4.1-Flash
+```
+
+The same works with flags: `dari router create <name> --model ... --main-model <id> --subagent-model <id>`. On `dari router update`, `--main-model ""` routes the main agent again.
+
+`role_prompts` appends text to the end of a role's system prompt on every request from it, routed or fixed, for example to nudge the main agent to delegate. Background requests never get it. Flags: `--main-prompt <text>` and `--subagent-prompt <text>`; an empty value removes it.
+
+```yaml
+role_prompts:
+  main: Delegate codebase exploration and independent edits to subagents.
+```
+
+## Routing Instructions
+
+Dari already routes with each model's evals. Optional natural-language rules in `custom_config` steer it for roles left on routing; a request no rule matches is routed among every enabled model as usual:
+
+```yaml
 custom_config:
   rules:
     - when: planning and architecture
       use: openai/gpt-5.6-sol
       thinking_level: high
-  default: deepseek-ai/DeepSeek-V4.1-Flash
-  default_thinking_level: off
 ```
 
 When `model_thinking_levels` is present, it must list every enabled model:

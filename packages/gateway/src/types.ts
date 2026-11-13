@@ -119,6 +119,11 @@ export type ResolvedRouterModelConfig = {
   zdr?: boolean;
 };
 
+// Subagents include workflow agents. Background requests have no role.
+export type RouterRole = "main" | "subagent";
+export type RouterRoleModels = Partial<Record<RouterRole, string | null>>;
+export type RouterRolePrompts = Partial<Record<RouterRole, string | null>>;
+
 export type ResolvedRouter = {
   router_id: string;
   organization_id: string;
@@ -173,6 +178,12 @@ export type ResolvedRouter = {
   prefix_hits?: RouterPrefixHit[];
   routing_strategy?: RoutingStrategy;
   custom_config?: CustomRouterConfig | null;
+  // Fixed models for agent roles; a role with a model is served it without
+  // routing, whatever model the client asked for.
+  role_models?: RouterRoleModels;
+  // Text appended to the end of the system prompt of each request from a
+  // role, routed or fixed.
+  role_prompts?: RouterRolePrompts;
   model_thinking_levels?: Record<string, ReasoningEffort[]>;
   fast_models?: string[];
   model_prices?: Record<string, RouterModelPrice>;

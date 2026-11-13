@@ -95,28 +95,34 @@ test("applies cache switch pruning to Dari candidates", () => {
   expect(resolution.candidates).toEqual([candidate("warm", "high")]);
 });
 
-test("keeps exact rule/default pairs and drops unavailable levels", () => {
+test("rules steer without narrowing the candidates", () => {
   const resolved = resolveCustom({
     config: CONFIG,
     candidates: [
+      candidate("cheap", "off"),
       candidate("expensive", "medium"),
       candidate("expensive", "high"),
-      candidate("cheap", "off"),
+      candidate("unrelated", "medium"),
     ],
     costEstimates: [
+      estimate("cheap", "off", 1),
       estimate("expensive", "medium", 2),
       estimate("expensive", "high", 3),
-      estimate("cheap", "off", 1),
+      estimate("unrelated", "medium", 0.5),
     ],
     modelPrices: {
       expensive: { input: 3, output: 10 },
       cheap: { input: 1, output: 2 },
+      unrelated: { input: 0.5, output: 1 },
     },
   });
 
+  // Every candidate stays routable, most expensive first.
   expect(resolved.candidates).toEqual([
+    candidate("expensive", "medium"),
     candidate("expensive", "high"),
     candidate("cheap", "off"),
+    candidate("unrelated", "medium"),
   ]);
   expect(resolved.custom.rules).toEqual([
     { when: "plan", use: "expensive", thinking_level: "high" },
@@ -125,12 +131,13 @@ test("keeps exact rule/default pairs and drops unavailable levels", () => {
     model: "cheap",
     thinkingLevel: "off",
   });
+  // No candidate serves cheap at medium.
   expect(resolved.custom.audit.dropped_rules).toEqual([
     { when: "implement", use: "cheap", thinking_level: "medium" },
   ]);
 });
 
-test("omitted and null rule thinking levels include every enabled pair for the model", () => {
+test("omitted and null rule thinking levels match every enabled pair for the model", () => {
   const resolved = resolveCustom({
     config: {
       rules: [
@@ -139,30 +146,18 @@ test("omitted and null rule thinking levels include every enabled pair for the m
       ],
       default: null,
     },
-    candidates: [
-      candidate("model", "low"),
-      candidate("model", "high"),
-      candidate("other", "medium"),
-      candidate("unrelated", "off"),
-    ],
+    candidates: [candidate("model", "low"), candidate("model", "high"), candidate("other", "medium")],
     costEstimates: [
       estimate("model", "low", 1),
       estimate("model", "high", 2),
       estimate("other", "medium", 1.5),
-      estimate("unrelated", "off", 0.5),
     ],
     modelPrices: {
       model: { input: 2, output: 10 },
       other: { input: 1, output: 5 },
-      unrelated: { input: 0.5, output: 1 },
     },
   });
 
-  expect(resolved.candidates).toEqual([
-    candidate("model", "low"),
-    candidate("model", "high"),
-    candidate("other", "medium"),
-  ]);
   expect(resolved.custom.rules).toEqual([
     { when: "legacy auto", use: "model" },
     { when: "explicit auto", use: "other", thinking_level: null },
@@ -170,42 +165,7 @@ test("omitted and null rule thinking levels include every enabled pair for the m
   expect(resolved.custom.audit.dropped_rules).toEqual([]);
 });
 
-test("Auto fallback includes every enabled pair for its model", () => {
-  const resolved = resolveCustom({
-    config: {
-      rules: [
-        { when: "fast fallback requests", use: "fallback", thinking_level: "off" },
-      ],
-      default: "fallback",
-      default_thinking_level: null,
-    },
-    candidates: [
-      candidate("fallback", "off"),
-      candidate("fallback", "high"),
-      candidate("unrelated", "medium"),
-    ],
-    costEstimates: [
-      estimate("fallback", "off", 1),
-      estimate("fallback", "high", 2),
-      estimate("unrelated", "medium", 0.5),
-    ],
-    modelPrices: {
-      fallback: { input: 2, output: 10 },
-      unrelated: { input: 1, output: 2 },
-    },
-  });
-
-  expect(resolved.candidates).toEqual([
-    candidate("fallback", "off"),
-    candidate("fallback", "high"),
-  ]);
-  expect(resolved.custom.defaultTarget).toEqual({
-    model: "fallback",
-    thinkingLevel: null,
-  });
-});
-
-test("same model at the wrong thinking level is not routable for a rule", () => {
+test("a rule whose pair no candidate serves is dropped", () => {
   const resolved = resolveCustom({
     config: {
       rules: [{ when: "deep", use: "model", thinking_level: "high" }],
@@ -217,7 +177,7 @@ test("same model at the wrong thinking level is not routable for a rule", () => 
     modelPrices: { model: { input: 1, output: 2 } },
   });
 
-  expect(resolved.candidates).toEqual([]);
+  expect(resolved.candidates).toEqual([candidate("model", "medium")]);
   expect(resolved.custom.rules).toEqual([]);
   expect(resolved.custom.audit.no_routable_rule_models).toBe(true);
 });
@@ -256,43 +216,4 @@ test("cache pruning uses exact previous pair and removes rules for pruned pairs"
   expect(resolved.pruning.pruned_candidates).toMatchObject([
     { model: "cold", reasoning_effort: "low" },
   ]);
-});
-
-test("an incumbent outside the custom rule scope cannot prune rule candidates", () => {
-  const resolved = resolveCustom({
-    config: {
-      rules: [{ when: "allowed", use: "allowed", thinking_level: "medium" }],
-    },
-    candidates: [candidate("unreferenced", "medium"), candidate("allowed", "medium")],
-    costEstimates: [
-      estimate("unreferenced", "medium", 1, 1000, 20),
-      estimate("allowed", "medium", 0.95, 0, 5),
-    ],
-    previousDecision: {
-      model: "unreferenced",
-      reasoningEffort: "medium",
-      reason: "prior route",
-    },
-    modelPrices: {
-      unreferenced: { input: 2, output: 20 },
-      allowed: { input: 1, output: 5 },
-    },
-  });
-
-  expect(resolved.candidates).toEqual([candidate("allowed", "medium")]);
-  expect(resolved.pruning.skip_reason).toBe("no_previous_decision");
-  expect(resolved.pruning.pruned_candidates).toEqual([]);
-});
-
-test("custom routing fails closed instead of adding unrelated candidates", () => {
-  const resolved = resolveCustom({
-    config: CONFIG,
-    candidates: [candidate("unrelated", "medium")],
-    costEstimates: [estimate("unrelated", "medium", 1)],
-    modelPrices: { unrelated: { input: 1, output: 1 } },
-  });
-
-  expect(resolved.candidates).toEqual([]);
-  expect(resolved.custom.audit.fallback_all_candidates).toBe(false);
-  expect(resolved.custom.audit.no_routable_rule_models).toBe(true);
 });

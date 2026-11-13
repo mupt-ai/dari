@@ -83,6 +83,10 @@ routers:
     subscriptions: true    # prefer connected subscriptions over API keys
     sessionPinning: false  # route each session and subagent once, then keep its model
     nativeCompaction: false # let Codex compact server-side; compacted requests route only to supporting models
+    roleModels:            # optional: serve the main agent or subagents one model, without routing
+      subagent: openai/gpt-6.1-sol
+    rolePrompts:           # optional: append to the main agent's or subagents' system prompt
+      main: Delegate codebase exploration to subagents.
   local:                   # serves /local/v1/...
     models: [local/qwen3-coder]
 

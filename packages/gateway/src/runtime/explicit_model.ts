@@ -7,15 +7,18 @@ import type { PreparedRoutedCompletion } from "./prepare_routed_completion.js";
 
 /* A request for `dari/model/<id>` is served by exactly that enabled model,
    with no selector or lease: the user chose it, like picking a
-   model in their agent's /model menu. The client's thinking level is kept
-   when the model supports it; otherwise the model's default level is used. */
+   model in their agent's /model menu, or the router fixed it for the
+   request's agent role. Routing rules and switch-cost pruning narrow only
+   what the selector may pick, so they never remove it. The client's thinking
+   level is kept when the model supports it; otherwise the model's default
+   level is used. */
 export function explicitModelDecision(
   prepared: PreparedRoutedCompletion,
 ): RoutedDecision | null {
   const modelId = explicitModelId(prepared.interaction.model);
   if (modelId === null) return null;
   if (!prepared.credentials.enabled_models.includes(modelId)) throw modelNotEnabled(modelId);
-  const candidates = prepared.routing.candidateResolution.candidates.filter(
+  const candidates = prepared.routing.candidateResolution.allCandidates.filter(
     (candidate) => candidate.model === modelId,
   );
   if (candidates.length === 0) {
@@ -30,7 +33,9 @@ export function explicitModelDecision(
   const decision: RoutingDecision = {
     selectedModel: candidate.model,
     reasoningEffort: candidate.reasoningEffort,
-    reason: `Requested model ${modelId} served without selection.`,
+    reason: prepared.role === undefined
+      ? `Requested model ${modelId} served without selection.`
+      : `The router's ${prepared.role} model ${modelId} served without selection.`,
   };
   return { decision };
 }

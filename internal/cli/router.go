@@ -93,9 +93,19 @@ type routerCustomRule struct {
 }
 
 type routerCustomConfig struct {
-	Rules                []routerCustomRule `json:"rules" yaml:"rules"`
-	Default              *string            `json:"default,omitempty" yaml:"default"`
-	DefaultThinkingLevel *string            `json:"default_thinking_level,omitempty" yaml:"default_thinking_level"`
+	Rules []routerCustomRule `json:"rules" yaml:"rules"`
+	// Deprecated and never sent: a request no rule matches is routed among
+	// every enabled model. Parsed only so older manifests still load.
+	Default              *string `json:"-" yaml:"default"`
+	DefaultThinkingLevel *string `json:"-" yaml:"default_thinking_level"`
+}
+
+// routerRoles holds one value for the main agent and one for subagents: a
+// fixed model (role_models) or a system prompt addition (role_prompts). A nil
+// role has none.
+type routerRoles struct {
+	Main     *string `json:"main" yaml:"main"`
+	Subagent *string `json:"subagent" yaml:"subagent"`
 }
 
 type routerCreateRequest struct {
@@ -109,8 +119,10 @@ type routerCreateRequest struct {
 	ProviderKeys          map[string]string   `json:"provider_keys,omitempty"`
 	ProviderCredentialIDs map[string]string   `json:"provider_credential_ids,omitempty"`
 	ProviderKeySources    map[string]string   `json:"provider_key_sources,omitempty"`
-	RoutingStrategy       string              `json:"routing_strategy,omitempty"`
+	RoutingStrategy       string              `json:"routing_strategy"`
 	CustomConfig          *routerCustomConfig `json:"custom_config,omitempty"`
+	RoleModels            *routerRoles        `json:"role_models,omitempty"`
+	RolePrompts           *routerRoles        `json:"role_prompts,omitempty"`
 	ModelThinkingLevels   map[string][]string `json:"model_thinking_levels,omitempty"`
 	FastModels            []string            `json:"fast_models,omitempty"`
 	// Providers served by the attributed user's subscription, and the models
@@ -129,32 +141,39 @@ type routerUpdateRequest struct {
 	ProviderKeys          map[string]string `json:"provider_keys,omitempty"`
 	ProviderCredentialIDs map[string]string `json:"provider_credential_ids,omitempty"`
 	ProviderKeySources    map[string]string `json:"provider_key_sources,omitempty"`
-	RoutingStrategy       string            `json:"routing_strategy,omitempty"`
+	// Omitted keeps the current role models; an object replaces both roles.
+	RoleModels  *routerRoles `json:"role_models,omitempty"`
+	RolePrompts *routerRoles `json:"role_prompts,omitempty"`
 	// Omitted keeps the current list; an empty list clears it.
 	SubscriptionProviders         *[]string `json:"subscription_providers,omitempty"`
 	SubscriptionAPIFallbackModels *[]string `json:"subscription_api_fallback_models,omitempty"`
 }
 
 type routerCurrent struct {
-	Name            string   `json:"name"`
-	EnabledModels   []string `json:"enabled_models"`
-	RoutingStrategy string   `json:"routing_strategy"`
+	Name          string      `json:"name"`
+	EnabledModels []string    `json:"enabled_models"`
+	RoleModels    routerRoles `json:"role_models"`
+	RolePrompts   routerRoles `json:"role_prompts"`
 }
 
 type routerCreateManifest struct {
-	AllowLongContext              bool                `yaml:"allow_long_context"`
-	EvalScoreImputation           *bool               `yaml:"eval_score_imputation"`
-	SessionPinning                bool                `yaml:"session_pinning"`
-	NativeCompaction              bool                `yaml:"native_compaction"`
-	Name                          string              `yaml:"name"`
-	EnabledModels                 []string            `yaml:"enabled_models"`
-	ModelProviders                map[string]string   `yaml:"model_providers"`
-	ProviderKeys                  map[string]string   `yaml:"provider_keys"`
-	ProviderKeyEnvs               map[string]string   `yaml:"provider_key_envs"`
-	ProviderCredentialIDs         map[string]string   `yaml:"provider_credential_ids"`
-	ProviderKeySources            map[string]string   `yaml:"provider_key_sources"`
+	AllowLongContext      bool              `yaml:"allow_long_context"`
+	EvalScoreImputation   *bool             `yaml:"eval_score_imputation"`
+	SessionPinning        bool              `yaml:"session_pinning"`
+	NativeCompaction      bool              `yaml:"native_compaction"`
+	Name                  string            `yaml:"name"`
+	EnabledModels         []string          `yaml:"enabled_models"`
+	ModelProviders        map[string]string `yaml:"model_providers"`
+	ProviderKeys          map[string]string `yaml:"provider_keys"`
+	ProviderKeyEnvs       map[string]string `yaml:"provider_key_envs"`
+	ProviderCredentialIDs map[string]string `yaml:"provider_credential_ids"`
+	ProviderKeySources    map[string]string `yaml:"provider_key_sources"`
+	// Deprecated: accepted so older manifests still parse; the strategy is
+	// derived from custom_config.
 	RoutingStrategy               string              `yaml:"routing_strategy"`
 	CustomConfig                  *routerCustomConfig `yaml:"custom_config"`
+	RoleModels                    routerRoles         `yaml:"role_models"`
+	RolePrompts                   routerRoles         `yaml:"role_prompts"`
 	ModelThinkingLevels           map[string][]string `yaml:"model_thinking_levels"`
 	FastModels                    []string            `yaml:"fast_models"`
 	SubscriptionProviders         []string            `yaml:"subscription_providers"`
@@ -173,7 +192,10 @@ type routerConfigFlags struct {
 	providerKeyEnvs       []string
 	providerCredentials   []string
 	managedKeyProvider    []string
-	strategy              string
+	mainModel             string
+	subagentModel         string
+	mainPrompt            string
+	subagentPrompt        string
 	flagNames             []string
 }
 
@@ -189,7 +211,10 @@ func (rf *routerConfigFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringArrayVar(&rf.providerKeyEnvs, name("provider-key-env"), nil, "Read a provider API key from the local environment as provider=ENV_VAR (repeatable)")
 	cmd.Flags().StringArrayVar(&rf.providerCredentials, name("provider-credential"), nil, "Use a saved provider credential as provider=CREDENTIAL_ID (repeatable)")
 	cmd.Flags().StringSliceVar(&rf.managedKeyProvider, name("managed-key"), nil, "Use the Dari-managed key for this provider (repeatable or comma-separated)")
-	cmd.Flags().StringVar(&rf.strategy, name("strategy"), "", "Routing strategy: dari; use a manifest for custom rules")
+	cmd.Flags().StringVar(&rf.mainModel, name("main-model"), "", "Serve the main agent this enabled model instead of routing it; on update an empty value routes it again")
+	cmd.Flags().StringVar(&rf.subagentModel, name("subagent-model"), "", "Serve subagents this enabled model instead of routing them; on update an empty value routes them again")
+	cmd.Flags().StringVar(&rf.mainPrompt, name("main-prompt"), "", "Append this text to the main agent's system prompt, e.g. to nudge it to delegate; on update an empty value removes it")
+	cmd.Flags().StringVar(&rf.subagentPrompt, name("subagent-prompt"), "", "Append this text to subagents' system prompt; on update an empty value removes it")
 	cmd.Flags().BoolVar(&rf.allowLongContext, name("allow-long-context"), false, "Allow provider long-context surcharges (off by default)")
 	cmd.Flags().BoolVar(&rf.evalScoreImputation, name("eval-score-imputation"), true, "Estimate missing eval scores for a model and thinking level from related measured scores (on by default)")
 	cmd.Flags().BoolVar(&rf.sessionPinning, name("session-pinning"), false, "Route once when a session starts and keep that model for the whole session; each subagent is routed once when it starts (off by default)")
@@ -225,6 +250,35 @@ func (rf *routerConfigFlags) subscriptionSettings(cmd *cobra.Command) (providers
 		apiFallbackModels = &cleaned
 	}
 	return providers, apiFallbackModels, nil
+}
+
+// roleModels and rolePrompts apply the role flags passed over current, or
+// return nil when neither of the pair was passed.
+func (rf *routerConfigFlags) roleModels(cmd *cobra.Command, current routerRoles) *routerRoles {
+	return roleFlags(cmd, "main-model", rf.mainModel, "subagent-model", rf.subagentModel, current)
+}
+
+func (rf *routerConfigFlags) rolePrompts(cmd *cobra.Command, current routerRoles) *routerRoles {
+	return roleFlags(cmd, "main-prompt", rf.mainPrompt, "subagent-prompt", rf.subagentPrompt, current)
+}
+
+func roleFlags(cmd *cobra.Command, mainFlag, mainValue, subagentFlag, subagentValue string, current routerRoles) *routerRoles {
+	if !cmd.Flags().Changed(mainFlag) && !cmd.Flags().Changed(subagentFlag) {
+		return nil
+	}
+	value := func(flagName, value string, currentValue *string) *string {
+		if !cmd.Flags().Changed(flagName) {
+			return currentValue
+		}
+		if value = strings.TrimSpace(value); value != "" {
+			return &value
+		}
+		return nil
+	}
+	return &routerRoles{
+		Main:     value(mainFlag, mainValue, current.Main),
+		Subagent: value(subagentFlag, subagentValue, current.Subagent),
+	}
 }
 
 func (rf *routerConfigFlags) changed(cmd *cobra.Command) bool {
@@ -321,6 +375,9 @@ func newRouterCreateCmd(gf *globalFlags) *cobra.Command {
 				NativeCompaction: rf.nativeCompaction,
 				Name:             strings.TrimSpace(args[0]),
 				EnabledModels:    rf.models,
+				RoutingStrategy:  "dari",
+				RoleModels:       rf.roleModels(cmd, routerRoles{}),
+				RolePrompts:      rf.rolePrompts(cmd, routerRoles{}),
 			}
 			// Omitted unless passed so the API default (on) applies.
 			if cmd.Flags().Changed("eval-score-imputation") {
@@ -356,13 +413,6 @@ func newRouterCreateCmd(gf *globalFlags) *cobra.Command {
 			}
 			if sources != nil {
 				body.ProviderKeySources = sources
-			}
-			strategy, err := routerStrategyForCreate(rf.strategy)
-			if err != nil {
-				return err
-			}
-			if strategy != "" {
-				body.RoutingStrategy = strategy
 			}
 			var resp map[string]any
 			if err := orgKeyRequest(cmd, gf, http.MethodPost, "/v1/organizations/current/routers", body, &resp); err != nil {
@@ -456,13 +506,8 @@ func newRouterUpdateCmd(gf *globalFlags) *cobra.Command {
 			if sources != nil {
 				body.ProviderKeySources = sources
 			}
-			strategy, err := routerStrategyForUpdate(rf.strategy, current.RoutingStrategy)
-			if err != nil {
-				return err
-			}
-			if rf.strategy != "" {
-				body.RoutingStrategy = strategy
-			}
+			body.RoleModels = rf.roleModels(cmd, current.RoleModels)
+			body.RolePrompts = rf.rolePrompts(cmd, current.RolePrompts)
 			var resp map[string]any
 			if err := orgKeyRequest(cmd, gf, http.MethodPut, "/v1/organizations/current/routers/"+url.PathEscape(routerID), body, &resp); err != nil {
 				return err
@@ -547,30 +592,6 @@ func newRouterDeleteCmd(gf *globalFlags) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&yes, "yes", false, "Skip the interactive confirmation prompt")
 	return cmd
-}
-
-func routerStrategyForCreate(strategy string) (string, error) {
-	switch strategy {
-	case "", "dari":
-		return strategy, nil
-	case "custom":
-		return "", fmt.Errorf("custom routing requires a manifest with custom_config; use dari router create --from-file")
-	default:
-		return "", fmt.Errorf("--strategy must be dari")
-	}
-}
-
-func routerStrategyForUpdate(strategy, currentStrategy string) (string, error) {
-	if strategy == "" {
-		return currentStrategy, nil
-	}
-	if strategy == "custom" && currentStrategy != "custom" {
-		return "", fmt.Errorf("custom routing rules cannot be set with flags; create the router from a manifest with custom_config (--from-file)")
-	}
-	if strategy != "dari" && strategy != "custom" {
-		return "", fmt.Errorf("--strategy must be dari")
-	}
-	return strategy, nil
 }
 
 func splitPair(pair, flagName, format string) (string, string, error) {
@@ -733,11 +754,11 @@ func (manifest routerCreateManifest) createRequest(path string, resolveCatalogDe
 	if err != nil {
 		return routerCreateRequest{}, err
 	}
-	strategy, err := routerStrategyForManifest(
-		path,
-		strings.ToLower(strings.TrimSpace(manifest.RoutingStrategy)),
-		manifest.CustomConfig != nil,
-	)
+	roleModels, err := normalizeManifestRoleModels(path, manifest.RoleModels, models)
+	if err != nil {
+		return routerCreateRequest{}, err
+	}
+	rolePrompts, err := normalizeManifestRolePrompts(path, manifest.RolePrompts)
 	if err != nil {
 		return routerCreateRequest{}, err
 	}
@@ -768,10 +789,13 @@ func (manifest routerCreateManifest) createRequest(path string, resolveCatalogDe
 	if len(providerKeySources) > 0 {
 		body.ProviderKeySources = providerKeySources
 	}
-	if strategy != "" {
-		body.RoutingStrategy = strategy
+	body.RoutingStrategy = "dari"
+	if customConfig != nil {
+		body.RoutingStrategy = "custom"
 	}
 	body.CustomConfig = customConfig
+	body.RoleModels = roleModels
+	body.RolePrompts = rolePrompts
 	body.ModelThinkingLevels = modelThinkingLevels
 	body.FastModels = fastModels
 	body.SubscriptionProviders = subscriptionProviders
@@ -1174,35 +1198,7 @@ func normalizeManifestCustomConfig(
 			ThinkingLevel: thinkingLevel,
 		})
 	}
-	var defaultModel *string
-	var defaultThinkingLevel *string
-	if config.Default != nil {
-		value := strings.TrimSpace(*config.Default)
-		if value == "" {
-			return nil, fmt.Errorf("%s: custom_config.default must be non-empty when set", path)
-		}
-		if !enabled[value] {
-			return nil, fmt.Errorf("%s: custom_config.default must be one of enabled_models", path)
-		}
-		defaultModel = &value
-		normalizedDefaultThinkingLevel, err := normalizeManifestTargetThinkingLevel(
-			path+": custom_config.default_thinking_level",
-			value,
-			config.DefaultThinkingLevel,
-			modelThinkingLevels,
-		)
-		if err != nil {
-			return nil, err
-		}
-		defaultThinkingLevel = normalizedDefaultThinkingLevel
-	} else if config.DefaultThinkingLevel != nil {
-		return nil, fmt.Errorf("%s: custom_config.default is required when default_thinking_level is set", path)
-	}
-	return &routerCustomConfig{
-		Rules:                rules,
-		Default:              defaultModel,
-		DefaultThinkingLevel: defaultThinkingLevel,
-	}, nil
+	return &routerCustomConfig{Rules: rules}, nil
 }
 
 func normalizeManifestTargetThinkingLevel(
@@ -1228,21 +1224,29 @@ func normalizeManifestTargetThinkingLevel(
 	return &level, nil
 }
 
-func routerStrategyForManifest(path, strategy string, hasCustomConfig bool) (string, error) {
-	switch {
-	case strategy == "custom" && !hasCustomConfig:
-		return "", fmt.Errorf("%s: routing_strategy custom requires custom_config", path)
-	case strategy == "dari" && hasCustomConfig:
-		return "", fmt.Errorf("%s: custom_config is only supported when routing_strategy is custom", path)
-	case strategy == "custom" || strategy == "dari":
-		return strategy, nil
-	case strategy != "":
-		return "", fmt.Errorf("%s: routing_strategy must be dari or custom", path)
-	case hasCustomConfig:
-		return "custom", nil
-	default:
-		return "", nil
+func normalizeManifestRoleModels(path string, roles routerRoles, models []string) (*routerRoles, error) {
+	pin := func(role string, value *string) (*string, error) {
+		if value == nil {
+			return nil, nil
+		}
+		model := strings.TrimSpace(*value)
+		if !slices.Contains(models, model) {
+			return nil, fmt.Errorf("%s: role_models.%s must be one of enabled_models", path, role)
+		}
+		return &model, nil
 	}
+	main, err := pin("main", roles.Main)
+	if err != nil {
+		return nil, err
+	}
+	subagent, err := pin("subagent", roles.Subagent)
+	if err != nil {
+		return nil, err
+	}
+	if main == nil && subagent == nil {
+		return nil, nil
+	}
+	return &routerRoles{Main: main, Subagent: subagent}, nil
 }
 
 // isSubscriptionRouterProvider reports whether a personal subscription can
@@ -1252,4 +1256,34 @@ func isSubscriptionRouterProvider(provider string) bool {
 		[]agentSubscriptionProvider{codexSubscription, claudeSubscription, museSubscription},
 		func(subscription agentSubscriptionProvider) bool { return subscription.routerProvider == provider },
 	)
+}
+
+const manifestRolePromptMaxLength = 4000
+
+func normalizeManifestRolePrompts(path string, roles routerRoles) (*routerRoles, error) {
+	prompt := func(role string, value *string) (*string, error) {
+		if value == nil {
+			return nil, nil
+		}
+		text := strings.TrimSpace(*value)
+		if len([]rune(text)) > manifestRolePromptMaxLength {
+			return nil, fmt.Errorf("%s: role_prompts.%s must be at most %d characters", path, role, manifestRolePromptMaxLength)
+		}
+		if text == "" {
+			return nil, nil
+		}
+		return &text, nil
+	}
+	main, err := prompt("main", roles.Main)
+	if err != nil {
+		return nil, err
+	}
+	subagent, err := prompt("subagent", roles.Subagent)
+	if err != nil {
+		return nil, err
+	}
+	if main == nil && subagent == nil {
+		return nil, nil
+	}
+	return &routerRoles{Main: main, Subagent: subagent}, nil
 }

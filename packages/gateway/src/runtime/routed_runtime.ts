@@ -268,10 +268,11 @@ async function prepareRuntimeExecution(args: {
   if (explicit) {
     prepared.reporter.attachServingDecision(explicit.decision);
     prepared.reporter.attachDecisionDetails({
-      decision_source: "explicit_model",
+      decision_source: prepared.role === undefined ? "explicit_model" : "role_model",
       explicit_model: {
         model: explicit.decision.selectedModel,
         reasoning_effort: explicit.decision.reasoningEffort,
+        ...(prepared.role === undefined ? {} : { role: prepared.role }),
       },
     });
     return selectedExecutionPlan(prepared, explicit);
@@ -618,6 +619,7 @@ function providerExecution(
     costEstimates: prepared.routing.reportingCostEstimates,
     promptCacheKey: prepared.interaction.promptCacheKey,
     tags: prepared.tags,
+    systemPromptSuffix: prepared.rolePrompt,
   });
 }
 

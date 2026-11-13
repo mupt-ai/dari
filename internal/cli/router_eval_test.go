@@ -102,7 +102,6 @@ func TestRouterCreateSendsPayload(t *testing.T) {
 		"--api-url", srv.URL, "router", "create", "Production Router",
 		"--model", "fireworks/deepseek-ai/DeepSeek-V4-Pro,fireworks/deepseek-ai/DeepSeek-V4-Flash",
 		"--provider-key-env", "fireworks=TEST_FIREWORKS_KEY",
-		"--strategy", "dari",
 	})
 	if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
 		t.Fatalf("dari router create: %v", err)
@@ -150,6 +149,7 @@ func TestRouterCreateManualFlagsAllowPathLikeNames(t *testing.T) {
 				"name":                 name,
 				"enabled_models":       []any{"openai/gpt-5.5"},
 				"provider_key_sources": map[string]any{"openai": "managed"},
+				"routing_strategy":     "dari",
 			}
 			if !reflect.DeepEqual(body, want) {
 				t.Fatalf("create body = %#v, want %#v", body, want)
@@ -336,7 +336,7 @@ eval_ids:
 	}
 }
 
-func TestRouterCreateFromManifestCustomStrategySendsPayload(t *testing.T) {
+func TestRouterCreateFromManifestDerivesCustomStrategyAndSendsRoleModels(t *testing.T) {
 	dir := t.TempDir()
 	manifestPath := filepath.Join(dir, "router.yml")
 	if err := os.WriteFile(manifestPath, []byte(`name: Custom Rules Router
@@ -348,7 +348,8 @@ model_thinking_levels:
   openai/gpt-4.1-mini: [off]
 provider_key_sources:
   openai: managed
-routing_strategy: custom
+role_models:
+  main: " openai/gpt-5.5 "
 custom_config:
   rules:
     - when: " planning and architecture "
@@ -357,6 +358,7 @@ custom_config:
     - when: implementation and refactors
       use: " openai/gpt-4.1-mini "
       thinking_level: null
+  # Older manifests may still name a fallback; it is parsed and never sent.
   default: " openai/gpt-4.1-mini "
   default_thinking_level: null
 `), 0o644); err != nil {
@@ -396,6 +398,7 @@ custom_config:
 		},
 		"provider_key_sources": map[string]any{"openai": "managed"},
 		"routing_strategy":     "custom",
+		"role_models":          map[string]any{"main": "openai/gpt-5.5", "subagent": nil},
 		"custom_config": map[string]any{
 			"rules": []any{
 				map[string]any{
@@ -405,7 +408,6 @@ custom_config:
 				},
 				map[string]any{"when": "implementation and refactors", "use": "openai/gpt-4.1-mini"},
 			},
-			"default": "openai/gpt-4.1-mini",
 		},
 	}
 	if !reflect.DeepEqual(body, want) {
@@ -611,27 +613,14 @@ provider_key_sources:
 `,
 		},
 		{
-			name: "custom strategy missing config",
-			manifest: `name: Missing Custom Config
+			name: "role model not enabled",
+			manifest: `name: Unknown Role Model
 enabled_models:
   - openai/gpt-5.5
 provider_key_sources:
   openai: managed
-routing_strategy: custom
-`,
-		},
-		{
-			name: "custom config with dari strategy",
-			manifest: `name: Wrong Custom Strategy
-enabled_models:
-  - openai/gpt-5.5
-provider_key_sources:
-  openai: managed
-routing_strategy: dari
-custom_config:
-  rules:
-    - when: planning
-      use: openai/gpt-5.5
+role_models:
+  subagent: openai/gpt-5.4-mini
 `,
 		},
 		{
@@ -658,21 +647,6 @@ provider_key_sources:
 routing_strategy: custom
 custom_config:
   rules: []
-`,
-		},
-		{
-			name: "custom default model not enabled",
-			manifest: `name: Unknown Custom Default
-enabled_models:
-  - openai/gpt-5.5
-provider_key_sources:
-  openai: managed
-routing_strategy: custom
-custom_config:
-  rules:
-    - when: planning
-      use: openai/gpt-5.5
-  default: openai/gpt-4.1-mini
 `,
 		},
 		{
@@ -747,23 +721,6 @@ custom_config:
     - when: planning
       use: openai/gpt-5.5
       thinking_level: high
-`,
-		},
-		{
-			name: "custom default thinking level without default",
-			manifest: `name: Invalid Auto Fallback
-enabled_models:
-  - openai/gpt-5.5
-model_thinking_levels:
-  openai/gpt-5.5: [high]
-provider_key_sources:
-  openai: managed
-routing_strategy: custom
-custom_config:
-  rules:
-    - when: planning
-      use: openai/gpt-5.5
-  default_thinking_level: high
 `,
 		},
 	} {
@@ -853,8 +810,9 @@ enabled_models:
   - acme/qwen3-coder
 `,
 			want: map[string]any{
-				"name":           "Custom Router",
-				"enabled_models": []any{"acme/qwen3-coder"},
+				"name":             "Custom Router",
+				"enabled_models":   []any{"acme/qwen3-coder"},
+				"routing_strategy": "dari",
 			},
 		},
 		{
@@ -869,6 +827,7 @@ provider_key_sources:
 				"name":                 "Custom Router",
 				"enabled_models":       []any{"acme/qwen3-coder"},
 				"provider_key_sources": map[string]any{"acme": "user"},
+				"routing_strategy":     "dari",
 			},
 		},
 	} {
@@ -1006,8 +965,7 @@ func TestRouterUpdateKeepsCustomStrategy(t *testing.T) {
 				"enabled_models":   []string{"fireworks/deepseek-ai/DeepSeek-V4-Pro"},
 				"routing_strategy": "custom",
 				"custom_config": map[string]any{
-					"rules":   []map[string]any{{"when": "tools", "use": "fireworks/deepseek-ai/DeepSeek-V4-Pro"}},
-					"default": "fireworks/deepseek-ai/DeepSeek-V4-Pro",
+					"rules": []map[string]any{{"when": "tools", "use": "fireworks/deepseek-ai/DeepSeek-V4-Pro"}},
 				},
 			})
 		case "PUT /v1/organizations/current/routers/rtr_123":
@@ -1035,54 +993,6 @@ func TestRouterUpdateKeepsCustomStrategy(t *testing.T) {
 	}
 	if !reflect.DeepEqual(body, want) {
 		t.Fatalf("update body = %#v, want %#v", body, want)
-	}
-}
-
-func TestRouterUpdateRejectsSwitchToCustomViaFlag(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.Method + " " + r.URL.Path {
-		case "GET /v1/organizations/current/routers/rtr_123":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":             "rtr_123",
-				"name":           "Production",
-				"enabled_models": []string{"fireworks/deepseek-ai/DeepSeek-V4-Pro"},
-			})
-		default:
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	defer srv.Close()
-	useTestAPIKey(t)
-
-	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{"--api-url", srv.URL, "router", "update", "rtr_123", "--strategy", "custom"})
-	cmd.SetErr(io.Discard)
-	err := captureStdout(t, func() error { return cmd.Execute() })
-	if err == nil {
-		t.Fatal("expected error for --strategy custom on a non-custom router")
-	}
-	if !strings.Contains(err.Error(), "custom_config") {
-		t.Fatalf("error = %q, want manifest guidance", err)
-	}
-}
-
-func TestRouterCreateRejectsCustomStrategyFlag(t *testing.T) {
-	useTestAPIKey(t)
-
-	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{
-		"--api-url", "http://127.0.0.1:1", "router", "create", "Production",
-		"--model", "fireworks/deepseek-ai/DeepSeek-V4-Pro",
-		"--strategy", "custom",
-	})
-	cmd.SetErr(io.Discard)
-	err := captureStdout(t, func() error { return cmd.Execute() })
-	if err == nil {
-		t.Fatal("expected error for --strategy custom on flag-based create")
-	}
-	if !strings.Contains(err.Error(), "--from-file") {
-		t.Fatalf("error = %q, want --from-file guidance", err)
 	}
 }
 
@@ -1152,5 +1062,129 @@ func TestEvalCommandsUseAPIKeyRoutes(t *testing.T) {
 		if !seen[want] {
 			t.Fatalf("did not see request %s", want)
 		}
+	}
+}
+
+func TestRouterRoleModelFlags(t *testing.T) {
+	current := map[string]any{
+		"id":             "rtr_123",
+		"name":           "Production",
+		"enabled_models": []string{"anthropic/claude-fable-5-2", "deepseek-ai/DeepSeek-V4.1-Flash-1017"},
+		"role_models":    map[string]any{"main": "anthropic/claude-fable-5-2", "subagent": nil},
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want any
+	}{
+		{
+			name: "create pins both roles",
+			args: []string{"create", "Production", "--model", "anthropic/claude-fable-5-2,deepseek-ai/DeepSeek-V4.1-Flash-1017", "--main-model", "anthropic/claude-fable-5-2", "--subagent-model", "deepseek-ai/DeepSeek-V4.1-Flash-1017"},
+			want: map[string]any{"main": "anthropic/claude-fable-5-2", "subagent": "deepseek-ai/DeepSeek-V4.1-Flash-1017"},
+		},
+		{
+			name: "update one role keeps the other",
+			args: []string{"update", "rtr_123", "--subagent-model", "deepseek-ai/DeepSeek-V4.1-Flash-1017"},
+			want: map[string]any{"main": "anthropic/claude-fable-5-2", "subagent": "deepseek-ai/DeepSeek-V4.1-Flash-1017"},
+		},
+		{
+			name: "update empty value routes the role again",
+			args: []string{"update", "rtr_123", "--main-model", ""},
+			want: map[string]any{"main": nil, "subagent": nil},
+		},
+		{
+			name: "update without role flags leaves roles unchanged",
+			args: []string{"update", "rtr_123", "--name", "Staging"},
+			want: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet {
+					_ = json.NewEncoder(w).Encode(current)
+					return
+				}
+				raw, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_123"})
+			}))
+			defer srv.Close()
+			useTestAPIKey(t)
+
+			cmd := newRootCmd("dev")
+			cmd.SetArgs(append([]string{"--api-url", srv.URL, "router"}, tc.args...))
+			if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
+				t.Fatalf("dari router %v: %v", tc.args, err)
+			}
+			if got := body["role_models"]; !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("role_models = %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRouterRolePromptFlags(t *testing.T) {
+	current := map[string]any{
+		"id":             "rtr_123",
+		"name":           "Production",
+		"enabled_models": []string{"anthropic/claude-fable-5-2"},
+		"role_prompts":   map[string]any{"main": "Delegate exploration to subagents.", "subagent": nil},
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want any
+	}{
+		{
+			name: "create sets the main prompt",
+			args: []string{"create", "Production", "--model", "anthropic/claude-fable-5-2", "--main-prompt", " Delegate exploration to subagents. "},
+			want: map[string]any{"main": "Delegate exploration to subagents.", "subagent": nil},
+		},
+		{
+			name: "update one role keeps the other",
+			args: []string{"update", "rtr_123", "--subagent-prompt", "Report back briefly."},
+			want: map[string]any{"main": "Delegate exploration to subagents.", "subagent": "Report back briefly."},
+		},
+		{
+			name: "update empty value removes the prompt",
+			args: []string{"update", "rtr_123", "--main-prompt", ""},
+			want: map[string]any{"main": nil, "subagent": nil},
+		},
+		{
+			name: "update without prompt flags leaves prompts unchanged",
+			args: []string{"update", "rtr_123", "--name", "Staging"},
+			want: nil,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if r.Method == http.MethodGet {
+					_ = json.NewEncoder(w).Encode(current)
+					return
+				}
+				raw, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode body: %v", err)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_123"})
+			}))
+			defer srv.Close()
+			useTestAPIKey(t)
+
+			cmd := newRootCmd("dev")
+			cmd.SetArgs(append([]string{"--api-url", srv.URL, "router"}, tc.args...))
+			if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
+				t.Fatalf("dari router %v: %v", tc.args, err)
+			}
+			if got := body["role_prompts"]; !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("role_prompts = %#v, want %#v", got, tc.want)
+			}
+		})
 	}
 }

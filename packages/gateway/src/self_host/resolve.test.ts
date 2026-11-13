@@ -245,6 +245,36 @@ describe("parseGatewayConfig", () => {
     expect(() =>
       parseGatewayConfig({ routers: { default: { models: ["a/b"], agentModels: { codex: [] } } } }),
     ).toThrow("agentModels.codex");
+    expect(() =>
+      parseGatewayConfig({ routers: { default: { models: ["a/b"], roleModels: { reviewer: "a/b" } } } }),
+    ).toThrow("unknown role");
+    expect(() =>
+      parseGatewayConfig({ routers: { default: { models: ["a/b"], roleModels: { main: "a/c" } } } }),
+    ).toThrow("roleModels.main");
+    expect(() =>
+      parseGatewayConfig({ routers: { default: { models: ["a/b"], rolePrompts: { main: " " } } } }),
+    ).toThrow("rolePrompts.main");
+  });
+
+  test("serves a router's role models", async () => {
+    const resolved = await resolveSelfHostedRouter(
+      deps({
+        apiKeys: { anthropic: "sk-ant", openai: "sk-openai" },
+        config: {
+          routers: {
+            default: {
+              models: ["anthropic/claude-sonnet-4-5"],
+              agentModels: { codex: ["openai/gpt-5.5"] },
+              roleModels: { main: "anthropic/claude-sonnet-4-5", subagent: "openai/gpt-5.5" },
+              rolePrompts: { main: " Delegate exploration to subagents. " },
+            },
+          },
+        },
+      }),
+      request(),
+    );
+    expect(resolved.role_models).toEqual({ main: "anthropic/claude-sonnet-4-5", subagent: "openai/gpt-5.5" });
+    expect(resolved.role_prompts).toEqual({ main: "Delegate exploration to subagents." });
   });
 
   test("applies router defaults", () => {
@@ -258,6 +288,8 @@ describe("parseGatewayConfig", () => {
           sessionPinning: false,
           nativeCompaction: false,
           zdr: false,
+          roleModels: {},
+          rolePrompts: {},
         },
       },
       providers: {},

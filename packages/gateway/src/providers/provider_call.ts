@@ -49,6 +49,7 @@ import {
   type ProviderEventStream,
 } from "./pi.js";
 import { promptTokenEstimateFor, type PromptTokenEstimate } from "./cancel_estimate.js";
+import { withSystemPromptSuffix } from "../interaction/system_prompt.js";
 
 type ProviderCallConfig = {
   model: string;
@@ -62,6 +63,8 @@ type ProviderCallConfig = {
   promptEstimate: PromptTokenEstimate | undefined;
   // A platform-supplied endpoint replacing the model's configured one.
   endpoint?: ProviderEndpoint;
+  // Appended to the end of the system prompt sent to the provider.
+  systemPromptSuffix?: string;
 };
 
 export type ProviderExecution = ProviderCallConfig & {
@@ -107,6 +110,7 @@ export function prepareProviderExecution(args: {
   promptCacheKey?: string;
   costEstimates?: readonly CandidateCostEstimate[];
   tags?: RequestTags;
+  systemPromptSuffix?: string;
 }): ProviderExecution {
   const model = args.decision.selectedModel;
   const promptEstimate = promptTokenEstimateFor(args.costEstimates, model, args.decision.reasoningEffort);
@@ -146,6 +150,7 @@ export function prepareProviderExecution(args: {
       : args.conversationId,
     reasoningEffort: args.decision.reasoningEffort,
     promptEstimate,
+    ...(args.systemPromptSuffix ? { systemPromptSuffix: args.systemPromptSuffix } : {}),
     ...(supplied?.baseUrl || supplied?.headers
       ? { endpoint: { baseUrl: supplied.baseUrl, headers: supplied.headers } }
       : {}),
@@ -230,7 +235,7 @@ export async function startProviderStream(args: {
   try {
     const providerStream = await streamInteractionModel({
       model: args.execution.model,
-      request: args.interaction,
+      request: withSystemPromptSuffix(args.interaction, args.execution.systemPromptSuffix),
       apiKey: args.execution.apiKey,
       auth: await awsRoleCredentials.resolve(args.execution.auth),
       pricing: args.execution.pricing,
@@ -325,7 +330,7 @@ async function completeProvider(args: {
   const providerStartedAt = new Date();
   const completion = await completeInteractionModel({
     model: args.execution.model,
-    request: args.interaction,
+    request: withSystemPromptSuffix(args.interaction, args.execution.systemPromptSuffix),
     apiKey: args.execution.apiKey,
     auth: await awsRoleCredentials.resolve(args.execution.auth),
     pricing: args.execution.pricing,

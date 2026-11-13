@@ -141,6 +141,8 @@ export async function resolveSelfHostedRouter(
     primary_retries: router.retries,
     routing_strategy: "dari",
     custom_config: null,
+    role_models: router.roleModels,
+    role_prompts: router.rolePrompts,
     evals: [],
     model_thinking_levels: thinkingLevels(listed),
     model_prices: {},

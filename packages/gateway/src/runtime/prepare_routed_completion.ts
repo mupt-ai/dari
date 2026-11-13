@@ -17,8 +17,9 @@ import { gatewayPlatform, type RequestTags, type SessionPin } from "../platform/
 import { resolveRouter } from "../strategies/routing.js";
 import { RequestReporter, type ReportedCandidatePruning } from "../telemetry/report.js";
 import { RoutingBillingFinalization } from "../telemetry/billing_finalization.js";
-import type { ClientHarness, ProviderCredential, ResolvedRouter } from "../types.js";
+import type { ClientHarness, ProviderCredential, ResolvedRouter, RouterRole } from "../types.js";
 import { requestTags } from "./request_tags.js";
+import { rolePrompt, withRoleModel } from "./role_model.js";
 import { strictProviderAccess } from "./strict_provider_access.js";
 import type { RoutedRuntimeReporter } from "./runtime_reporter.js";
 import type { RoutedProtocol } from "./routed_protocol.js";
@@ -43,6 +44,11 @@ export type PreparedRoutedCompletion = {
   // Present when this request is served by session pinning: the session's
   // pin key and the pair it pinned, null before its first routed turn.
   sessionPin?: { key: string; pin: SessionPin | null };
+  // The agent role whose fixed router model this request is served.
+  role?: RouterRole;
+  // The router's prompt for this request's role, appended to the system
+  // prompt sent to the provider. Routing and prefix matching never see it.
+  rolePrompt?: string;
   reporter: RoutedRuntimeReporter;
 };
 
@@ -136,7 +142,9 @@ export async function prepareRoutedCompletion(args: {
     }
     credentials = conversationCredentials;
   }
-  const access = strictProviderAccess(credentials, args.interaction);
+  const roleModel = withRoleModel(credentials, args.interaction);
+  const prompt = rolePrompt(credentials, args.interaction);
+  const access = strictProviderAccess(credentials, roleModel.interaction);
   credentials = access.credentials;
   args = {
     ...args,
@@ -227,6 +235,8 @@ export async function prepareRoutedCompletion(args: {
     harnessConversationIdentity: args.harnessConversationIdentity,
     routing,
     ...(sessionPin === undefined ? {} : { sessionPin }),
+    ...(roleModel.role === undefined ? {} : { role: roleModel.role }),
+    ...(prompt === undefined ? {} : { rolePrompt: prompt }),
     reporter,
   };
 }

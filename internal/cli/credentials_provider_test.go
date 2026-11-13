@@ -180,6 +180,7 @@ func TestRouterCreateSendsSavedProviderCredential(t *testing.T) {
 		"name":                    "Production",
 		"enabled_models":          []any{"openrouter/openai/gpt-5.5"},
 		"provider_credential_ids": map[string]any{"openrouter": "cred_openrouter"},
+		"routing_strategy":        "dari",
 	}
 	if !reflect.DeepEqual(body, want) {
 		t.Fatalf("create body = %#v, want %#v", body, want)

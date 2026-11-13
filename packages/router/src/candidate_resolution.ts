@@ -118,14 +118,9 @@ function resolveCustomCandidates(
   const matchesDefault = (candidate: RoutingCandidate) =>
     defaultTarget !== null &&
     matchesTarget(candidate, defaultTarget.model, defaultTarget.thinkingLevel);
-  const configuredCandidates = orderCandidatesByCostDesc(
-    args.candidates.filter(
-      (candidate) =>
-        usableRules.some((rule) => matchesRule(candidate, rule)) ||
-        matchesDefault(candidate),
-    ),
-    args.modelPrices,
-  );
+  // Rules steer the selector; they never narrow the router's models. A request
+  // no rule matches is routed among every candidate as usual.
+  const configuredCandidates = orderCandidatesByCostDesc(args.candidates, args.modelPrices);
   const pruned = pruneSwitchCandidates({
     candidates: configuredCandidates,
     costEstimates: reorderEstimates(args.costEstimates, configuredCandidates),
@@ -151,7 +146,7 @@ function resolveCustomCandidates(
       audit: {
         dropped_rules: config.rules.filter((rule) => !usableRules.includes(rule)),
         fallback_all_candidates: false,
-        no_routable_rule_models: configuredCandidates.length === 0,
+        no_routable_rule_models: usableRules.length === 0,
       },
     },
   };

@@ -193,7 +193,10 @@ export async function buildRoutingContext(args: {
     thinkingEnabled: args.interaction.reasoning?.enabled === true,
     toolChoice: args.interaction.toolChoice,
     modelThinkingLevels: args.credentials.model_thinking_levels,
-    strategy: args.credentials.routing_strategy === "custom" ? "custom" : "dari",
+    // Routing rules steer what the selector picks; an explicit model is
+    // served as requested, so they do not narrow its candidates.
+    strategy: args.credentials.routing_strategy === "custom"
+      && explicitModelId(args.interaction.model) === null ? "custom" : "dari",
     customConfig: args.credentials.custom_config,
     modelPrices: args.credentials.model_prices ?? {},
     pricing,

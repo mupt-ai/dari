@@ -5,7 +5,7 @@ import {
 } from "@mupt-ai/dari-router/policy-engine";
 
 import { CLIENT_HARNESSES } from "../ingress/client_harness.js";
-import type { ClientHarness } from "../types.js";
+import type { ClientHarness, RouterRole, RouterRoleModels, RouterRolePrompts } from "../types.js";
 
 /**
  * The self-hosted gateway's configuration file (YAML or JSON):
@@ -22,6 +22,11 @@ import type { ClientHarness } from "../types.js";
  *         - openai/gpt-6.1-sol
  *     subscriptions: true   # serve with connected Claude Code / ChatGPT plans
  *     sessionPinning: false # route each session and subagent once, then keep its model
+ *     roleModels:           # optional: serve an agent role one model, without routing
+ *       main: anthropic/claude-fable-5-2
+ *       subagent: openai/gpt-6.1-sol
+ *     rolePrompts:          # optional: append to an agent role's system prompt
+ *       main: Delegate codebase exploration to subagents.
  *     nativeCompaction: false # let Codex compact server-side with the provider's native compaction
  * providers:                # optional: OpenAI-compatible or self-run endpoints
  *   local:
@@ -60,6 +65,11 @@ export type RouterConfig = {
   sessionPinning: boolean;
   nativeCompaction: boolean;
   zdr: boolean;
+  // Fixed models for agent roles (subagents include workflow agents); a role
+  // without one is routed.
+  roleModels: RouterRoleModels;
+  // Text appended to the end of each role's system prompt.
+  rolePrompts: RouterRolePrompts;
 };
 
 export type RouterModelConfig = {
@@ -187,15 +197,58 @@ function parseRouter(id: string, raw: unknown): RouterConfig {
       agentModels[agent as ClientHarness] = parseRouterModels(id, `agentModels.${agent}`, models);
     }
   }
+  const models = parseRouterModels(id, "models", raw.models);
   return {
-    models: parseRouterModels(id, "models", raw.models),
+    models,
     agentModels,
+    roleModels: parseRoleModels(id, raw.roleModels, [models, ...Object.values(agentModels)].flat()),
+    rolePrompts: parseRolePrompts(id, raw.rolePrompts),
     retries: optionalRetries(raw.retries, `routers.${id}.retries`) ?? 1,
     subscriptions: optionalBoolean(raw.subscriptions, `routers.${id}.subscriptions`) ?? true,
     sessionPinning: optionalBoolean(raw.sessionPinning, `routers.${id}.sessionPinning`) ?? false,
     nativeCompaction: optionalBoolean(raw.nativeCompaction, `routers.${id}.nativeCompaction`) ?? false,
     zdr: optionalBoolean(raw.zdr, `routers.${id}.zdr`) ?? false,
   };
+}
+
+const ROUTER_ROLES: readonly RouterRole[] = ["main", "subagent"];
+
+function parseRoleModels(routerId: string, raw: unknown, models: RouterModelConfig[]): RouterRoleModels {
+  if (raw === undefined) return {};
+  if (!isRecord(raw)) throw new Error(`routers.${routerId}.roleModels must map main and subagent to models.`);
+  const roleModels: RouterRoleModels = {};
+  for (const [role, model] of Object.entries(raw)) {
+    if (!(ROUTER_ROLES as readonly string[]).includes(role)) {
+      throw new Error(`routers.${routerId}.roleModels has an unknown role "${role}"; use main or subagent.`);
+    }
+    if (model === null) continue;
+    if (typeof model !== "string" || !models.some((listed) => listed.id === model)) {
+      throw new Error(`routers.${routerId}.roleModels.${role} must be one of the router's models.`);
+    }
+    roleModels[role as RouterRole] = model;
+  }
+  return roleModels;
+}
+
+export const ROLE_PROMPT_MAX_LENGTH = 4000;
+
+function parseRolePrompts(routerId: string, raw: unknown): RouterRolePrompts {
+  if (raw === undefined) return {};
+  if (!isRecord(raw)) throw new Error(`routers.${routerId}.rolePrompts must map main and subagent to text.`);
+  const rolePrompts: RouterRolePrompts = {};
+  for (const [role, prompt] of Object.entries(raw)) {
+    if (!(ROUTER_ROLES as readonly string[]).includes(role)) {
+      throw new Error(`routers.${routerId}.rolePrompts has an unknown role "${role}"; use main or subagent.`);
+    }
+    if (prompt === null) continue;
+    if (typeof prompt !== "string" || !prompt.trim() || prompt.length > ROLE_PROMPT_MAX_LENGTH) {
+      throw new Error(
+        `routers.${routerId}.rolePrompts.${role} must be text of at most ${ROLE_PROMPT_MAX_LENGTH} characters.`,
+      );
+    }
+    rolePrompts[role as RouterRole] = prompt.trim();
+  }
+  return rolePrompts;
 }
 
 /** Read one model list of a router, naming `field` in what it rejects. */

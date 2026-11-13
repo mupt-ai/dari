@@ -11,7 +11,6 @@ model_thinking_levels:
 provider_key_sources:
   openai: managed
   fireworks: managed
-routing_strategy: custom
 custom_config:
   rules:
     - when: planning, architecture, or difficult debugging
@@ -20,5 +19,6 @@ custom_config:
     - when: short questions and straightforward implementation
       use: deepseek-ai/DeepSeek-V4.1-Flash-1017
       thinking_level: off
-  default: deepseek-ai/DeepSeek-V4.1-Flash-1017
-  default_thinking_level: off
+role_models:
+  main: null
+  subagent: deepseek-ai/DeepSeek-V4.1-Flash-1017

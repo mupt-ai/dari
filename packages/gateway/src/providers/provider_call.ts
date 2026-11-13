@@ -206,9 +206,11 @@ export function startProviderCompletion(args: {
 }
 
 function responseCaptureFor(execution: ProviderExecution): ProviderResponseCapture | undefined {
-  return execution.providerKeySource === "subscription"
-    ? createProviderResponseCapture()
-    : undefined;
+  // A subscription's failures carry its usage limit; a customer key's say
+  // whether the provider refused the key itself.
+  return execution.providerKeySource === "managed"
+    ? undefined
+    : createProviderResponseCapture();
 }
 
 export async function startProviderStream(args: {

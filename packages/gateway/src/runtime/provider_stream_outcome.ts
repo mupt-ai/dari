@@ -81,3 +81,22 @@ export function providerFailureMessage(message: Record<string, unknown>): string
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
+
+const CREDENTIAL_REJECTED = "provider_credential_rejected";
+
+export type CredentialRejection = { provider: string; status: number };
+
+/** Mark a failure where the provider refused the customer's own API key. */
+export function failureWithCredentialRejection(
+  failure: Record<string, unknown>,
+  rejection: CredentialRejection,
+): Record<string, unknown> {
+  return { ...failure, [CREDENTIAL_REJECTED]: rejection };
+}
+
+export function credentialRejectionFromFailure(
+  failure: Record<string, unknown>,
+): CredentialRejection | null {
+  const marker = failure[CREDENTIAL_REJECTED];
+  return typeof marker === "object" && marker !== null ? marker as CredentialRejection : null;
+}

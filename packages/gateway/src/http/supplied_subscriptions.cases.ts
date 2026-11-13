@@ -272,6 +272,31 @@ test("a supplied plan at its usage limit is reported, not held", async () => {
   expect(holds).toEqual([]);
 });
 
+for (const [keySource, code] of [
+  ["user", "provider_credential_rejected"],
+  ["managed", "provider_execution_failed"],
+] as const) {
+  test(`a provider refusing a ${keySource} key answers ${code}`, async () => {
+    router = strictRouter({ provider_key_sources: { openai: keySource } });
+    const recording = globalThis.fetch;
+    globalThis.fetch = (async () => Response.json(
+      { error: { code: "expired_secret_key", message: "Your API key has expired." } },
+      { status: 401 },
+    )) as unknown as typeof fetch;
+    try {
+      const response = await chat(GPT);
+      expect(response.status).toBe(502);
+      const body = await response.text();
+      expect(body).toContain(code);
+      if (keySource === "user") expect(body).toContain("Your openai API key was rejected (401)");
+    } finally {
+      globalThis.fetch = recording;
+    }
+    await waitFor(() => records.length === 1);
+    expect(records[0]!.summary.error_code).toBe(code);
+  });
+}
+
 function strictRouter(overrides: Partial<ResolvedRouter>): ResolvedRouter {
   return {
     router_id: "rtr_bench",

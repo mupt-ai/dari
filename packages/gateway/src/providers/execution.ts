@@ -8,6 +8,8 @@ import {
   customerCanceledProviderMessage,
 } from "../runtime/customer_disconnect.js";
 import {
+  credentialRejectionFromFailure,
+  failureWithCredentialRejection,
   isProviderFailureMessage,
   providerFailureFromCaught,
   providerFailureFromTerminal,
@@ -450,6 +452,17 @@ async function throwProviderFailure(args: {
       codex?.body,
     );
   }
+  const rejected = credentialRejectionFromFailure(result.failure);
+  if (rejected !== null) {
+    const accountsUrl = gatewayPlatform().accountsUrl;
+    throw new HttpError(
+      502,
+      `Your ${rejected.provider} API key was rejected (${rejected.status}): `
+        + `${providerFailureMessage(result.failure)} `
+        + (accountsUrl ? `Update it at ${accountsUrl}.` : "Update it with `dari accounts`."),
+      "provider_credential_rejected",
+    );
+  }
   throw new HttpError(
     502,
     providerFailureMessage(result.failure),
@@ -712,9 +725,14 @@ async function providerFailedAttempt(
     failure: message,
   });
   if (limit === null) {
+    const status = responseCapture?.last?.status;
+    // The customer's own key was refused: theirs to fix, not a gateway fault.
+    const rejected = execution.providerKeySource === "user" && (status === 401 || status === 403);
     return {
       kind: "provider_failed",
-      message,
+      message: rejected
+        ? failureWithCredentialRejection(message, { provider: execution.provider, status })
+        : message,
       latencyMs,
       retryable: !isPromptPolicyRejection(message),
     };

@@ -66,6 +66,7 @@ import {
   reportPrefixState,
 } from "./prefix_state.js";
 import { subscriptionUsageLimitFromFailure } from "../providers/subscription_limits.js";
+import { credentialRejectionFromFailure } from "../runtime/provider_stream_outcome.js";
 import { scrubSecrets } from "./scrub.js";
 import { encodeRetainedInteractionRequest } from "./requests/retained_interaction_request.js";
 import { toolResultObservations, toolSkillEvents } from "./tools/observations.js";
@@ -703,9 +704,11 @@ function reportOutcome(args: ReportableProviderOutcome): ReportOutcome {
   if (args.status === "provider_error") {
     return {
       status: "provider_error",
-      errorCode: subscriptionUsageLimitFromFailure(args.message) === null
-        ? "provider_execution_failed"
-        : "subscription_usage_limit",
+      errorCode: subscriptionUsageLimitFromFailure(args.message) !== null
+        ? "subscription_usage_limit"
+        : credentialRejectionFromFailure(args.message) !== null
+          ? "provider_credential_rejected"
+          : "provider_execution_failed",
       errorMessage:
         typeof args.message.errorMessage === "string"
           ? args.message.errorMessage

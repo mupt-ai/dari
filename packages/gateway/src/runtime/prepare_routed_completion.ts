@@ -268,7 +268,7 @@ async function withProviderCredentials(
   for (const [model, credential] of resolved) {
     if (!credential?.apiKey.trim()) continue;
     const plan = credential.subscription;
-    if (plan !== undefined && !subscriptionServes(plan, model, clientHarness)) continue;
+    if (plan !== undefined && !subscriptionServes(plan, executionProviderForModel(credentials, model), clientHarness)) continue;
     provider_credentials[model] = credential;
     if (plan === "openai_codex") {
       // Keep the catalog's limits and thinking levels; only the serving

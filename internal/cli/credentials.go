@@ -274,6 +274,7 @@ var subscriptionProviders = map[string]agentSubscriptionProvider{
 	"claude-code": claudeSubscription,
 	"codex":       codexSubscription,
 	"muse-code":   museSubscription,
+	"opencode-go": opencodeGoSubscription,
 }
 
 type subscriptionCredential struct {
@@ -375,13 +376,13 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 	var reconnect string
 	cmd := &cobra.Command{
-		Use:   "connect <claude-code|codex>",
+		Use:   "connect <claude-code|codex|muse-code|opencode-go>",
 		Short: "Connect another subscription, or reconnect one with --reconnect",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			provider, ok := subscriptionProviders[strings.ToLower(strings.TrimSpace(args[0]))]
 			if !ok {
-				return fmt.Errorf("unknown subscription %q: expected claude-code, codex, or muse-code", args[0])
+				return fmt.Errorf("unknown subscription %q: expected claude-code, codex, muse-code, or opencode-go", args[0])
 			}
 			client, err := subscriptionClient(cmd.Context(), gf, cmd.ErrOrStderr())
 			if err != nil {

@@ -24,6 +24,9 @@ var (
 	codexSubscription  = agentSubscriptionProvider{"openai_codex", "ChatGPT", "openai", "OpenAI", true, "https://chatgpt.com/#pricing", "https://chatgpt.com/#settings/Account"}
 	// Muse Code subscriptions serve only Muse Code.
 	museSubscription = agentSubscriptionProvider{"meta_muse", "Muse Code", "meta", "Meta", true, "", ""}
+	// OpenCode Go signs in with the OpenCode Console device flow that
+	// `opencode auth login` runs.
+	opencodeGoSubscription = agentSubscriptionProvider{"opencode_go", "OpenCode Go", "opencode-go", "OpenCode", true, "https://opencode.ai/go", "https://opencode.ai/console"}
 )
 
 // OpenCode, Pi, OpenClaw, and Hermes Agent use the organization's default

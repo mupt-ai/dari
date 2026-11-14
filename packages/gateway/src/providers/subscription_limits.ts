@@ -4,7 +4,7 @@ import { providerFailureMessage } from "../runtime/provider_stream_outcome.js";
 import type { ProviderKeySource } from "../types.js";
 import type { CapturedProviderResponse } from "./response_capture.js";
 
-export type SubscriptionOAuthProvider = "anthropic_claude_code" | "openai_codex" | "meta_muse";
+export type SubscriptionOAuthProvider = "anthropic_claude_code" | "openai_codex" | "meta_muse" | "opencode_go";
 
 export type SubscriptionUsageLimit = {
   oauthProvider: SubscriptionOAuthProvider;
@@ -107,6 +107,7 @@ const SUBSCRIPTION_LABEL: Record<SubscriptionOAuthProvider, string> = {
   anthropic_claude_code: "Claude Code",
   openai_codex: "ChatGPT",
   meta_muse: "Muse Code",
+  opencode_go: "OpenCode Go",
 };
 
 // Providers whose plan page the accounts page links to for buying another.
@@ -120,6 +121,7 @@ export function subscriptionOAuthProviderFor(
   if (provider === "anthropic") return "anthropic_claude_code";
   if (provider === "openai" || provider === "openai-codex") return "openai_codex";
   if (provider === "meta") return "meta_muse";
+  if (provider === "opencode-go") return "opencode_go";
   return null;
 }
 
@@ -128,7 +130,8 @@ export function subscriptionOAuthProviderFor(
  * answers 429 with the unified rate-limit headers; the ChatGPT backend answers
  * 429 with a structured `error.code` and `resets_at`. Meta documents no
  * usage-limit signature for Muse Code plans, so any 429 on one holds it until
- * the reset Meta gives, if any. The Codex WebSocket
+ * the reset Meta gives, if any. OpenCode Go names its refusal
+ * `GoUsageLimitError`. The Codex WebSocket
  * transport bypasses fetch, so its usage-limit error only survives as message
  * text and is matched there without a reset time.
  */
@@ -148,6 +151,7 @@ export function detectSubscriptionUsageLimit(args: {
     return anthropicUsageLimit(args.captured, args.model, now);
   }
   if (oauthProvider === "meta_muse") return museUsageLimit(args.captured, now);
+  if (oauthProvider === "opencode_go") return openCodeGoUsageLimit(args.captured, now);
   return codexUsageLimit(args.captured, providerFailureMessage(args.failure), args.model, now);
 }
 
@@ -236,6 +240,25 @@ function museUsageLimit(
     oauthProvider: "meta_muse",
     resetsAt: laterReset(codexErrorBody(captured.bodyText)?.resets_at, captured.headers, now),
     reason: "Muse Code usage limit reached.",
+  };
+}
+
+// OpenCode Go refuses an exhausted plan with 429 and a `GoUsageLimitError`
+// naming the window ("5 hour", "weekly", "monthly"), as OpenCode's own client
+// recognizes it; an upstream's transient 429 on Go does not hold the plan.
+// The reset is `resetsAt` (ISO) when sent, else Retry-After.
+function openCodeGoUsageLimit(
+  captured: CapturedProviderResponse | undefined,
+  now: Date,
+): SubscriptionUsageLimit | null {
+  if (captured === undefined || captured.status !== 429) return null;
+  if (!captured.bodyText.includes("GoUsageLimitError")) return null;
+  const window = /"limitName"\s*:\s*"([^"]+)"/.exec(captured.bodyText)?.[1];
+  const resetsAt = Date.parse(/"resetsAt"\s*:\s*"([^"]+)"/.exec(captured.bodyText)?.[1] ?? "");
+  return {
+    oauthProvider: "opencode_go",
+    resetsAt: laterReset(Number.isNaN(resetsAt) ? undefined : resetsAt / 1000, captured.headers, now),
+    reason: `OpenCode Go ${window ? `${window} ` : ""}usage limit reached.`,
   };
 }
 

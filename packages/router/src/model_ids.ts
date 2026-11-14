@@ -40,10 +40,11 @@ export function canonicalModelId(modelId: string): string {
 // Anthropic models keep their owner's family, and open-weight models get
 // automatic prefix caching with no write fee, the fireworks family (95-98% of
 // prompt tokens read from cache in October 2026 GLM 5.3 and Kimi K3 agent
-// runs). Returns null when the serving provider is not an alias.
+// runs). OpenCode Go serves its open models the same way. Returns null when
+// the serving provider is not an alias.
 function aliasFamilyProvider(model: string, provider: string): string | null {
   if (provider === "openai-codex") return "openai";
-  const gateway = provider === "vercel-ai-gateway";
+  const gateway = provider === "vercel-ai-gateway" || provider === "opencode-go";
   if (!gateway && provider !== "amazon-bedrock" && provider !== "azure") return null;
   const slash = canonicalModelId(model).indexOf("/");
   if (slash <= 0) return null;

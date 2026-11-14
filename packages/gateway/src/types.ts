@@ -51,7 +51,8 @@ export type ResolvedProviderAuth = BearerProviderAuth | AwsSigV4ProviderAuth;
 //   `claude setup-token` prints. It serves Claude Code clients only.
 // - "meta_muse": a Meta (Muse) sign-in; the token is the Model API key the
 //   sign-in mints (Pi's Meta OAuth `access`).
-export type SubscriptionKind = "openai_codex" | "anthropic_claude_code" | "meta_muse";
+// - "opencode_go": an OpenCode Go plan; the token is the plan's API key.
+export type SubscriptionKind = "openai_codex" | "anthropic_claude_code" | "meta_muse" | "opencode_go";
 
 // A bearer credential an embedding platform supplies for one request through
 // GatewayPlatform.resolveProviderCredential, optionally with its own endpoint.

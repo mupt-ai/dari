@@ -77,6 +77,13 @@ export function buildOptions(
   if (model.provider === "meta" && request.museCodeClientId !== undefined) {
     headers["x-client-id"] = request.museCodeClientId;
   }
+  // OpenCode Go serves coding agents that name themselves and send a stable
+  // session id; a generic SDK user agent reads as abuse.
+  // https://opencode.ai/docs/go/
+  if (model.provider === "opencode-go") {
+    headers["user-agent"] = "dari-gateway";
+    if (sessionId) headers["x-opencode-session"] = sessionId;
+  }
   // Pi's Anthropic transport honors compat.supportsTemperature; the OpenAI
   // transports forward temperature regardless, so drop it here for models
   // that reject it instead of failing the whole request.

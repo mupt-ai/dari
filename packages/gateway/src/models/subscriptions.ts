@@ -1,18 +1,17 @@
-import {
-  nativeModelId,
-  providerForModel,
-  type RouterModelPrice,
-} from "@mupt-ai/dari-router/policy-engine";
+import { nativeModelId, type RouterModelPrice } from "@mupt-ai/dari-router/policy-engine";
 
 import type { ClientHarness, ResolvedRouterModelConfig, SubscriptionKind } from "../types.js";
 
 const CODEX_BACKEND_URL = "https://chatgpt.com/backend-api";
 
-// The model provider whose models each kind of plan serves.
-const SUBSCRIPTION_MODEL_PROVIDERS: Record<SubscriptionKind, string> = {
-  openai_codex: "openai",
-  anthropic_claude_code: "anthropic",
-  meta_muse: "meta",
+// The execution providers whose models each kind of plan serves; a ChatGPT
+// plan's OpenAI models execute as `openai-codex` once resolve points them at
+// the Codex backend.
+const SUBSCRIPTION_MODEL_PROVIDERS: Record<SubscriptionKind, readonly string[]> = {
+  openai_codex: ["openai", "openai-codex"],
+  anthropic_claude_code: ["anthropic"],
+  meta_muse: ["meta"],
+  opencode_go: ["opencode-go"],
 };
 
 // The client each plan is limited to, as its provider limits it: a Claude Code
@@ -23,15 +22,16 @@ const SUBSCRIPTION_CLIENTS: Partial<Record<SubscriptionKind, ClientHarness>> = {
 };
 
 /**
- * Whether a plan may serve a model for this client: each plan serves only its
- * own provider's models, and only to the client its provider allows.
+ * Whether a plan may serve a model executed by `provider` for this client:
+ * each plan serves only its own provider's models, and only to the client its
+ * provider allows.
  */
 export function subscriptionServes(
   kind: SubscriptionKind,
-  model: string,
+  provider: string,
   clientHarness: ClientHarness | undefined,
 ): boolean {
-  if (SUBSCRIPTION_MODEL_PROVIDERS[kind] !== providerForModel(model)) return false;
+  if (!SUBSCRIPTION_MODEL_PROVIDERS[kind].includes(provider)) return false;
   const client = SUBSCRIPTION_CLIENTS[kind];
   return client === undefined || clientHarness === client;
 }

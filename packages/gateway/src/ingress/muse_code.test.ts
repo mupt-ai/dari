@@ -12,13 +12,16 @@ test("recognizes each Muse Code surface by its x-client-id", () => {
   expect(museCodeClientId(new Headers({ "x-client-id": "opencode" }))).toBeUndefined();
 });
 
-test("a Muse Code plan serves only Muse Code, and only Meta's models", () => {
-  expect(subscriptionServes("meta_muse", "meta/muse-spark-1.3", "muse_code")).toBe(true);
-  expect(subscriptionServes("meta_muse", "meta/muse-spark-1.3", undefined)).toBe(false);
-  expect(subscriptionServes("meta_muse", "meta/muse-spark-1.3", "claude_code")).toBe(false);
-  expect(subscriptionServes("meta_muse", "openai/gpt-5.5", "muse_code")).toBe(false);
-  expect(subscriptionServes("anthropic_claude_code", "anthropic/claude-sonnet-5-5", "muse_code")).toBe(false);
-  expect(subscriptionServes("openai_codex", "openai/gpt-5.5", "muse_code")).toBe(true);
+test("a plan serves only its own provider's models, and only to the client its provider allows", () => {
+  expect(subscriptionServes("meta_muse", "meta", "muse_code")).toBe(true);
+  expect(subscriptionServes("meta_muse", "meta", undefined)).toBe(false);
+  expect(subscriptionServes("meta_muse", "meta", "claude_code")).toBe(false);
+  expect(subscriptionServes("meta_muse", "openai", "muse_code")).toBe(false);
+  expect(subscriptionServes("anthropic_claude_code", "anthropic", "muse_code")).toBe(false);
+  expect(subscriptionServes("openai_codex", "openai", "muse_code")).toBe(true);
+  expect(subscriptionServes("openai_codex", "openai-codex", "codex")).toBe(true);
+  expect(subscriptionServes("opencode_go", "opencode-go", "codex")).toBe(true);
+  expect(subscriptionServes("opencode_go", "fireworks", "codex")).toBe(false);
 });
 
 test("a Muse Code thread is the conversation, and each subagent thread is its own", () => {

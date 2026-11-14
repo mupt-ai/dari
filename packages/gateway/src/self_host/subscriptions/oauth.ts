@@ -3,18 +3,28 @@ import { createHash, randomBytes } from "node:crypto";
 /**
  * OAuth protocols for personal subscriptions: Claude Code (PKCE, the user
  * pastes back the `code#state` Anthropic shows), ChatGPT/Codex (device code,
- * the gateway polls for approval), and Muse Code (Meta's device code, then the
- * subscription's Model API key minted from the sign-in token). Every network
- * call goes through the injected `fetch`.
+ * the gateway polls for approval), Muse Code (Meta's device code, then the
+ * subscription's Model API key minted from the sign-in token), and OpenCode Go
+ * (the OpenCode Console device sign-in `opencode auth login` runs, scoped to
+ * the workspace that holds the plan).
+ * Every network call goes through the injected `fetch`.
  */
 
-export type SubscriptionProvider = "anthropic_claude_code" | "openai_codex" | "meta_muse";
+export type SubscriptionProvider = "anthropic_claude_code" | "openai_codex" | "meta_muse" | "opencode_go";
 
 export const SUBSCRIPTION_PROVIDERS: readonly SubscriptionProvider[] = [
   "anthropic_claude_code",
   "openai_codex",
   "meta_muse",
+  "opencode_go",
 ];
+
+const OPENCODE_CONSOLE_URL = "https://opencode.ai/console";
+export const OPENCODE_CLIENT_ID = "opencode-cli";
+const OPENCODE_TOKEN_URL = `${OPENCODE_CONSOLE_URL}/auth/device/token`;
+
+export const OPENCODE_APPROVAL_PENDING =
+  "OpenCode approval is still pending. Enter the code in the OpenCode console, finish approval, then try again.";
 
 export type OAuthFetch = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -103,6 +113,21 @@ export async function startOAuth(
   options: OAuthOptions,
 ): Promise<OAuthAuthorization> {
   const expiresAt = new Date((options.now ?? new Date()).getTime() + FLOW_TIMEOUT_MS);
+  if (provider === "opencode_go") {
+    const device = await postJson(
+      options.fetch,
+      `${OPENCODE_CONSOLE_URL}/auth/device/code`,
+      { client_id: OPENCODE_CLIENT_ID, supports_org_scope: true },
+      "OpenCode device code request",
+    );
+    const verification = requiredString(device, "verification_uri_complete");
+    return {
+      authorizationUrl: verification.startsWith("/") ? `https://opencode.ai${verification}` : verification,
+      expiresAt,
+      userCode: requiredString(device, "user_code"),
+      flow: { device_code: requiredString(device, "device_code") },
+    };
+  }
   if (provider === "anthropic_claude_code") {
     const verifier = randomUrlSafe(32);
     const challenge = base64Url(createHash("sha256").update(verifier).digest());
@@ -168,6 +193,35 @@ export async function completeOAuth(
   options: OAuthOptions,
 ): Promise<OAuthTokens> {
   const now = options.now ?? new Date();
+  if (provider === "opencode_go") {
+    let token: Record<string, unknown>;
+    try {
+      token = await postJson(
+        options.fetch,
+        OPENCODE_TOKEN_URL,
+        {
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+          device_code: requiredString(flow, "device_code"),
+          client_id: OPENCODE_CLIENT_ID,
+        },
+        "OpenCode device approval check",
+      );
+    } catch (error) {
+      if (error instanceof SubscriptionOAuthProviderError) {
+        if (error.errorCode === "authorization_pending" || error.errorCode === "slow_down") {
+          throw new SubscriptionOAuthInputError(OPENCODE_APPROVAL_PENDING);
+        }
+        if (error.errorCode === "access_denied") {
+          throw new SubscriptionOAuthInputError("The sign-in was declined on OpenCode. Start again to retry.");
+        }
+        if (error.errorCode === "expired_token") {
+          throw new SubscriptionOAuthInputError("The OpenCode sign-in code expired. Start again.");
+        }
+      }
+      throw error;
+    }
+    return await opencodeGoTokens(token, null, options.fetch, now);
+  }
   if (provider === "anthropic_claude_code") {
     const verifier = requiredString(flow, "code_verifier");
     const expectedState = requiredString(flow, "state");
@@ -261,6 +315,15 @@ export async function refreshOAuth(
   options: OAuthOptions,
 ): Promise<OAuthTokens> {
   const now = options.now ?? new Date();
+  if (credential.provider === "opencode_go") {
+    const token = await postJson(
+      options.fetch,
+      OPENCODE_TOKEN_URL,
+      { grant_type: "refresh_token", refresh_token: credential.refreshToken, client_id: OPENCODE_CLIENT_ID },
+      "OpenCode sign-in refresh",
+    );
+    return await opencodeGoTokens(token, credential.accountId, options.fetch, now);
+  }
   if (credential.provider === "anthropic_claude_code") {
     const token = await postJson(
       options.fetch,
@@ -459,7 +522,7 @@ function jwtPayload(token: string): Record<string, unknown> | null {
 function postJson(
   fetch: OAuthFetch,
   url: string,
-  payload: Record<string, string>,
+  payload: Record<string, string | boolean>,
   operation: string,
 ): Promise<Record<string, unknown>> {
   return requestJson(fetch, url, JSON.stringify(payload), "application/json", operation);
@@ -523,4 +586,40 @@ function base64Url(value: Buffer): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// A Console token is scoped to the workspace the sign-in chose, which holds
+// the Go plan; a refresh that omits it keeps the stored one.
+async function opencodeGoTokens(
+  token: Record<string, unknown>,
+  workspace: string | null,
+  fetch: OAuthFetch,
+  now: Date,
+): Promise<OAuthTokens> {
+  const accessToken = requiredString(token, "access_token");
+  const orgId = typeof token.org_id === "string" && token.org_id ? token.org_id : workspace;
+  return {
+    provider: "opencode_go",
+    accessToken,
+    refreshToken: requiredString(token, "refresh_token"),
+    expiresAt: new Date(now.getTime() + positiveInt(token.expires_in) * 1000),
+    accountId: orgId,
+    accountEmail: await opencodeEmail(fetch, accessToken),
+  };
+}
+
+// The signed-in member's email, shown with the subscription; best effort.
+async function opencodeEmail(fetch: OAuthFetch, accessToken: string): Promise<string | null> {
+  try {
+    const response = await fetch(`${OPENCODE_CONSOLE_URL}/api/user`, {
+      method: "GET",
+      headers: { Accept: "application/json", Authorization: `Bearer ${accessToken}`, "User-Agent": "Dari/1.0" },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    const user: unknown = await response.json();
+    return isRecord(user) && typeof user.email === "string" && user.email ? user.email : null;
+  } catch {
+    return null;
+  }
 }

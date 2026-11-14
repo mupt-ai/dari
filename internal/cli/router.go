@@ -879,8 +879,10 @@ func cleanProviderKeySources(path string, rawSources map[string]string) (map[str
 			return nil, fmt.Errorf("%s: provider_key_sources has an empty provider name", path)
 		}
 		source = strings.ToLower(source)
-		if source != "managed" && source != "user" {
-			return nil, fmt.Errorf("%s: provider_key_sources.%s must be managed or user", path, provider)
+		// Routers report "subscription" for providers only a personal
+		// subscription serves (OpenCode Go), so exported manifests carry it.
+		if source != "managed" && source != "user" && source != "subscription" {
+			return nil, fmt.Errorf("%s: provider_key_sources.%s must be managed, user, or subscription", path, provider)
 		}
 		if _, exists := sources[provider]; exists {
 			return nil, fmt.Errorf("%s: provider_key_sources defines provider %s more than once", path, provider)

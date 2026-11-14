@@ -55,6 +55,8 @@ function keyCheckRequest(
   if (endpoint === undefined) {
     if (provider === "openrouter") return { url: "https://openrouter.ai/api/v1/key", headers: bearer };
     if (provider === "vercel-ai-gateway") return { url: "https://ai-gateway.vercel.sh/v1/credits", headers: bearer };
+    // OpenCode Go's models list is public, so it cannot tell a bad key.
+    if (provider === "opencode-go") return null;
   }
   const target = endpoint
     ?? (getBuiltinModels(provider as never) as unknown as ProviderKeyEndpoint[] | undefined)?.[0];

@@ -217,6 +217,7 @@ function subscriptionProviderFor(
   }
   if (provider === "meta") return clientHarness === "muse_code" ? "meta_muse" : null;
   if (provider === "openai") return "openai_codex";
+  if (provider === "opencode-go") return "opencode_go";
   return null;
 }
 
@@ -238,6 +239,7 @@ const SUBSCRIPTION_PLAN_NAMES: Record<SubscriptionProvider, string> = {
   anthropic_claude_code: "Claude Code",
   openai_codex: "ChatGPT",
   meta_muse: "Muse Code",
+  opencode_go: "OpenCode Go",
 };
 
 /**

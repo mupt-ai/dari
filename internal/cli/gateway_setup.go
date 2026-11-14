@@ -279,11 +279,12 @@ var localProviderKeys = []struct{ name, article, env string }{
 	{"xAI", "an", "XAI_API_KEY"},
 	{"Meta", "a", "META_API_KEY"},
 	{"Fireworks", "a", "FIREWORKS_API_KEY"},
+	{"OpenCode Go", "an", "OPENCODE_API_KEY"},
 }
 
 // allSubscriptionProviders are the plans `dari accounts` offers; it is not
 // tied to one agent.
-var allSubscriptionProviders = []agentSubscriptionProvider{claudeSubscription, codexSubscription, museSubscription}
+var allSubscriptionProviders = []agentSubscriptionProvider{claudeSubscription, codexSubscription, museSubscription, opencodeGoSubscription}
 
 // saveLocalGateway saves a local gateway's settings and restarts it to serve
 // them.

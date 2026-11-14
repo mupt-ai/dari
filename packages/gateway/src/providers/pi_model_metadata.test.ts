@@ -8,6 +8,7 @@ import { getBuiltinModel } from "@mupt-ai/pi-ai/providers/all";
 import { chatCompletionsToInteraction } from "../protocol/input/chat_completions.js";
 import { modelSupportsImageInput } from "./model_capabilities.js";
 import { buildOptions } from "./pi_options.js";
+import { pi } from "./pi.js";
 import type { ResolvedRouterModelConfig } from "../types.js";
 import {
   buildModel,
@@ -782,5 +783,32 @@ test("Grok 4.7 on Azure keeps image input and sends reasoning_effort over chat c
     reasoning: true,
     input: ["text", "image"],
     compat: { supportsReasoningEffort: true },
+  });
+});
+
+test("serves OpenCode Go models with Pi's registered compat and OpenCode's client headers", () => {
+  const config: ResolvedRouterModelConfig = {
+    provider: "opencode-go",
+    native_model_id: "deepseek-v4.1-flash",
+    api: "openai-completions",
+    base_url: "https://opencode.ai/inference/go/openai/v1",
+    cost: { input: 0.15, output: 0.6 },
+    supported_thinking_levels: ["low", "high", "max"],
+    default_thinking_level: "high",
+  };
+  const model = buildModel(pi, "deepseek-ai/DeepSeek-V4.1-Flash-1017", null, config);
+  expect(model.compat).toMatchObject({ thinkingFormat: "deepseek", supportsDeveloperRole: false });
+
+  const options = buildOptions(
+    chatCompletionsToInteraction(requestWithReasoning({ reasoning_effort: "high" })),
+    "opencode-key",
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    model,
+    piFixture,
+    "stable-conversation",
+  );
+  expect(options.headers).toMatchObject({
+    "user-agent": "dari-gateway",
+    "x-opencode-session": "stable-conversation",
   });
 });

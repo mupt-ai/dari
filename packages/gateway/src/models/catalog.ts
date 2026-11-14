@@ -67,6 +67,7 @@ export const DEFAULT_CATALOG_PROVIDERS: readonly string[] = [
   "meta",
   "xai",
   "fireworks",
+  "opencode-go",
   "openrouter",
   "vercel-ai-gateway",
 ];

@@ -340,3 +340,53 @@ test("provider failures carry the status; network failures do not", async () => 
   await expect(startOAuth("openai_codex", { fetch: offline, now }))
     .rejects.toThrow("OpenAI device code request could not reach the provider.");
 });
+
+test("an OpenCode Go plan signs in with OpenCode's console device flow", async () => {
+  const now = new Date("2026-11-13T00:00:00Z");
+  const fetch = fakeFetch([
+    jsonResponse({
+      device_code: "dev-1",
+      user_code: "ABCD-EFGH",
+      verification_uri_complete: "/console/device?user_code=ABCD-EFGH&client_id=opencode-cli",
+      expires_in: 600,
+      interval: 5,
+    }),
+    jsonResponse({ _tag: "DeviceTokenError", error: "authorization_pending" }, 400),
+    jsonResponse({ access_token: "oc-access", refresh_token: "oc-refresh", expires_in: 3600, org_id: "org_go" }),
+    jsonResponse({ id: "user_1", email: "dev@example.com" }),
+    jsonResponse({ access_token: "oc-access-2", refresh_token: "oc-refresh-2", expires_in: 60 }),
+    jsonResponse({}, 500),
+  ]);
+  const started = await startOAuth("opencode_go", { fetch, now });
+  expect(started).toMatchObject({
+    authorizationUrl: "https://opencode.ai/console/device?user_code=ABCD-EFGH&client_id=opencode-cli",
+    userCode: "ABCD-EFGH",
+    flow: { device_code: "dev-1" },
+  });
+  expect(JSON.parse(fetch.calls[0]!.body)).toEqual({ client_id: "opencode-cli", supports_org_scope: true });
+
+  await expect(completeOAuth("opencode_go", started.flow, "", { fetch, now })).rejects.toBeInstanceOf(
+    SubscriptionOAuthInputError,
+  );
+  const tokens = await completeOAuth("opencode_go", started.flow, "", { fetch, now });
+  expect(tokens).toEqual({
+    provider: "opencode_go",
+    accessToken: "oc-access",
+    refreshToken: "oc-refresh",
+    expiresAt: new Date("2026-11-13T01:00:00Z"),
+    accountId: "org_go",
+    accountEmail: "dev@example.com",
+  });
+
+  // A refresh that omits the workspace keeps the stored one; the email lookup is best effort.
+  const refreshed = await refreshOAuth(
+    { provider: "opencode_go", refreshToken: "oc-refresh", accountId: "org_go" },
+    { fetch, now },
+  );
+  expect(refreshed).toMatchObject({ accessToken: "oc-access-2", accountId: "org_go", accountEmail: null });
+  expect(JSON.parse(fetch.calls[4]!.body)).toEqual({
+    grant_type: "refresh_token",
+    refresh_token: "oc-refresh",
+    client_id: "opencode-cli",
+  });
+});

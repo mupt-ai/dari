@@ -447,3 +447,41 @@ test("an exhausted ChatGPT plan answers in the shape Codex shows, with how to ad
   });
   expect(codexUsageLimitError({ ...limit, oauthProvider: "anthropic_claude_code" })).toBeNull();
 });
+
+test("only OpenCode Go's own usage-limit refusal holds a Go plan", () => {
+  const now = new Date("2026-11-13T00:00:00Z");
+  const goLimit = (bodyText: string, headers: Record<string, string> = {}) => detectSubscriptionUsageLimit({
+    provider: "opencode-go",
+    keySource: "subscription",
+    model: "zai-org/GLM-5.3",
+    captured: { status: 429, headers: new Headers(headers), bodyText },
+    failure: {},
+    now,
+  });
+  // OpenCode's client fixture for a Go refusal.
+  const refusal = JSON.stringify({
+    type: "error",
+    error: { type: "GoUsageLimitError", message: "Go usage limit exceeded" },
+    metadata: { workspace: "wrk_go_limit", limitName: "5 hour" },
+  });
+  expect(goLimit(refusal, { "retry-after": "120" })).toEqual({
+    oauthProvider: "opencode_go",
+    resetsAt: new Date("2026-11-13T00:02:00Z"),
+    reason: "OpenCode Go 5 hour usage limit reached.",
+  });
+  expect(goLimit(refusal.replace('"limitName"', '"resetsAt":"2026-11-20T00:00:00Z","limitName"'))?.resetsAt)
+    .toEqual(new Date("2026-11-20T00:00:00Z"));
+  // An upstream's rate limit is transient, not the plan running out.
+  expect(goLimit(
+    JSON.stringify({ error: { type: "server_error", message: "Upstream request failed: Rate limit exceeded." } }),
+    { "retry-after": "45" },
+  )).toBeNull();
+  expect(detectSubscriptionUsageLimit({
+    provider: "opencode-go",
+    keySource: "user",
+    model: "zai-org/GLM-5.3",
+    captured: { status: 429, headers: new Headers(), bodyText: refusal },
+    failure: {},
+    now,
+  })).toBeNull();
+});

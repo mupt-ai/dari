@@ -78,6 +78,7 @@ const BASE_NAMES: Record<SubscriptionProvider, string> = {
   anthropic_claude_code: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN",
   openai_codex: "OPENAI_CODEX_OAUTH_TOKEN",
   meta_muse: "META_MUSE_OAUTH_TOKEN",
+  opencode_go: "OPENCODE_GO_OAUTH_TOKEN",
 };
 
 type CredentialRow = {

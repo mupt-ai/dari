@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,7 +42,7 @@ func routingEnvironment(key, baseURL, headers string, claudeAI bool, models agen
 		"ANTHROPIC_API_KEY":                "",
 		customHeadersEnv:                   customHeaders(headers, headerKey),
 		"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
-		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":   "1000000",
+		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":   strconv.Itoa(contextWindow(models)),
 		// Subagents and aliases resolve to the stable model, not the /model
 		// pick: these pins are fixed for the session and written to settings,
 		// so a pick they followed would go stale the moment the user switched.
@@ -51,6 +52,17 @@ func routingEnvironment(key, baseURL, headers string, claudeAI bool, models agen
 		"ANTHROPIC_DEFAULT_SONNET_MODEL": models.Stable(),
 		"ANTHROPIC_DEFAULT_FABLE_MODEL":  models.Stable(),
 	}
+}
+
+// contextWindow is the window Claude Code compacts against: the router's for
+// the session's stable model, so compaction runs before a model's
+// standard-price limit rejects the prompt. Without one it keeps the 1M
+// window most of Dari's models serve.
+func contextWindow(models agents.Models) int {
+	if models.ContextWindow > 0 {
+		return models.ContextWindow
+	}
+	return 1_000_000
 }
 
 // customHeaders is an ANTHROPIC_CUSTOM_HEADERS value, one "Name: value" per

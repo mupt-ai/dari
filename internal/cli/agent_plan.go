@@ -62,7 +62,8 @@ func routerModels(ctx context.Context, baseURL, key, agent string) (agents.Model
 	}
 	var catalog struct {
 		Models []struct {
-			Slug string `json:"slug"`
+			Slug          string `json:"slug"`
+			ContextWindow int    `json:"context_window"`
 		} `json:"models"`
 		RemoteCompaction string `json:"remote_compaction"`
 	}
@@ -75,6 +76,11 @@ func routerModels(ctx context.Context, baseURL, key, agent string) (agents.Model
 			models.Routing = true
 		} else if id, ok := strings.CutPrefix(model.Slug, agents.ExplicitModelPrefix); ok {
 			models.Enabled = append(models.Enabled, id)
+		}
+	}
+	for _, model := range catalog.Models {
+		if model.Slug == models.Stable() {
+			models.ContextWindow = model.ContextWindow
 		}
 	}
 	return models, nil

@@ -208,6 +208,13 @@ function sanitizeProviderContent(value: unknown): unknown {
     if (part.type === "providerItem" && isRecord(part.item)) {
       return part.item;
     }
+    // A thinking signature is an opaque continuation token (encrypted
+    // reasoning, an Anthropic signature), not prompt text: its base64 would
+    // count far more tokens than the provider bills for it.
+    if (part.type === "thinking" && "thinkingSignature" in part) {
+      const { thinkingSignature: _signature, ...visible } = part;
+      return visible;
+    }
     if (
       part.type === "image"
       && typeof part.mimeType === "string"

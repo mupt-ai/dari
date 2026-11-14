@@ -16,16 +16,21 @@ func TestRouterModelsFollowTheRoutersCatalog(t *testing.T) {
 		slugs []string
 		want  agents.Models
 	}{
-		{"autorouting", []string{"dari/routing", "dari/model/openai/gpt-5.6-sol", "dari/model/anthropic/claude-opus-5"}, agents.Models{Routing: true, Enabled: []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-5"}}},
-		{"no autorouting", []string{"dari/model/openai/gpt-5.6-sol", "dari/model/anthropic/claude-opus-5"}, agents.Models{Enabled: []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-5"}}},
+		{"autorouting", []string{"dari/routing", "dari/model/openai/gpt-5.6-sol", "dari/model/anthropic/claude-opus-5"}, agents.Models{Routing: true, Enabled: []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-5"}, ContextWindow: 1_000_000}},
+		{"no autorouting", []string{"dari/model/openai/gpt-5.6-sol", "dari/model/anthropic/claude-opus-5"}, agents.Models{Enabled: []string{"openai/gpt-5.6-sol", "anthropic/claude-opus-5"}, ContextWindow: 272_000}},
 	} {
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/rtr_1/v1/models" || r.Header.Get("Authorization") != "Bearer dak_routing" {
 				t.Fatalf("unexpected request %s with %q", r.URL.Path, r.Header.Get("Authorization"))
 			}
-			models := []map[string]string{}
+			windows := map[string]int{
+				"dari/routing":                       1_000_000,
+				"dari/model/openai/gpt-5.6-sol":      272_000,
+				"dari/model/anthropic/claude-opus-5": 1_000_000,
+			}
+			models := []map[string]any{}
 			for _, slug := range tc.slugs {
-				models = append(models, map[string]string{"slug": slug})
+				models = append(models, map[string]any{"slug": slug, "context_window": windows[slug]})
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"models": models})
 		}))

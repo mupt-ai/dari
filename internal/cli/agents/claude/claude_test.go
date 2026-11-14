@@ -181,3 +181,15 @@ func TestConfigurePinsAliasesToStableModelNotSavedPick(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeCompactsAgainstTheRoutersContextWindow(t *testing.T) {
+	for _, tc := range []struct {
+		window int
+		want   string
+	}{{272_000, "272000"}, {0, "1000000"}} {
+		env := routingEnvironment("dari_route", "https://routing.dari.dev", "", false, agents.Models{Routing: true, ContextWindow: tc.window})
+		if got := env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"]; got != tc.want {
+			t.Errorf("window %d: CLAUDE_CODE_MAX_CONTEXT_TOKENS = %q, want %q", tc.window, got, tc.want)
+		}
+	}
+}

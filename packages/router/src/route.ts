@@ -248,6 +248,7 @@ function prepareCandidatesWithAccounting(
     reasoningCacheScope(model, input.metadataLookup(model).provider));
 
   let hits: ChainHits = { perModel: new Map(), perModelBuckets: new Map() };
+  let anchorHits: ChainHits = hits;
   let costEstimates: CandidateCostEstimate[] = [];
   let previousDecision = compatiblePreviousDecision(
     input.previousDecision,
@@ -262,20 +263,23 @@ function prepareCandidatesWithAccounting(
   try {
     // Warmth: strict chains over hits still inside the warmth window — cost
     // estimation and the freshness touch must reflect what the provider cache
-    // can actually re-read. Identity: either tier over every recent hit — a
-    // stale or loose-only match still names the same conversation.
+    // can actually re-read. Size: strict chains over every recent hit — a
+    // stored token count stays exact after the cache expires, and estimating
+    // a long conversation from scratch overshoots context limits. Identity:
+    // either tier over every recent hit — a stale or loose-only match still
+    // names the same conversation.
     const providersByCandidate = new Map(
       compatible.candidates.map(({ model }) => [model, input.metadataLookup(model).provider]),
     );
-    const providerCompatibleWarmHits = warmPrefixHits(input.prefixHits, input.nowMs)
-      .filter((hit) => {
-        const provider = providersByCandidate.get(hit.model);
-        return provider !== undefined && prefixHitMatchesProvider(hit, provider);
-      });
+    const providerCompatibleHits = (input.prefixHits ?? []).filter((hit) => {
+      const provider = providersByCandidate.get(hit.model);
+      return provider !== undefined && prefixHitMatchesProvider(hit, provider);
+    });
     hits = deriveModelChainHits(
       input.chainsByModel,
-      providerCompatibleWarmHits,
+      warmPrefixHits(providerCompatibleHits, input.nowMs),
     );
+    anchorHits = deriveModelChainHits(input.chainsByModel, providerCompatibleHits);
     identityHit = deepestIdentityHit(
       input.chainsByModel,
       input.looseChain,
@@ -316,7 +320,7 @@ function prepareCandidatesWithAccounting(
     const promptEstimatesByCandidate = new Map(
       compatible.candidates.map((candidate) => {
         const anchor = selectPromptAnchor(
-          hits,
+          anchorHits,
           candidate.model,
           candidate.reasoningEffort,
           cacheScope,
@@ -342,6 +346,7 @@ function prepareCandidatesWithAccounting(
     costEstimates = estimateCandidateCosts({
       candidates: compatible.candidates,
       hits,
+      anchorHits,
       incomingProviderBlockCountFor: promptAccounting.providerBlockDepthFor,
       promptEstimatesByCandidate,
       toolChoiceFp: input.toolChoiceFp,

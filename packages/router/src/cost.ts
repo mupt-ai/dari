@@ -204,7 +204,12 @@ export function selectPromptAnchor(
 
 export function estimateCandidateCosts(args: {
   candidates: RoutingCandidate[];
+  // Warm hits: what a provider cache can still re-read.
   hits: ChainHits;
+  // Hits that anchor the prompt's size: same-model matches whether or not the
+  // cache is still warm, since a stored token count stays exact after the
+  // cache expires. Defaults to hits.
+  anchorHits?: ChainHits;
   incomingProviderBlockCountFor: (model: string) => number;
   promptEstimatesByCandidate: ReadonlyMap<string, CandidatePromptEstimate>;
   toolChoiceFp: string;
@@ -234,7 +239,8 @@ export function estimateCandidateCosts(args: {
         `missing prompt estimate for ${model}/${reasoningEffort}`,
       );
     }
-    const selectedAnchor = selectPromptAnchor(args.hits, model, reasoningEffort, cacheScope);
+    const anchorHits = args.anchorHits ?? args.hits;
+    const selectedAnchor = selectPromptAnchor(anchorHits, model, reasoningEffort, cacheScope);
     const anchor = selectedAnchor && prefixHitMatchesProvider(selectedAnchor.entry, provider)
       ? selectedAnchor
       : undefined;
@@ -242,7 +248,7 @@ export function estimateCandidateCosts(args: {
     const serializedTokens = Math.ceil(
       promptEstimate.chars / CHARS_PER_TOKEN,
     );
-    const tokenizerReference = anchor ?? args.hits.deepest;
+    const tokenizerReference = anchor ?? anchorHits.deepest;
     const crossesTokenizerFamilies =
       tokenizerReference !== undefined
       && tokenizerFamily(model, provider)

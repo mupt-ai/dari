@@ -40,6 +40,10 @@ type Models struct {
 	// RemoteCompaction is set when the router accepts Codex's native
 	// (compaction_trigger) compaction protocol.
 	RemoteCompaction bool
+	// ContextWindow is the prompt size in tokens the router serves for the
+	// Stable model before its standard-price limits reject it; 0 when the
+	// router does not say.
+	ContextWindow int
 }
 
 // Default is the model a launch starts on: the user's saved pick while the

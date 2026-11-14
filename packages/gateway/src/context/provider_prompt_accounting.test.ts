@@ -313,3 +313,20 @@ test("counts only raw hosted history items, not Pi compatibility fields", () => 
 
   expect(metrics.serializedChars).toBe(expected);
 });
+
+test("does not count opaque reasoning state as prompt text", () => {
+  const withState = (encryptedContent: string): InteractionRequest => {
+    const request = reasoningToolLoop();
+    return {
+      ...request,
+      items: request.items.map((item) =>
+        item.type === "reasoning" && item.continuation?.kind === "openai_reasoning"
+          ? { ...item, continuation: { ...item.continuation, encryptedContent } }
+          : item
+      ),
+    };
+  };
+
+  expect(promptMetrics(withState("x".repeat(100_000)), OPENAI).serializedChars)
+    .toBe(promptMetrics(withState("x"), OPENAI).serializedChars);
+});

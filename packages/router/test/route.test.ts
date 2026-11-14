@@ -596,6 +596,30 @@ test("stale identity hits recover the conversation without claiming warmth", () 
   }
 });
 
+// After the cache goes cold the stored token count still sizes the prompt:
+// re-estimating a long conversation from its serialized bytes overshoots and
+// would reject a prompt that fits.
+test("stale same-model hits still anchor the prompt size for context limits", () => {
+  const prepared = prepareRoute(routeInput({
+    nowMs: NOW_MS + 10 * 60 * 1000,
+    promptTokenLimitFor: () => 5_000,
+    promptAccounting: {
+      anchorSemantics: "stored_input",
+      providerBlockDepthFor: () => 3,
+      promptEstimateFor: (_model, anchor) => ({
+        chars: anchor ? 400 : 40_000,
+        reusesStoredPromptTokens: anchor !== undefined,
+      }),
+    },
+    prefixHits: [{ ...routeInput().prefixHits![0]!, prompt_anchor_depth: 1 }],
+  }));
+  const mini = prepared.costEstimates.find((estimate) => estimate.model === MINI);
+
+  expect(prepared.candidateResolution.candidates.map((candidate) => candidate.model)).toEqual([MINI]);
+  expect(mini?.est_prompt_tokens).toBe(2_148);
+  expect(mini?.warm_tokens).toBe(0);
+});
+
 // An echo-mutating client misses every strict chain but still matches the
 // loose tier; identity survives while the cache is correctly treated cold.
 test("loose-tier matches recover the conversation when strict chains miss", () => {

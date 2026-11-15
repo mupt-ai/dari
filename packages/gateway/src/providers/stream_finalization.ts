@@ -36,6 +36,7 @@ type StreamExecutionFacts = {
   provider: string;
   model: string;
   providerKeySource: ProviderKeySource;
+  thinkingLevel?: string;
   conversationId: string;
   usageContext: RoutingUsageContext | undefined;
   pricing: ModelPricing | null;

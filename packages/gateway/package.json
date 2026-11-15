@@ -27,7 +27,8 @@
     }
   },
   "bin": {
-    "dari-gateway": "./dist/self_host/main.js"
+    "dari-gateway": "./dist/self_host/main.js",
+    "dari-gateway-stub": "./dist/self_host/stub_main.js"
   },
   "files": [
     "dist",

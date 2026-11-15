@@ -16,6 +16,8 @@ import { checkProviderKey } from "../providers/key_check.js";
 import { CANONICAL_MODELS } from "../models/canonical.js";
 import { allRouterModels, loadGatewayConfig, type GatewayConfig, type RouterConfig } from "./config.js";
 import { configuredProviderApiKey, gatewayKeyIndex, providersWithoutCredentials } from "./resolve.js";
+import { LinkStore } from "./link_store.js";
+import { secretBoxFromEnv } from "./secret_box.js";
 import { PrefixStore } from "./prefix_store.js";
 import { handleRouterModelsRequest, ROUTER_MODELS_ROUTE, RouterModelStore } from "./router_models.js";
 import { SessionPinStore } from "./session_pin_store.js";
@@ -31,9 +33,16 @@ const CANONICAL_MODELS_ROUTE = "/v1/canonical-models";
  * - `DARI_GATEWAY_KEYS` (required): comma-separated bearer keys clients use.
  * - `DARI_GATEWAY_CONFIG`: router config file. Unset, `dari-gateway.yaml`
  *   serves when present, and otherwise the default router.
- * - `DARI_GATEWAY_DB`: SQLite database for subscriptions, saved model lists,
- *   and prefix-cache state (default `dari-gateway.db`). It holds subscription
- *   tokens.
+ * - `DARI_GATEWAY_DB`: SQLite database for subscriptions, Dari Link grants,
+ *   saved model lists, and prefix-cache state (default `dari-gateway.db`). It
+ *   holds subscription tokens.
+ * - `DARI_GATEWAY_ENCRYPTION_KEY`: encrypts the subscription tokens and API
+ *   keys in the database (`openssl rand -base64 32`; see secret_box.ts for
+ *   rotation). Unset, they are stored as they are, and the Dari Link approval
+ *   page takes nobody's subscriptions or keys.
+ * - `DARI_LINK_SESSION_SECRET`: signs the cookie that remembers a Dari Link
+ *   approval page's user. Unset, each process makes its own, so a restart
+ *   forgets who connected which plans.
  * - `DARI_AUTO_ROUTING_API_KEY`: choose among a router's models with Dari
  *   Auto Routing; without it, `dari/routing` serves the first listed model.
  * - `PORT` (default 8080), `DARI_GATEWAY_HOST` (default 127.0.0.1; the container
@@ -53,10 +62,17 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   const db = new Database(databasePath, { create: true });
   if (created) chmodSync(databasePath, 0o600);
   db.exec("PRAGMA journal_mode = WAL");
-  const subscriptions = new SubscriptionStore(db);
+  const secrets = secretBoxFromEnv(env.DARI_GATEWAY_ENCRYPTION_KEY);
+  if (secrets === null) {
+    console.warn(
+      "dari-gateway stores subscription tokens unencrypted; set DARI_GATEWAY_ENCRYPTION_KEY (openssl rand -base64 32) to encrypt them",
+    );
+  }
+  const subscriptions = new SubscriptionStore(db, secrets);
   const prefixes = new PrefixStore(db);
   const sessionPins = new SessionPinStore(db);
   const routerModels = new RouterModelStore(db);
+  const links = new LinkStore(db, secrets);
   // Pi's provider auth reads each provider's standard key variable, such as
   // OPENAI_API_KEY, from this environment only.
   const piModels = builtinModels({
@@ -70,6 +86,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     routerModels,
     gatewayKeys,
     subscriptions,
+    links,
     prefixes,
     sessionPins,
     providerApiKey,

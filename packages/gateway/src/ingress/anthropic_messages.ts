@@ -2,10 +2,11 @@ import { isRecord } from "@mupt-ai/dari-router/policy-engine";
 import { anthropicMessagesResponse } from "../protocol/output/anthropic_messages.js";
 import { anthropicMessagesSseStream } from "../protocol/output/anthropic_messages_stream.js";
 import { anthropicToken } from "../http/auth.js";
-import { errorResponseHeaders, normalizeError } from "../http/errors.js";
+import { errorResponseHeaders, HttpError, normalizeError } from "../http/errors.js";
+import { LINK_GRANT_ERROR_CODES, LINK_TOKEN_ERROR_CODES } from "../models/link_errors.js";
 import { captureRequestError } from "../observability/errors.js";
 import { anthropicMessagesToInteraction } from "../protocol/input/anthropic_messages.js";
-import { explicitModelId } from "../protocol/input/router_model.js";
+import { explicitModelId, linkTokenModel } from "../protocol/input/router_model.js";
 import { handleRoutedCompletion } from "../runtime/routed_completion.js";
 import type { SelectorBackend } from "../strategies/routing.js";
 import { claudeCodeRequestContext } from "./claude_code/request_context.js";
@@ -36,7 +37,7 @@ export async function handleAnthropicMessages(
   try {
     const apiKey = anthropicToken(request.headers);
     const rawPayload = await parseJsonRequest<Record<string, unknown>>(request);
-    const interaction = anthropicMessagesToInteraction(rawPayload);
+    const interaction = anthropicMessagesToInteraction({ ...rawPayload, model: linkTokenModel(apiKey, rawPayload.model) });
     const isClaudeCode = isClaudeCodeRequest(request.headers);
     const anthropicSafeguards = safeguardsFrom(rawPayload, request.headers);
     const anthropicContextManagement = contextManagementFrom(rawPayload, request.headers);
@@ -156,11 +157,24 @@ function isClaudeCodeRequest(headers: Headers): boolean {
 }
 
 // Dari-specific codes clients act on; every other code stays internal.
-const CLIENT_VISIBLE_ERROR_CODES = new Set([
+const CLIENT_VISIBLE_ERROR_CODES = new Set<string>([
+  ...LINK_GRANT_ERROR_CODES,
+  ...LINK_TOKEN_ERROR_CODES,
   "personal_subscription_unavailable",
   "subscription_switched",
   "subscription_usage_limit",
 ]);
+
+// What a Dari Link error carries beside its code: when a plan resets, and who
+// revoked a grant and when.
+function linkErrorFields(error: HttpError): Record<string, string> {
+  return Object.fromEntries(
+    ["resets_at", "revoked_by", "revoked_at"].flatMap((field) => {
+      const value = error.body?.[field];
+      return typeof value === "string" ? [[field, value]] : [];
+    }),
+  );
+}
 
 export function anthropicErrorResponse(error: unknown): Response {
   const { status, message, code } = normalizeError(error);
@@ -171,6 +185,7 @@ export function anthropicErrorResponse(error: unknown): Response {
         type: anthropicErrorType(status),
         message,
         ...(CLIENT_VISIBLE_ERROR_CODES.has(code) ? { code } : {}),
+        ...(error instanceof HttpError ? linkErrorFields(error) : {}),
       },
     },
     { status, headers: errorResponseHeaders(error) },

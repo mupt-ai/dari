@@ -19,6 +19,7 @@ import { RequestReporter, type ReportedCandidatePruning } from "../telemetry/rep
 import { RoutingBillingFinalization } from "../telemetry/billing_finalization.js";
 import type { ClientHarness, ProviderCredential, ResolvedRouter, RouterRole } from "../types.js";
 import { requestTags } from "./request_tags.js";
+import { linkGrantAccess } from "./link_grant_access.js";
 import { rolePrompt, withRoleModel } from "./role_model.js";
 import { strictProviderAccess } from "./strict_provider_access.js";
 import type { RoutedRuntimeReporter } from "./runtime_reporter.js";
@@ -144,8 +145,11 @@ export async function prepareRoutedCompletion(args: {
   }
   const roleModel = withRoleModel(credentials, args.interaction);
   const prompt = rolePrompt(credentials, args.interaction);
-  const access = strictProviderAccess(credentials, roleModel.interaction);
+  const strictAccess = strictProviderAccess(credentials, roleModel.interaction);
+  const access = linkGrantAccess(strictAccess.credentials, strictAccess.interaction);
   credentials = access.credentials;
+  // A child token's tags label every request it makes, whatever the request says.
+  Object.assign(tags, credentials.link_tags);
   args = {
     ...args,
     interaction: clampRequestedEffort(
@@ -294,3 +298,4 @@ function reportedPruning(
   const capability = { capability_pruned_models: imagePruned };
   return core === null ? capability : { ...core, ...capability };
 }
+

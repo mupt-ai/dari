@@ -28,10 +28,15 @@ import type { ClientHarness, RouterRole, RouterRoleModels, RouterRolePrompts } f
  *     rolePrompts:          # optional: append to an agent role's system prompt
  *       main: Delegate codebase exploration to subagents.
  *     nativeCompaction: false # let Codex compact server-side with the provider's native compaction
+ * link:                     # optional: Dari Link
+ *   allowHttpRedirectHosts:  # http (not https) redirect URIs allowed on these
+ *     - "*.example.ts.net"   # private dev hosts; `*.` matches any subdomain
  * providers:                # optional: OpenAI-compatible or self-run endpoints
  *   local:
  *     baseUrl: http://localhost:8000/v1
  *     apiKeyEnv: LOCAL_API_KEY
+ *   openai-codex:            # optional: where ChatGPT plan requests go (a proxy)
+ *     baseUrl: https://chatgpt.com/backend-api
  * ```
  *
  * Secrets never live here: gateway keys come from `DARI_GATEWAY_KEYS`,
@@ -43,7 +48,16 @@ import type { ClientHarness, RouterRole, RouterRoleModels, RouterRolePrompts } f
 export type GatewayConfig = {
   routers: Record<string, RouterConfig>;
   providers: Record<string, ProviderEndpointConfig>;
+  link?: LinkConfig;
 };
+
+export type LinkConfig = {
+  // Hosts besides loopback an app may register an http redirect URI on: exact
+  // names, or `*.suffix`. Default none: https or loopback only.
+  allowHttpRedirectHosts: string[];
+};
+
+const REDIRECT_HOST_PATTERN = /^(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/;
 
 // An endpoint for a provider id, used by every model with that prefix. Known
 // providers need no entry; their endpoints and API keys come from the model
@@ -151,7 +165,16 @@ export function parseGatewayConfig(raw: unknown): GatewayConfig {
       providers[id] = parseProvider(id, provider);
     }
   }
-  return { routers, providers };
+  return { routers, providers, ...(raw.link === undefined ? {} : { link: parseLink(raw.link) }) };
+}
+
+function parseLink(raw: unknown): LinkConfig {
+  if (!isRecord(raw)) throw new Error("`link` must be a map.");
+  const hosts = raw.allowHttpRedirectHosts ?? [];
+  if (!Array.isArray(hosts) || !hosts.every((host) => typeof host === "string" && REDIRECT_HOST_PATTERN.test(host.toLowerCase()))) {
+    throw new Error("link.allowHttpRedirectHosts must list host names, each optionally starting with `*.`.");
+  }
+  return { allowHttpRedirectHosts: (hosts as string[]).map((host) => host.toLowerCase()) };
 }
 
 function parseProvider(id: string, raw: unknown): ProviderEndpointConfig {

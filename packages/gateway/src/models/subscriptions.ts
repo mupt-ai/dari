@@ -21,6 +21,19 @@ const SUBSCRIPTION_CLIENTS: Partial<Record<SubscriptionKind, ClientHarness>> = {
   meta_muse: "muse_code",
 };
 
+/** The model provider whose models a plan serves, such as `openai`. */
+export function subscriptionModelProvider(kind: SubscriptionKind): string {
+  return SUBSCRIPTION_MODEL_PROVIDERS[kind][0]!;
+}
+
+/**
+ * The only client a plan may serve, or undefined when it serves any client:
+ * ChatGPT plans serve any client through the Codex backend.
+ */
+export function subscriptionClient(kind: SubscriptionKind): ClientHarness | undefined {
+  return SUBSCRIPTION_CLIENTS[kind];
+}
+
 /**
  * Whether a plan may serve a model executed by `provider` for this client:
  * each plan serves only its own provider's models, and only to the client its
@@ -41,12 +54,13 @@ export function subscriptionServes(
 export function codexModelConfig(
   modelId: string,
   price: RouterModelPrice | null,
+  baseUrl = CODEX_BACKEND_URL,
 ): ResolvedRouterModelConfig {
   return {
     provider: "openai-codex",
     native_model_id: nativeModelId(modelId),
     api: "openai-codex-responses",
-    base_url: CODEX_BACKEND_URL,
+    base_url: baseUrl,
     // A plan bills no tokens; the catalog price only feeds cost estimates.
     cost: price ?? { input: 0, output: 0 },
     fast_mode: false,

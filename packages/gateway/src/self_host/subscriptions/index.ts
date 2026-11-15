@@ -27,6 +27,8 @@ export { freshAccessToken } from "./access.js";
 export { handleSubscriptionRequest, type SubscriptionHttpDeps } from "./http.js";
 export {
   CODEX_APPROVAL_PENDING,
+  META_APPROVAL_PENDING,
+  OPENCODE_APPROVAL_PENDING,
   SUBSCRIPTION_PROVIDERS,
   SubscriptionOAuthInputError,
   SubscriptionOAuthProviderError,
@@ -43,6 +45,7 @@ export {
 export {
   SubscriptionStore,
   activeModelHolds,
+  currentUsage,
   isHeld,
   type PendingOAuthSession,
   type SubscriptionCredential,

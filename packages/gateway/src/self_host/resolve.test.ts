@@ -2,9 +2,13 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
 import { HttpError } from "../http/errors.js";
+import { pkceChallenge } from "../ingress/link.js";
+import type { InteractionRequest } from "../interaction/types.js";
+import { linkGrantAccess } from "../runtime/link_grant_access.js";
 import type { ResolveRouterRequest } from "../platform/platform.js";
 import { parseGatewayConfig } from "./config.js";
 import { providersWithoutCredentials, resolveSelfHostedRouter, type SelfHostedResolverDeps } from "./resolve.js";
+import { LinkStore } from "./link_store.js";
 import { RouterModelStore } from "./router_models.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 import { codexAccessToken, tokens } from "./subscriptions/test_support.js";
@@ -31,6 +35,7 @@ function deps(overrides: {
     routerModels: new RouterModelStore(db),
     gatewayKeys: ["gw-1", "gw-2"],
     subscriptions: new SubscriptionStore(db),
+    links: new LinkStore(db),
     prefixHits: () => [],
     providerApiKey: async (provider) => overrides.apiKeys?.[provider],
     autoRouting: overrides.autoRouting ?? false,
@@ -338,6 +343,33 @@ test("routing is listed only with Dari Auto Routing", async () => {
 // Claude Code requests resolve twice and only the second resolve's
 // credentials serve. The first must not mark a plan used or refresh it: a
 // failed refresh there would fail a request whose own plan is fine.
+test("a grant with a gateway API key is served that gateway's models by name", async () => {
+  const resolver = deps();
+  const app = resolver.links.registerApp("App", ["http://127.0.0.1:1/callback"], false);
+  const key = resolver.links.addKey("lu_1", "openrouter", "sk-or-test");
+  const challenge = pkceChallenge("v".repeat(43));
+  const code = resolver.links.approve({
+    subject: "lu_1",
+    clientId: app.clientId,
+    redirectUri: "http://127.0.0.1:1/callback",
+    codeChallenge: challenge,
+    credentialIds: [key.id],
+  });
+  const tokens = resolver.links.exchangeCode({ clientId: app.clientId, code, redirectUri: "http://127.0.0.1:1/callback", codeChallenge: challenge });
+  const resolved = await resolveSelfHostedRouter(resolver, request({ apiKey: tokens.accessToken }));
+  expect(resolved.provider_keys).toEqual({ openrouter: "sk-or-test" });
+  expect(resolved.link_key_gateways).toEqual({ openrouter: null });
+  expect(resolved.link_models).toEqual([]);
+
+  const interaction = { model: "dari/model/openrouter/anthropic/claude-sonnet-4.5" } as InteractionRequest;
+  const served = linkGrantAccess(resolved, interaction);
+  expect(served.credentials.enabled_models).toEqual(["openrouter/anthropic/claude-sonnet-4.5"]);
+  // Another gateway's model, and a provider's it holds no key for, are refused.
+  for (const model of ["dari/model/vercel-ai-gateway/openai/gpt-5", "dari/model/anthropic/claude-sonnet-4-5"]) {
+    expect(() => linkGrantAccess(resolved, { model } as InteractionRequest)).toThrow();
+  }
+});
+
 test("a provisional resolve neither marks a plan used nor refreshes it", async () => {
   const resolver = deps({ apiKeys: { openai: "sk-openai" } });
   // Expires within the refresh margin, and the deps' fetch fails any refresh.

@@ -403,7 +403,8 @@ function derivePrefixContext(args: {
 // An explicit `dari/model/<id>` serves the requested thinking level when the
 // model offers it and otherwise its default level, so the request itself drops
 // an unsupported level before routing and provider validation see it. A strict
-// router never substitutes, so it keeps the level and fails on it.
+// router and a Dari Link token never substitute, so they keep the level and
+// fail on it.
 export function clampRequestedEffort(
   interaction: InteractionRequest,
   credentials: { strict?: boolean; model_thinking_levels?: Record<string, ReasoningEffort[]> },
@@ -412,6 +413,7 @@ export function clampRequestedEffort(
   const requested = interaction.reasoning?.effort;
   const modelId = explicitModelId(interaction.model);
   if (requested === undefined || modelId === null || credentials.strict === true) return interaction;
+  if (interaction.reasoning?.clientOnly === true) return interaction;
   const supported = metadataLookup(modelId).supportedThinkingLevels.filter(isReasoningEffort);
   const configured = credentials.model_thinking_levels?.[modelId] ?? supported;
   if (configured.includes(requested) && supported.includes(requested)) return interaction;

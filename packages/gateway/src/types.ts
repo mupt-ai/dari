@@ -120,6 +120,13 @@ export type ResolvedRouterModelConfig = {
   zdr?: boolean;
 };
 
+/** Why a Dari Link grant cannot serve one provider's models now. */
+export type LinkUnavailable = {
+  code: "subscription_exhausted" | "subscription_client_mismatch" | "grant_budget_exhausted";
+  message: string;
+  resets_at?: string | null;
+};
+
 // Subagents include workflow agents. Background requests have no role.
 export type RouterRole = "main" | "subagent";
 export type RouterRoleModels = Partial<Record<RouterRole, string | null>>;
@@ -139,6 +146,25 @@ export type ResolvedRouter = {
   provider_credentials?: Record<string, ProviderCredential>;
   // Execution provider -> the user's subscription credential serving it.
   subscription_credential_ids?: Partial<Record<Provider, string>>;
+  // Set when a Dari Link token authenticated the request: only that grant's
+  // subscriptions serve it.
+  link_grant_id?: string | null;
+  // Every model the grant can serve this client now, including catalog models
+  // the router does not list: a request may name any of them as
+  // `dari/model/<id>`, while `dari/routing` chooses among `enabled_models`.
+  link_models?: string[];
+  // Model provider -> why the grant cannot serve its models now.
+  link_unavailable?: Record<string, LinkUnavailable>;
+  // Set for a Dari Link child token: the models it serves, each with the
+  // thinking level every request for it is served at when pinned.
+  // Gateways (OpenRouter, Vercel AI Gateway) the grant holds an API key for:
+  // a request may name any model of theirs, though `link_models` lists none.
+  // Each maps to the endpoint the platform configures for it, or null for the
+  // gateway's own.
+  link_key_gateways?: Record<string, { api: string; base_url: string } | null>;
+  link_pins?: Array<{ model: string; thinking?: ReasoningEffort | null }> | null;
+  // Tags a Dari Link child token carries onto every request it makes.
+  link_tags?: Record<string, string> | null;
   zdr?: boolean;
   allow_long_context?: boolean;
   speculative_routing?: boolean;

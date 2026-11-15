@@ -5,6 +5,7 @@ import { createRequestHandler } from "../http/handler.js";
 import { createPrioritySelectorBackend } from "../strategies/priority_selector.js";
 import { parseGatewayConfig } from "./config.js";
 import { createSelfHostedPlatform } from "./platform.js";
+import { LinkStore } from "./link_store.js";
 import { PrefixStore } from "./prefix_store.js";
 import { RouterModelStore } from "./router_models.js";
 import { SessionPinStore } from "./session_pin_store.js";
@@ -26,6 +27,7 @@ test("the model list counts a Claude Code plan only for Claude Code", async () =
     routerModels: new RouterModelStore(db),
     gatewayKeys: ["k"],
     subscriptions,
+    links: new LinkStore(db),
     prefixes: new PrefixStore(db),
     sessionPins: new SessionPinStore(db),
     providerApiKey: async (provider) => (provider === "openai" ? "sk-openai" : undefined),

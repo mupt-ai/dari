@@ -177,7 +177,7 @@ test("Responses ingress rejects Dari's internal off spelling on the OpenAI wire"
 
 test("Responses ingress rejects unsupported models at the protocol boundary", () => {
   expect(() => openAIResponsesToInteraction({ model: "gpt-5.5", input: "hello" })).toThrow(
-    "Only model 'dari/routing' or 'dari/model/<model>' is supported."
+    "Only model 'dari/routing' or 'dari/model/<model>' is supported. Name a catalog model as 'dari/model/<provider>/<model>', such as 'dari/model/openai/gpt-5.5'; GET /v1/models lists them."
   );
 });
 
@@ -677,7 +677,7 @@ test("Responses ingress rejects tool names made ambiguous by namespace encoding"
 test("Responses gate rejects Claude tier names", () => {
   for (const model of ["sonnet", "opus", "haiku", "fable", "mythos"]) {
     expect(() => openAIResponsesToInteraction({ model, input: "ping" })).toThrow(
-      "Only model 'dari/routing' or 'dari/model/<model>' is supported."
+      "Only model 'dari/routing' or 'dari/model/<model>' is supported. Name a catalog model as 'dari/model/<provider>/<model>', such as 'dari/model/openai/gpt-5.5'; GET /v1/models lists them."
     );
   }
 });

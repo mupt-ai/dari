@@ -107,8 +107,24 @@ export async function executeNonStreaming(args: {
     });
   }
   return Response.json(result.responseBody, {
-    headers: result.choice.execution.headers,
+    headers: { ...result.choice.execution.headers, ...linkUsageHeaders(result) },
   });
+}
+
+// One usage shape for a Dari Link app whatever protocol it speaks: the tokens
+// a response used, with `input_tokens` excluding cache reads and writes. A
+// stream carries its usage in the protocol's own final event instead.
+function linkUsageHeaders(result: CompletedNonStreamingExecution): Record<string, string> {
+  if (!result.choice.execution.subscriptionLinkGrantId) return {};
+  const usage = result.output.usage;
+  return {
+    "X-Dari-Usage": JSON.stringify({
+      input_tokens: usage.input,
+      output_tokens: usage.output,
+      cache_read_tokens: usage.cacheRead,
+      cache_write_tokens: usage.cacheWrite,
+    }),
+  };
 }
 
 export async function completeNonStreaming(args: {
@@ -755,6 +771,7 @@ async function providerFailedAttempt(
       userId: execution.subscriptionUserId,
       credentialId: execution.subscriptionCredentialId,
       limit,
+      ...(execution.subscriptionLinkGrantId ? { linkGrantId: execution.subscriptionLinkGrantId } : {}),
     });
   // Nothing reached the client yet, so the same request is retried on the
   // next plan at once when the platform names it. The same plan still serves
@@ -877,6 +894,7 @@ async function nextSubscriptionFor(execution: ProviderExecution): Promise<NextSu
       userId: execution.subscriptionUserId,
       provider: execution.provider,
       conversationId: execution.conversationId,
+      ...(execution.subscriptionLinkGrantId ? { linkGrantId: execution.subscriptionLinkGrantId } : {}),
     });
   } catch (error) {
     console.error("next subscription lookup failed", error);
@@ -930,7 +948,12 @@ function noteSubscriptionUsage(
         ? responseCapture.streamedSubscriptionUsage.then((snapshot) => museSubscriptionUsage(snapshot, new Date()))
         : Promise.resolve(null);
   usage
-    .then((reported) => reported === null ? undefined : record({ userId, credentialId, usage: reported }))
+    .then((reported) => reported === null ? undefined : record({
+      userId,
+      credentialId,
+      usage: reported,
+      ...(execution.subscriptionLinkGrantId ? { linkGrantId: execution.subscriptionLinkGrantId } : {}),
+    }))
     .catch((error: unknown) => {
       console.error("subscription usage record failed", error);
       captureOperationalError(error, { code: "subscription_usage_record_failed" });

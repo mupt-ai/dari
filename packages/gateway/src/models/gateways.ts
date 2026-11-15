@@ -53,6 +53,9 @@ const GATEWAYS: Record<string, Gateway> = {
   }),
 };
 
+/** The gateways a Dari Link user can add an API key for. */
+export const LINK_KEY_GATEWAYS: readonly string[] = Object.keys(GATEWAYS);
+
 export function gatewayFor(provider: unknown): Gateway | undefined {
   return typeof provider === "string" ? GATEWAYS[provider.toLowerCase()] : undefined;
 }

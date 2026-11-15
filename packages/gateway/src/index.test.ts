@@ -21,7 +21,8 @@ test("the root entry reaches no Bun APIs", () => {
 
 function resolveModule(dir: string, specifier: string): string {
   const base = resolve(dir, specifier.replace(/\.js$/, ""));
-  for (const candidate of [`${base}.ts`, join(base, "index.ts")]) {
+  // Data modules such as `./canonical_models.json` are imported as they are.
+  for (const candidate of [`${base}.ts`, join(base, "index.ts"), ...(specifier.endsWith(".json") ? [base] : [])]) {
     try {
       readFileSync(candidate);
       return candidate;

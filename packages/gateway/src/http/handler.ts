@@ -2,10 +2,11 @@ import {
   handleResponses,
   handleResponsesWebSocketFallback,
 } from "../ingress/codex.js";
+import { handleLinkRequest, LINK_METADATA_PATH, LINK_ROUTE_PREFIX } from "../ingress/link.js";
 import { handleModels } from "../ingress/models.js";
 import { handleMuseCodeModels } from "../ingress/muse_models.js";
 import { handleChatCompletions } from "../ingress/chat_completions.js";
-import { handleAnthropicMessages } from "../ingress/anthropic_messages.js";
+import { anthropicErrorResponse, handleAnthropicMessages } from "../ingress/anthropic_messages.js";
 import { bindGatewayPlatform, type GatewayPlatform } from "../platform/platform.js";
 import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
 import type { SelectorBackend } from "../strategies/routing.js";
@@ -19,7 +20,8 @@ export type GatewayHandlerOptions = {
 /**
  * The gateway's routed HTTP surface: `/v1/{chat/completions,responses,
  * messages,models}` on the default router and `/{router_id}/v1/...` on a
- * named one. Binds `options.platform` for every request it serves.
+ * named one, and the Dari Link grant endpoints under `/v1/link/`. Binds
+ * `options.platform` for every request it serves.
  */
 export function createRequestHandler(options: GatewayHandlerOptions) {
   const { selectorBackend } = options;
@@ -42,6 +44,9 @@ export function createRequestHandler(options: GatewayHandlerOptions) {
     // when ANTHROPIC_BASE_URL points at a compatible gateway.
     if (request.method === "HEAD" && url.pathname === "/api/hello") {
       return new Response(null, { status: 200 });
+    }
+    if (url.pathname.startsWith(LINK_ROUTE_PREFIX) || url.pathname === LINK_METADATA_PATH) {
+      return await handleLinkRequest(request, options.platform);
     }
 
     const endpoint = routedEndpoint(url.pathname);
@@ -71,6 +76,13 @@ export function createRequestHandler(options: GatewayHandlerOptions) {
     }
     if (endpoint?.protocol === "models" && request.method === "GET") {
       return await handleModels(request, endpoint.routerId);
+    }
+    // The gateway counts no tokens. Claude Code calls this for any Anthropic
+    // base URL and estimates locally when it fails, so it gets an error it parses.
+    if (request.method === "POST" && url.pathname.endsWith("/messages/count_tokens")) {
+      return anthropicErrorResponse(
+        new HttpError(404, "Token counting is not available on this gateway; estimate locally.", "not_found"),
+      );
     }
 
     return errorResponse(new HttpError(404, "Not found", "not_found"));

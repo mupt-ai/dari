@@ -175,11 +175,11 @@ test("rename trims, clears on empty, and caps the length", () => {
 test("pending sessions round-trip and expired ones are pruned on create", () => {
   const store = new SubscriptionStore(new Database(":memory:"));
   const old = store.createSession(
-    { provider: "openai_codex", flow: { device_auth_id: "d" }, credentialName: null, expiresAt: later(1) },
+    { provider: "openai_codex", flow: { device_auth_id: "d" }, credentialName: null, owner: null, expiresAt: later(1) },
     now,
   );
   const fresh = store.createSession(
-    { provider: "anthropic_claude_code", flow: { state: "s" }, credentialName: "NAME", expiresAt: later(20) },
+    { provider: "anthropic_claude_code", flow: { state: "s" }, credentialName: "NAME", owner: "lu_1", expiresAt: later(20) },
     later(5),
   );
   expect(store.getSession(old.token)).toBeNull();

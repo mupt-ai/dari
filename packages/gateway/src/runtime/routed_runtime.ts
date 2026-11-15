@@ -22,6 +22,7 @@ import {
   prepareProviderExecution,
   startProviderCompletion,
   startProviderStream,
+  type ClientThinking,
   type ProviderExecution,
   type StartedCompletion,
   type StartedStream,
@@ -620,7 +621,14 @@ function providerExecution(
     promptCacheKey: prepared.interaction.promptCacheKey,
     tags: prepared.tags,
     systemPromptSuffix: prepared.rolePrompt,
+    clientThinking: clientThinking(prepared.interaction.reasoning),
   });
+}
+
+function clientThinking(reasoning: PreparedRoutedCompletion["interaction"]["reasoning"]): ClientThinking | undefined {
+  if (reasoning?.clientOnly !== true || reasoning.effort !== undefined) return undefined;
+  if (reasoning.enabled === false) return "off";
+  return reasoning.budgetTokens === undefined ? "default" : `budget:${reasoning.budgetTokens}`;
 }
 
 function tokenCount(value: unknown): number {

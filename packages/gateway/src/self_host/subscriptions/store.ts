@@ -2,10 +2,12 @@
  * SQLite storage for personal subscription credentials, the conversations
  * each one serves, and pending OAuth flows.
  *
- * Tokens are stored as PLAINTEXT in the gateway's own database file. Anyone
- * who can read that file can use the connected subscriptions until the
- * provider revokes them, so keep the file on storage only the gateway's
- * operator can read, and treat backups of it as secrets.
+ * With an encryption key (see secret_box.ts) tokens and pending sign-ins are
+ * encrypted in the gateway's database file, each bound to its own row.
+ * Without one they are PLAINTEXT there: anyone who can read that file can use
+ * the connected subscriptions until the provider revokes them, so keep the
+ * file on storage only the gateway's operator can read, and treat backups of
+ * it as secrets.
  *
  * Choosing a subscription (`selectCredential`), for each provider:
  * - A conversation stays on the subscription it started on, so its prompt
@@ -26,6 +28,7 @@ import type { Database } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 
 import type { SubscriptionUsage } from "../../providers/subscription_limits.js";
+import { type SecretBox, openWithoutKey } from "../secret_box.js";
 import type { OAuthTokens, SubscriptionProvider } from "./oauth.js";
 
 // The share of a usage window past which conversations leave a subscription
@@ -44,6 +47,9 @@ export type SubscriptionCredential = {
   label: string | null;
   accountEmail: string | null;
   accountId: string | null;
+  // The Dari Link user who connected the plan on the approval page; null for
+  // the gateway owner's own plans, which alone serve the gateway's keys.
+  owner: string | null;
   accessToken: string;
   refreshToken: string;
   expiresAt: Date;
@@ -71,6 +77,8 @@ export type PendingOAuthSession = {
   flow: Record<string, string>;
   // The subscription this flow reconnects; null connects another one.
   credentialName: string | null;
+  // The Dari Link user connecting the plan; null for the gateway owner.
+  owner: string | null;
   expiresAt: Date;
 };
 
@@ -88,6 +96,7 @@ type CredentialRow = {
   label: string | null;
   account_email: string | null;
   account_id: string | null;
+  owner: string | null;
   access_token: string;
   refresh_token: string;
   expires_at: number;
@@ -112,6 +121,7 @@ const ADDED_COLUMNS = {
   usage_observed_at: "INTEGER",
   usage_windows: "TEXT",
   model_holds: "TEXT",
+  owner: "TEXT",
 } as const;
 
 type SessionRow = {
@@ -119,11 +129,12 @@ type SessionRow = {
   provider: SubscriptionProvider;
   flow_json: string;
   credential_name: string | null;
+  owner: string | null;
   expires_at: number;
 };
 
 export class SubscriptionStore {
-  constructor(private readonly db: Database) {
+  constructor(private readonly db: Database, private readonly box: SecretBox | null = null) {
     db.run(`CREATE TABLE IF NOT EXISTS subscription_credentials (
       id TEXT PRIMARY KEY,
       provider TEXT NOT NULL,
@@ -141,6 +152,7 @@ export class SubscriptionStore {
       usage_observed_at INTEGER,
       usage_windows TEXT,
       model_holds TEXT,
+      owner TEXT,
       position INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -164,51 +176,136 @@ export class SubscriptionStore {
       provider TEXT NOT NULL,
       flow_json TEXT NOT NULL,
       credential_name TEXT,
+      owner TEXT,
       expires_at INTEGER NOT NULL
     )`);
+    const sessionColumns = db.query<{ name: string }, []>("PRAGMA table_info(subscription_oauth_sessions)").all();
+    if (!sessionColumns.some((column) => column.name === "owner")) {
+      db.run("ALTER TABLE subscription_oauth_sessions ADD COLUMN owner TEXT");
+    }
+    this.encryptStored();
   }
 
-  /** Every subscription, grouped by provider, in connection order. */
+  /** Whether stored tokens are encrypted. */
+  get encrypted(): boolean {
+    return this.box !== null;
+  }
+
+  // Seal what was stored before encryption was turned on, or under a key that
+  // no longer encrypts.
+  private encryptStored(): void {
+    const box = this.box;
+    if (box === null) return;
+    this.db.transaction(() => {
+      const credentials = this.db
+        .query<Pick<CredentialRow, "id" | "access_token" | "refresh_token">, []>(
+          "SELECT id, access_token, refresh_token FROM subscription_credentials",
+        )
+        .all();
+      for (const row of credentials) {
+        if (box.current(row.access_token) && box.current(row.refresh_token)) continue;
+        this.db.run("UPDATE subscription_credentials SET access_token = ?, refresh_token = ? WHERE id = ?", [
+          box.seal(box.adopt(row.access_token, tokenPlace(row.id, "access_token")), tokenPlace(row.id, "access_token")),
+          box.seal(box.adopt(row.refresh_token, tokenPlace(row.id, "refresh_token")), tokenPlace(row.id, "refresh_token")),
+          row.id,
+        ]);
+      }
+      const sessions = this.db
+        .query<Pick<SessionRow, "token" | "flow_json">, []>("SELECT token, flow_json FROM subscription_oauth_sessions")
+        .all();
+      for (const row of sessions) {
+        if (box.current(row.flow_json)) continue;
+        this.db.run("UPDATE subscription_oauth_sessions SET flow_json = ? WHERE token = ?", [
+          box.seal(box.adopt(row.flow_json, flowPlace(row.token)), flowPlace(row.token)),
+          row.token,
+        ]);
+      }
+    })();
+  }
+
+  private seal(value: string, place: string): string {
+    return this.box === null ? value : this.box.seal(value, place);
+  }
+
+  private open(stored: string, place: string): string {
+    return this.box === null ? openWithoutKey(stored) : this.box.open(stored, place);
+  }
+
+  private credential(row: CredentialRow): SubscriptionCredential {
+    return credentialFromRow({
+      ...row,
+      access_token: this.open(row.access_token, tokenPlace(row.id, "access_token")),
+      refresh_token: this.open(row.refresh_token, tokenPlace(row.id, "refresh_token")),
+    });
+  }
+
+  /** The gateway owner's subscriptions, grouped by provider, in connection order. */
   list(provider?: SubscriptionProvider): SubscriptionCredential[] {
+    return this.every(provider).filter((credential) => credential.owner === null);
+  }
+
+  /** The subscriptions a Dari Link user connected. */
+  owned(owner: string): SubscriptionCredential[] {
+    return this.every().filter((credential) => credential.owner === owner);
+  }
+
+  /** The subscriptions with these ids, whoever connected them. */
+  withIds(ids: ReadonlySet<string>, provider?: SubscriptionProvider): SubscriptionCredential[] {
+    return this.every(provider).filter((credential) => ids.has(credential.id));
+  }
+
+  private every(provider?: SubscriptionProvider): SubscriptionCredential[] {
     const rows = provider === undefined
       ? this.db.query<CredentialRow, []>("SELECT * FROM subscription_credentials ORDER BY provider, position").all()
       : this.db
         .query<CredentialRow, [string]>("SELECT * FROM subscription_credentials WHERE provider = ? ORDER BY position")
         .all(provider);
-    return rows.map(credentialFromRow);
+    return rows.map((row) => this.credential(row));
   }
 
   get(id: string): SubscriptionCredential | null {
     const row = this.db.query<CredentialRow, [string]>("SELECT * FROM subscription_credentials WHERE id = ?").get(id);
-    return row === null ? null : credentialFromRow(row);
+    return row === null ? null : this.credential(row);
   }
 
-  getByName(name: string): SubscriptionCredential | null {
+  /**
+   * The gateway owner's subscription by name, or a Dari Link user's with
+   * `owner`: the owner's endpoints never reach a Link user's plan.
+   */
+  getByName(name: string, owner: string | null = null): SubscriptionCredential | null {
     const row = this.db
-      .query<CredentialRow, [string]>("SELECT * FROM subscription_credentials WHERE name = ?")
-      .get(normalizeName(name));
-    return row === null ? null : credentialFromRow(row);
+      .query<CredentialRow, [string, string | null]>("SELECT * FROM subscription_credentials WHERE name = ? AND owner IS ?")
+      .get(normalizeName(name), owner);
+    return row === null ? null : this.credential(row);
   }
 
   /**
    * The subscription a request without a conversation would use now, or null
-   * when none is connected or every one is held.
+   * when none is connected or every one is held: one of the gateway owner's,
+   * or with `only` one of those subscription ids, as for a Dari Link grant.
    */
-  activeCredential(provider: SubscriptionProvider, now = new Date()): SubscriptionCredential | null {
-    return this.selectCredential(provider, undefined, now);
+  activeCredential(
+    provider: SubscriptionProvider,
+    now = new Date(),
+    only?: ReadonlySet<string>,
+  ): SubscriptionCredential | null {
+    return this.selectCredential(provider, undefined, now, only);
   }
 
   /**
    * The subscription that serves a conversation's next turn (see the module
    * comment), or null when none is connected or every one is held. A
-   * conversation is remembered on the subscription chosen for it.
+   * conversation is remembered on the subscription chosen for it. The choice
+   * is among the gateway owner's, or with `only` among those subscription ids,
+   * as for a Dari Link grant.
    */
   selectCredential(
     provider: SubscriptionProvider,
     conversationId: string | undefined,
     now = new Date(),
+    only?: ReadonlySet<string>,
   ): SubscriptionCredential | null {
-    const all = this.list(provider);
+    const all = only === undefined ? this.list(provider) : this.withIds(only, provider);
     const available = all.filter((credential) => !isHeld(credential, now));
     if (available.length === 0) return null;
     const order = rotationFrom(all, lastUsed(all));
@@ -264,15 +361,21 @@ export class SubscriptionStore {
 
   /**
    * Store tokens from a completed OAuth flow. `reconnectName` replaces that
-   * subscription (null when it is not connected). Otherwise a subscription
-   * for the same account email is replaced, and anything else is connected
-   * last in order under the first free name.
+   * subscription (null when it is not connected). Otherwise the same owner's
+   * subscription for the same account email is replaced, and anything else is
+   * connected last in order under the first free name. `owner` is the Dari
+   * Link user connecting it; null is the gateway owner.
    */
-  connect(tokens: OAuthTokens, reconnectName: string | null, now = new Date()): SubscriptionCredential | null {
+  connect(
+    tokens: OAuthTokens,
+    reconnectName: string | null,
+    now = new Date(),
+    owner: string | null = null,
+  ): SubscriptionCredential | null {
     return this.db.transaction(() => {
       const existing = reconnectName !== null
-        ? this.getByName(reconnectName)
-        : this.list(tokens.provider).find(
+        ? this.getByName(reconnectName, owner ?? null)
+        : this.every(tokens.provider).filter((credential) => credential.owner === owner).find(
           (credential) => tokens.accountEmail !== null && credential.accountEmail === tokens.accountEmail,
         ) ?? null;
       if (reconnectName !== null && existing?.provider !== tokens.provider) return null;
@@ -290,8 +393,8 @@ export class SubscriptionStore {
              updated_at = ?
            WHERE id = ?`,
           [
-            tokens.accessToken,
-            tokens.refreshToken,
+            this.seal(tokens.accessToken, tokenPlace(existing.id, "access_token")),
+            this.seal(tokens.refreshToken, tokenPlace(existing.id, "refresh_token")),
             tokens.expiresAt.getTime(),
             tokens.accountId,
             tokens.accountEmail,
@@ -317,17 +420,18 @@ export class SubscriptionStore {
         .query<{ next: number }, []>("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM subscription_credentials")
         .get()!.next;
       this.db.run(
-        `INSERT INTO subscription_credentials (id, provider, name, account_email, account_id, access_token,
+        `INSERT INTO subscription_credentials (id, provider, name, account_email, account_id, owner, access_token,
            refresh_token, expires_at, position, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           tokens.provider,
           this.freeName(BASE_NAMES[tokens.provider]),
           tokens.accountEmail,
           tokens.accountId,
-          tokens.accessToken,
-          tokens.refreshToken,
+          owner,
+          this.seal(tokens.accessToken, tokenPlace(id, "access_token")),
+          this.seal(tokens.refreshToken, tokenPlace(id, "refresh_token")),
           tokens.expiresAt.getTime(),
           position,
           now.getTime(),
@@ -343,7 +447,14 @@ export class SubscriptionStore {
     this.db.run(
       `UPDATE subscription_credentials SET access_token = ?, refresh_token = ?, expires_at = ?,
          account_id = COALESCE(?, account_id), updated_at = ? WHERE id = ?`,
-      [tokens.accessToken, tokens.refreshToken, tokens.expiresAt.getTime(), tokens.accountId, now.getTime(), id],
+      [
+        this.seal(tokens.accessToken, tokenPlace(id, "access_token")),
+        this.seal(tokens.refreshToken, tokenPlace(id, "refresh_token")),
+        tokens.expiresAt.getTime(),
+        tokens.accountId,
+        now.getTime(),
+        id,
+      ],
     );
   }
 
@@ -368,8 +479,8 @@ export class SubscriptionStore {
   }
 
   /** Remove a subscription. Returns what was removed, or null when it was not connected. */
-  disconnect(name: string): SubscriptionCredential | null {
-    const credential = this.getByName(name);
+  disconnect(name: string, owner: string | null = null): SubscriptionCredential | null {
+    const credential = this.getByName(name, owner);
     if (credential === null) return null;
     this.db.run("DELETE FROM subscription_credentials WHERE id = ?", [credential.id]);
     this.db.run("DELETE FROM subscription_conversation_pins WHERE credential_id = ?", [credential.id]);
@@ -433,8 +544,15 @@ export class SubscriptionStore {
     const token = randomBytes(32).toString("base64url");
     this.db.run("DELETE FROM subscription_oauth_sessions WHERE expires_at <= ?", [now.getTime()]);
     this.db.run(
-      "INSERT INTO subscription_oauth_sessions (token, provider, flow_json, credential_name, expires_at) VALUES (?, ?, ?, ?, ?)",
-      [token, session.provider, JSON.stringify(session.flow), session.credentialName, session.expiresAt.getTime()],
+      "INSERT INTO subscription_oauth_sessions (token, provider, flow_json, credential_name, owner, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        token,
+        session.provider,
+        this.seal(JSON.stringify(session.flow), flowPlace(token)),
+        session.credentialName,
+        session.owner,
+        session.expiresAt.getTime(),
+      ],
     );
     return { token, ...session };
   }
@@ -448,8 +566,9 @@ export class SubscriptionStore {
     return {
       token: row.token,
       provider: row.provider,
-      flow: JSON.parse(row.flow_json) as Record<string, string>,
+      flow: JSON.parse(this.open(row.flow_json, flowPlace(row.token))) as Record<string, string>,
       credentialName: row.credential_name,
+      owner: row.owner,
       expiresAt: new Date(row.expires_at),
     };
   }
@@ -460,7 +579,9 @@ export class SubscriptionStore {
 
   private freeName(base: string): string {
     let name = base;
-    for (let index = 2; this.getByName(name) !== null; index += 1) name = `${base}_${index}`;
+    const taken = (candidate: string) =>
+      this.db.query("SELECT 1 FROM subscription_credentials WHERE name = ?").get(normalizeName(candidate)) !== null;
+    for (let index = 2; taken(name); index += 1) name = `${base}_${index}`;
     return name;
   }
 }
@@ -535,6 +656,15 @@ export function normalizeName(name: string): string {
   return name.trim().toUpperCase();
 }
 
+// Where a stored secret belongs, which its encryption is bound to.
+function tokenPlace(id: string, column: "access_token" | "refresh_token"): string {
+  return `subscription_credentials:${id}:${column}`;
+}
+
+function flowPlace(token: string): string {
+  return `subscription_oauth_sessions:${token}:flow_json`;
+}
+
 function credentialFromRow(row: CredentialRow): SubscriptionCredential {
   return {
     id: row.id,
@@ -543,6 +673,7 @@ function credentialFromRow(row: CredentialRow): SubscriptionCredential {
     label: row.label,
     accountEmail: row.account_email,
     accountId: row.account_id,
+    owner: row.owner,
     accessToken: row.access_token,
     refreshToken: row.refresh_token,
     expiresAt: new Date(row.expires_at),

@@ -131,6 +131,7 @@ async function startSession(deps: SubscriptionHttpDeps, body: Record<string, unk
       provider: provider as SubscriptionProvider,
       flow: authorization.flow,
       credentialName,
+      owner: null,
       expiresAt: authorization.expiresAt,
     },
     now,

@@ -664,6 +664,7 @@ function providerChoice(
       conversationId: "conv_1",
       sessionId: "conv_1",
       reasoningEffort: "off",
+      thinkingLevel: "off",
       promptEstimate: TEST_PROMPT_ESTIMATE,
       usageContext: providerKeySource === "managed"
         ? {

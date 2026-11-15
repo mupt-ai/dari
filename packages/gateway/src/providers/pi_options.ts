@@ -97,7 +97,10 @@ export function buildOptions(
 
   if (isAnthropic(api)) {
     const budgetTokens = request.reasoning?.budgetTokens;
-    if (request.reasoning?.enabled === false) {
+    const clientReasoning = request.reasoning;
+    if (clientReasoning?.clientOnly === true && clientReasoning.effort === undefined) {
+      patches.push((payload) => payloadWithClientThinking(payload, clientReasoning));
+    } else if (request.reasoning?.enabled === false) {
       patches.push((payload) => ({ ...payload, thinking: { type: "disabled" } }));
     } else if (budgetTokens !== undefined) {
       patches.push((payload) => ({
@@ -175,6 +178,9 @@ export function buildOptions(
   } else if (reasoning === "off" && isCompletions(api) && offRequiresWireNone(selectedModel)) {
     patches.push((payload) => payloadWithReasoningNone(payload, model));
   }
+  if (reasoning === undefined && request.reasoning?.clientOnly === true && (isOpenAI(api) || isOpenAIResponsesApi(api))) {
+    patches.push(payloadWithoutReasoningEffort);
+  }
   if (isOpenAIResponsesApi(api)) patches.push(payloadWithDetailedReasoningSummary);
 
   // Some clients send the default tool_choice even after omitting tools for
@@ -204,6 +210,15 @@ function providerReasoning(
   selectedReasoningEffort: ReasoningEffort | undefined,
 ): ReasoningEffort | undefined {
   const supportedLevels = supportedThinkingLevels(model, pi);
+  if (request.reasoning?.clientOnly === true) {
+    // The client's own settings, with no level chosen for it: an unnamed
+    // effort stays unsent and the provider's default applies.
+    const { effort, baseEffort, hasConfigurationUpdate } = request.reasoning;
+    for (const named of [effort, baseEffort]) {
+      if (named !== undefined) validateReasoningEffortForModel(named, selectedModel, supportedLevels);
+    }
+    return hasConfigurationUpdate ? baseEffort : effort;
+  }
   const defaultReasoningEffort = isReasoningEffort(model.defaultThinkingLevel) ? model.defaultThinkingLevel : undefined;
   const effective = effectiveReasoningForModel({
     request,
@@ -314,6 +329,47 @@ function payloadWithReasoningNone(payload: Payload, model: Model): Payload {
   if (!gatewayFor(model.provider)) return { ...payload, reasoning_effort: "none" };
   const { reasoning_effort: _, ...rest } = payload;
   return { ...rest, reasoning: { ...asRecord(payload.reasoning), effort: "none" } };
+}
+
+// The client's own Anthropic thinking and nothing chosen for it: its budget,
+// adaptive thinking or disabled thinking when it asked for that, or no
+// thinking field at all, and never an effort it did not name, top-level or
+// in per-turn effort messages.
+function payloadWithClientThinking(payload: Payload, reasoning: NonNullable<InteractionRequest["reasoning"]>): Payload {
+  const { thinking: chosen, output_config: outputConfig, ...rest } = payload;
+  const { effort: _, ...config } = asRecord(outputConfig);
+  const { budget_tokens: __, ...display } = asRecord(chosen);
+  const thinking = reasoning.budgetTokens !== undefined
+    ? { ...display, type: "enabled", budget_tokens: reasoning.budgetTokens }
+    : reasoning.enabled === true
+      ? { ...display, type: "adaptive" }
+      : reasoning.enabled === false
+        ? { type: "disabled" }
+        : undefined;
+  // Pi marks each turn's effort in system messages on per-turn-effort models,
+  // at a level of its own when none is named; the client named none.
+  const messages = Array.isArray(rest.messages)
+    ? { messages: rest.messages.filter((message) => !isEffortMarker(message)) }
+    : {};
+  return {
+    ...rest,
+    ...messages,
+    ...(Object.keys(config).length === 0 ? {} : { output_config: config }),
+    ...(thinking === undefined ? {} : { thinking }),
+  };
+}
+
+function isEffortMarker(message: unknown): boolean {
+  return isRecord(message) && message.role === "system" && isRecord(message.output_config);
+}
+
+// Pi names an effort of its own when it is given none. A client that named
+// none is served the provider's default, so the effort is left unsent.
+function payloadWithoutReasoningEffort(payload: Payload): Payload {
+  const { reasoning_effort: _, reasoning, ...rest } = payload;
+  if (!isRecord(reasoning)) return rest;
+  const { effort: __, ...kept } = reasoning;
+  return Object.keys(kept).length === 0 ? rest : { ...rest, reasoning: kept };
 }
 
 // Pi's default "auto" summary leaves many reasoning items empty (93% on the

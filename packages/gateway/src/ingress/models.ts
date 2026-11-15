@@ -7,7 +7,8 @@
    `provider=<id>[,<id>...]`. */
 
 import { anthropicToken, bearerToken } from "../http/auth.js";
-import { errorResponse } from "../http/errors.js";
+import { errorResponse, HttpError } from "../http/errors.js";
+import { LINK_GRANT_ERROR_CODES } from "../models/link_errors.js";
 import { captureRequestError } from "../observability/errors.js";
 import { anthropicErrorResponse } from "./anthropic_messages.js";
 import { listModelCatalog } from "../models/catalog.js";
@@ -17,6 +18,7 @@ import { resolveRouter } from "../strategies/routing.js";
 import { anthropicModelsResponse } from "./anthropic_models.js";
 import { namedClientHarness } from "./client_harness.js";
 import { codexModelsResponse } from "./codex_models.js";
+import { CANONICAL_ROUTER_MODEL, explicitModelSlug, LINK_CHILD_TOKEN_PREFIX } from "../protocol/input/router_model.js";
 
 export async function handleModels(request: Request, routerId: string): Promise<Response> {
   // Anthropic SDK clients always send anthropic-version, and API-key probes
@@ -32,7 +34,17 @@ export async function handleModels(request: Request, routerId: string): Promise<
     // A model list is for the agent the Dari CLI names: it changes only what
     // is listed, and each request is still recognized by its own headers.
     const clientHarness = namedClientHarness(request.headers);
-    const router = await resolveRouter({ routerId, apiKey, ...(clientHarness ? { clientHarness } : {}) });
+    let router;
+    try {
+      router = await resolveRouter({ routerId, apiKey, ...(clientHarness ? { clientHarness } : {}) });
+    } catch (error) {
+      // A Dari Link grant that can serve this client nothing now lists no
+      // models; a child token still lists its one model.
+      if (error instanceof HttpError && isLinkGrantErrorCode(error.code)) {
+        return linkModelsResponse(await childTokenModels(routerId, apiKey), false);
+      }
+      throw error;
+    }
     const query = new URL(request.url).searchParams;
     if (query.get("detail") === "1") {
       const providers = query.get("provider")?.split(",").map((id) => id.trim()).filter(Boolean);
@@ -48,6 +60,12 @@ export async function handleModels(request: Request, routerId: string): Promise<
           "Cache-Control": "no-store",
         },
       });
+    }
+    // Apps on a Dari Link grant read the OpenAI list of the models it serves.
+    if (router.link_grant_id) {
+      // A child token serves only its models and never routes.
+      const routes = router.enabled_models.length > 0 && !router.link_pins;
+      return linkModelsResponse(router.link_models ?? router.enabled_models, routes);
     }
     const metadataLookup = modelMetadataLookup(router.model_configs);
     const imageInputFor = (model: string) => modelSupportsImageInput(metadataLookup(model));
@@ -69,4 +87,32 @@ export async function handleModels(request: Request, routerId: string): Promise<
     });
     return response;
   }
+}
+
+// A child token's one model, when it serves only Claude Code or Muse Code.
+async function childTokenModels(routerId: string, apiKey: string): Promise<string[]> {
+  if (!apiKey.startsWith(LINK_CHILD_TOKEN_PREFIX)) return [];
+  for (const clientHarness of ["claude_code", "muse_code"] as const) {
+    try {
+      const router = await resolveRouter({ routerId, apiKey, clientHarness, provisional: true });
+      return router.link_models ?? router.enabled_models;
+    } catch (error) {
+      if (!(error instanceof HttpError && isLinkGrantErrorCode(error.code))) throw error;
+    }
+  }
+  return [];
+}
+
+function isLinkGrantErrorCode(code: string): boolean {
+  return (LINK_GRANT_ERROR_CODES as readonly string[]).includes(code);
+}
+
+// The OpenAI model list: `dari/routing` when the router's own models are
+// served, and each model the grant serves by its explicit id.
+function linkModelsResponse(models: readonly string[], routes: boolean): Response {
+  const ids = [...(routes ? [CANONICAL_ROUTER_MODEL] : []), ...models.map(explicitModelSlug)];
+  return Response.json(
+    { object: "list", data: ids.map((id) => ({ id, object: "model", created: 0, owned_by: "dari" })) },
+    { headers: { "Cache-Control": "no-store" } },
+  );
 }

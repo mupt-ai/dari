@@ -68,6 +68,8 @@ type ProviderCallConfig = {
   systemPromptSuffix?: string;
 };
 
+export type ClientThinking = "default" | "off" | `budget:${number}`;
+
 export type ProviderExecution = ProviderCallConfig & {
   provider: Provider;
   providerKeySource: ProviderKeySource;
@@ -75,6 +77,10 @@ export type ProviderExecution = ProviderCallConfig & {
   // subscriptions it is; undefined for router-owned keys.
   subscriptionUserId?: string;
   subscriptionCredentialId?: string;
+  // The Dari Link grant whose subscriptions alone may serve this call.
+  subscriptionLinkGrantId?: string;
+  // The thinking the provider was sent, as X-Dari-Thinking-Level reports it.
+  thinkingLevel: string;
   usageContext: RoutingUsageContext | undefined;
   headers: Record<string, string>;
 };
@@ -112,6 +118,11 @@ export function prepareProviderExecution(args: {
   costEstimates?: readonly CandidateCostEstimate[];
   tags?: RequestTags;
   systemPromptSuffix?: string;
+  // The thinking a Dari Link token's named model is served at when the client
+  // named no level and none was chosen for it: "default" (the provider's
+  // default applies), "off" (thinking disabled), or "budget:<tokens>" (the
+  // client's own thinking budget).
+  clientThinking?: ClientThinking;
 }): ProviderExecution {
   const model = args.decision.selectedModel;
   const promptEstimate = promptTokenEstimateFor(args.costEstimates, model, args.decision.reasoningEffort);
@@ -120,6 +131,7 @@ export function prepareProviderExecution(args: {
     throw new HttpError(400, "The prompt exceeds this model's standard-price context range. Shorten or compact the conversation.", "context_length_exceeded");
   }
   const provider = executionProviderForModel(args.credentials, model);
+  const thinkingLevel: string = args.clientThinking ?? args.decision.reasoningEffort;
   const supplied = args.credentials.provider_credentials?.[model];
   const providerKeySource = keySourceForModel(args.credentials, model);
   // A strict router serves a plan only when the platform supplied it for this
@@ -163,8 +175,10 @@ export function prepareProviderExecution(args: {
       ? {
           subscriptionUserId: args.credentials.attributed_user_id,
           subscriptionCredentialId: args.credentials.subscription_credential_ids?.[provider],
+          ...(args.credentials.link_grant_id ? { subscriptionLinkGrantId: args.credentials.link_grant_id } : {}),
         }
       : {}),
+    thinkingLevel,
     usageContext: usageContextFor({
       billable: args.billable,
       credentials: args.credentials,
@@ -175,7 +189,7 @@ export function prepareProviderExecution(args: {
     }),
     headers: {
       "X-Dari-Selected-Model": model,
-      "X-Dari-Thinking-Level": args.decision.reasoningEffort,
+      "X-Dari-Thinking-Level": thinkingLevel,
       "X-Dari-Provider-Key-Source": providerKeySource,
       "X-Dari-Conversation-Id": args.conversationId,
       ...(args.decision.leaseTurnsRemaining === undefined

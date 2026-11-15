@@ -63,7 +63,9 @@ docker run -p 8080:8080 \
 | --- | --- |
 | `DARI_GATEWAY_KEYS` | Required. Comma-separated bearer keys clients authenticate with. |
 | `DARI_GATEWAY_CONFIG` | Router config file. Default `dari-gateway.yaml`. |
-| `DARI_GATEWAY_DB` | SQLite database for subscriptions, model lists saved with `dari gateway models`, and conversation state. Default `dari-gateway.db`. It stores subscription tokens in plaintext; protect it like a secret. |
+| `DARI_GATEWAY_DB` | SQLite database for subscriptions, Dari Link grants, model lists saved with `dari gateway models`, and conversation state. Default `dari-gateway.db`. Without `DARI_GATEWAY_ENCRYPTION_KEY` it stores subscription tokens in plaintext; protect it like a secret either way. |
+| `DARI_GATEWAY_ENCRYPTION_KEY` | Encrypts the subscription tokens, pending sign-ins, and API keys in the database: a 32-byte key in base64 (`openssl rand -base64 32`). Each value is sealed with AES-256-GCM and bound to its own row, so a copied database, or a token moved into another row, is useless without the key. Keep the key outside the database's storage and backups (a secret manager, not the same disk). To rotate, list the new key first and the old one after a comma, start the gateway once (it re-encrypts everything under the first), then drop the old one. Required for Dari Link: without it the approval page takes nobody's subscriptions or keys. Losing the key loses the stored subscriptions; users connect again. |
+| `DARI_LINK_SESSION_SECRET` | Signs the cookie that remembers a Dari Link approval page's user. Unset, each gateway process makes its own, so a restart forgets who connected which plans. Set it on any gateway that serves Dari Link. |
 | `DARI_AUTO_ROUTING_API_KEY` | Optional. Select among a router's models with Dari Auto Routing. |
 | `PORT` | Listen port. Default `8080`. |
 | `DARI_GATEWAY_HOST` | Listen address. Default `127.0.0.1`, so only this machine can connect. The container image sets `0.0.0.0`; set it yourself to expose a process on your network. |
@@ -116,9 +118,289 @@ dari claude
 
 In gateway mode the CLI makes no calls to Dari's hosted API, and `dari activity` is unavailable.
 
+## Dari Link
+
+Dari Link lets another app send one user's model requests through the gateway on only the subscriptions that user grants it: never an API key, credits, or any other plan.
+
+**Which plans serve which apps.** A ChatGPT plan (`openai_codex`) serves any app, including a plain OpenAI `chat/completions` or Responses client, through the Codex backend. A Claude Pro/Max/Ultra plan (`anthropic_claude_code`) serves only Claude Code itself, and a Muse Code plan only Muse Code; the gateway never presents another app as those clients. An OpenCode Go plan (`opencode_go`) serves any app its `opencode-go` models. So an app that calls the API itself needs the user to grant a ChatGPT or OpenCode Go plan, or an API key. The approval page offers only what the app can use: a Claude or Muse plan appears when the app runs Claude Code or Muse Code itself and says so with `client` on the authorize request.
+
+**API keys.** A user without a plan can add an API key on the same page instead: one per model provider (Anthropic, OpenAI, Meta, Moonshot AI, xAI) or gateway (OpenRouter, Vercel AI Gateway). A key is shared like a plan, shows on the grant as `kind: "api_key"` with `provider` (never the key itself), and serves that provider's catalog models to any app, so an Anthropic key serves a plain client where a Claude plan would not. A gateway key serves any model of its gateway named by its full id, such as `openrouter/anthropic/claude-sonnet-4.5`; the grant's `models` lists none of them. A child token can be pinned to such a model the same way (`model=openrouter/anthropic/claude-sonnet-4.5`). Such a plan entry carries `model_prefix` (`"openrouter/"`): any id the gateway lists, with that prefix, is a model name here, sent as `dari/model/openrouter/<id>` or just `openrouter/<id>`. Every plan entry has a `title` to show ("Claude", "ChatGPT", "OpenRouter"). Where a grant holds both a plan and a key for a provider, the plan serves first. The usage a provider bills on the user's key is the user's cost. `plans` on the authorize request lists what the app wants offered, plan kinds and `api_key`; omit it to offer everything the app can use. `key_providers` (`keyProviders` in the client) narrows the API keys to the providers the app can run, such as `anthropic openrouter`, so a user is never offered, or shown ticked, a key the app cannot use. A user can connect as many plans and keys as they like, several accounts of one kind included, and share any of them.
+
+**Connect with Dari.** For the user it is one button. It opens Dari in a popup, where they connect a Claude or ChatGPT subscription by signing in to it (or already have), pick which plans the app may use, and approve; the popup closes and the app has a code. Nobody pastes a key, and nobody needs the CLI.
+
+For a server app (a confidential client), the server makes the PKCE pair and state, so the verifier never reaches the browser and the page needs no Web Crypto:
+
+```ts
+// On your server: start a connection and keep the verifier with the session.
+import { createAuthorization } from "@mupt-ai/dari-gateway/link_client";
+
+app.post("/api/dari/start", async (req, res) => {
+  const { codeVerifier, codeChallenge, state } = await createAuthorization();
+  req.session.dariLink = { codeVerifier, state };
+  res.json({ codeChallenge, state });
+});
+```
+
+```ts
+// In your app's bundle. The client uses only fetch (and Web Crypto when it makes PKCE itself).
+import { DariLink } from "@mupt-ai/dari-gateway/link_client";
+
+DariLink.renderButton(document.getElementById("connect-dari"), {
+  onClick: async () => {
+    // The settings come from your server after the popup opens; resolves with { code, state }.
+    const { code, state } = await DariLink.open(async () => ({
+      gatewayUrl: "https://routing.dari.dev",
+      clientId: "lnk_…",
+      redirectUri: "https://app.example.com/dari/callback",
+      ...(await (await fetch("/api/dari/start", { method: "POST" })).json()),
+      onExit: ({ error, step }) => analytics.track("dari_link_exit", { error, step }),
+    }));
+    await fetch("/api/dari/exchange", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code, state }),
+    });
+  },
+});
+```
+
+Your server checks `state`, redeems the code with the verifier it kept, and keeps the tokens with the user:
+
+```ts
+import { exchange, linkFetch } from "@mupt-ai/dari-gateway/link_client";
+
+const client = { gatewayUrl: "https://routing.dari.dev", clientId, clientSecret };
+const { codeVerifier, state: expected } = req.session.dariLink;
+if (req.body.state !== expected) throw new Error("state mismatch");
+await db.save(user, await exchange({ ...client, redirectUri, code: req.body.code, codeVerifier }));
+
+const dari = linkFetch({ ...client, loadTokens: () => db.load(user), saveTokens: (next) => db.save(user, next) });
+await dari("/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "dari/routing", messages }) });
+```
+
+- A browser-only app (a public client) leaves out `codeChallenge` and `state`: `DariLink.open` makes the PKCE pair in the page and resolves with `{ code, state, codeVerifier }` (`codeVerifier` is null when the server made it). That needs a secure page (https, or localhost); elsewhere it rejects with `insecure_context` before opening anything.
+- Get `clientId` (and a server's `clientSecret`) by registering the app: on hosted Dari under **Settings → Dari Link Apps**, or with the API or CLI in step 1 below.
+- Call `DariLink.open` from the click handler, so the browser allows the popup. It opens the popup before awaiting anything, so its options may be a function returning a promise (`DariLink.open(async () => ({ ...await fetchConfig() }))`), fetched after the popup is open; Safari blocks a popup opened after an `await`. It rejects with a `LinkError`: `access_denied` when the user denies, `popup_closed`, or `popup_blocked`.
+- `onEvent(step)` hears each step the user reaches in the popup (`sign_in`, `connect_subscription` when they have no plan to share yet, `choose_plans`), and `onExit({ error, step })` says where they left before it rejects (`step` is `denied` when they denied, null when they reached none), so you can tell "closed at sign-in" from "closed after seeing the plans". The popup posts each step as `{"type": "dari-link-event", "version": "1", "event": "<step>", "state"}` to your redirect URI's origin; only the result is `{"type": "dari-link", ...}`, with `code` or `error`. A client reading the messages itself should ignore any other type, and any `dari-link` message with neither `code` nor `error`.
+- The popup posts its result to your window with `response_mode=web_message`, readable only by your redirect URI's origin; `DariLink.open` accepts it only from the popup, from the origin the gateway's metadata names (`web_message_origin`), and with the state it made.
+- Put `DariLink.callback()` on your redirect URI's page. A popup that signed the user in along the way can lose its link to your window; the approval then arrives on that page inside the popup, and `callback()` hands it to the window that opened it and closes the popup. A page whose CSP keeps it from bundling the client can load `<script src="<gateway>/v1/link/callback.js"></script>` (the metadata's `callback_script`) instead. The contract is stable: on the `BroadcastChannel` named `dari-link`, the page posts `{"type": "dari-link", "state", "code"}` or `{"type": "dari-link", "state", "error", "error_description"}`, then closes.
+- Users see and disconnect the apps they connected under **Subscriptions & Keys → Connected Apps** on hosted Dari. Link there with the grant's `manage_url` (that app's row, highlighted) or the metadata's `connected_apps_uri` (the section); both are null on a self-hosted gateway, which has no such page.
+- **Update mode.** To let the user change which plans an app has, open the same flow with `grantId` (`grant_id=<lgr_…>` on the authorize request): the page is titled "Update Plans For <App>", starts with the grant's plans and budget, and saves to the same grant. Its id and every token it issued keep working; the new code redeems for more tokens of it, which you may keep or drop. A `grant_id` that is not this browser's user's grant for this app (another browser, cleared cookies) starts a new connection instead, and leaves that grant as it was.
+- One grant may back several records in your app (one per plan, say) only with a confidential client: a public client's refresh token rotates on every use, so two records holding it race.
+
+**Flow** (OAuth 2.0 authorization code with PKCE S256; `GET /.well-known/oauth-authorization-server` lists the endpoints):
+
+1. Register once.
+   - A browser, desktop, or CLI app is a public client: `POST /v1/link/register` with `{"client_name", "redirect_uris"}` (RFC 7591; no key; https URIs or http on localhost; 20 registrations a minute per gateway) returns `{"client_id", ...}`. A self-hosted gateway also allows http on the private dev hosts its config lists under `link.allowHttpRedirectHosts` (exact names, or `*.example.ts.net` for any subdomain); by default there are none.
+   - On hosted Dari, an organization owner or admin can register either kind under **Settings → Dari Link Apps** instead.
+   - A server is a confidential client: the same `POST /v1/link/register` with `"token_endpoint_auth_method": "client_secret_basic"`, or `POST /v1/link/apps` with your key and `"confidential": true` (hosted Dari: **Settings → Dari Link Apps**), also returns a `client_secret` (`dlk_cs_…`), shown once. The app sends it with HTTP Basic (`client_id:client_secret`) on every `/v1/link/token` and `/v1/link/revoke` call. Registering hands out no access: the user still approves every grant.
+2. Send the user to `GET /v1/link/authorize?response_type=code&client_id=…&redirect_uri=…&state=…&code_challenge=…&code_challenge_method=S256`. Optional parameters:
+   - `scope=route`, the only scope.
+   - `client`: the clients the app runs, space-separated, such as `client=claude_code codex`. Naming `claude_code` or `muse_code` lets the user grant plans that serve only that client.
+   - `plans`: the plan kinds to offer, such as `plans=openai_codex`; the page lists only those.
+   - `purpose_any_app`, `purpose_claude_code`, `purpose_muse_code`: up to 200 characters each, shown beside the plans of that audience as what the app says it does with them.
+   - `response_mode=web_message`: for a page opened as a popup. The result is posted to the window that opened it (`{"type": "dari-link", "code" | "error", "state"}`, addressed to the redirect URI's origin) instead of sent on a redirect; a page with no opener left redirects to `redirect_uri` instead. `DariLink.open` does this for you.
+   - `grant_id`: update mode (above).
+
+   On hosted Dari the gateway checks the request and sends the user to Dari's own consent page, where they are signed in to their Dari account (Google or an emailed link; a new user gets an account). It shows the app's name, the host it returns to, and who is signed in; the plans the app can use start ticked, and the user can connect another subscription right there. It never asks for a key.
+
+   The self-hosted gateway serves the page itself, and it needs no account, like a bank link. A new user sees what connecting means, picks a subscription (Claude, ChatGPT, Meta Muse, OpenCode Go) or a provider to add an API key for, signs in to that provider (Claude shows a code to paste back; the others take a code the page shows and continue on their own), and allows the app with what they connected ticked. The gateway remembers them in a signed HttpOnly cookie, so the next app that asks finds their plans connected and takes one click. The gateway takes their subscriptions and keys only when it encrypts what it stores (`DARI_GATEWAY_ENCRYPTION_KEY`). A plan a user connects this way is theirs alone: it serves only the grants they approve, never a gateway key, and the gateway owner's own plans are never offered on the page.
+
+   Either way the user can limit the app to a share of each plan's 5-hour and weekly windows (see **Budgets**) and approve. The app gets `code` and `state`, or `error=access_denied`, on `redirect_uri` or as the popup's message.
+3. `POST /v1/link/token` (form or JSON; CORS open) with `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier` returns an access token (`dlk_at_…`, one hour) and a refresh token (`dlk_rt_…`), with the grant's fields below. `grant_type=refresh_token` with `refresh_token` returns a new access token:
+   - Every access token lives until its own expiry, so requests in flight on an older one complete.
+   - A public client's refresh token rotates on every use. Presenting the rotated one again within a minute is refused as `invalid_grant` with `"error_code": "refresh_race"` and nothing is revoked: use the tokens the winning request received. Presenting it later revokes the grant.
+   - A confidential client's refresh token never rotates, so any number of instances can refresh one grant.
+4. Call the gateway's ordinary endpoints (`/v1/chat/completions`, `/v1/responses`, `/v1/messages`, `/v1/models`) with `Authorization: Bearer dlk_at_…`. A link token serves only the default router, and is served exactly what it names:
+   - `dari/routing` chooses among the router's models that a granted plan serves.
+   - Any other name is a model, served as exactly that model: any catalog model of a granted plan's provider, whether or not the user's router lists it. It may be named `dari/model/<provider>/<model>`, by its bare id (`gpt-5.5`, `claude-sonnet-5-5`), or as a dated snapshot of either (`claude-haiku-4-5-20251001` is `claude-haiku-4-5`), so an app forwarding Claude Code or Codex traffic needs no model map. A name no catalog model has, or one two models share, fails with `model_not_granted`. It is served with the client's own thinking settings: a level the request names is served exactly or refused (400 `thinking_level_unavailable`); Anthropic's `thinking: {"type": "disabled"}` is sent as it is, on every Claude model (`X-Dari-Thinking-Level: off`); a thinking budget (`thinking: {"type": "enabled", "budget_tokens": 8000}`) is sent as it is (`X-Dari-Thinking-Level: budget:8000`); and when it names none, none is chosen for it and the provider's default applies (`X-Dari-Thinking-Level: default`). `X-Dari-Thinking-Level` is what the provider was sent: a level, `off`, `default`, or `budget:<tokens>`. It never fails over to another model: a provider failure is returned as it is. Only when a granted plan hits its usage limit and the grant holds another plan for the same provider is the request retried there, on the same model.
+   - `opus`, `sonnet`, `haiku`, and the other Anthropic tier names route, as `dari/routing` does.
+   - `POST /v1/messages/count_tokens` is not served: it answers an Anthropic-shaped 404, on which Claude Code estimates locally.
+   - A non-streamed response carries `X-Dari-Usage: {"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"}` (input excludes cache reads and writes) beside `X-Dari-Selected-Model` and `X-Dari-Thinking-Level`, the same whatever protocol the app speaks. A stream reports usage in its protocol's own final event; `GET /v1/link/usage` has both.
+5. The app ends its grant with `POST /v1/link/revoke` (RFC 7009: `client_id` and `token`, any of the grant's tokens; always 200). The user lists and revokes grants under **Subscriptions & Keys → Connected Apps** on hosted Dari, or with `GET` and `DELETE /v1/link/grants[/<id>]` (with their key), and changes a grant's budget there or with `PUT /v1/link/grants/<id>/budget`. A revoked grant's tokens, access tokens included, stop working at once.
+
+**The grant.** The token response and `GET /v1/link/grant` (bearer: the access token) describe the grant:
+
+```json
+{
+  "grant_id": "lgr_…", "client_id": "lnk_…", "app_name": "Notes", "created_at": "…", "scope": "route",
+  "budget": [{"window_minutes": 10080, "max_share": 0.5}],
+  "user": {"email": "you@example.com", "name": "You"},
+  "manage_url": "https://app.dari.dev/credentials?section=connected-apps&grant=lgr_…",
+  "plans": [{
+    "id": "…", "kind": "openai_codex", "plan": "ChatGPT Plus/Pro", "label": "a@example.com", "account_email": "a@example.com",
+    "serves": "any_app", "state": "ready", "available_at": null, "unavailable_until": null,
+    "usage": [{"window_minutes": 300, "utilization": 0.42, "resets_at": "…"}, {"window_minutes": 10080, "utilization": 0.1, "resets_at": "…"}],
+    "budget": [{"window_minutes": 10080, "max_share": 0.5, "used_share": 0.08, "resets_at": "…"}],
+    "models": [{"id": "dari/model/openai/gpt-5.5", "name": "GPT-5.5"}, {"id": "dari/model/openai/gpt-6.1-sol", "name": "GPT-6.1 Sol"}]
+  }],
+  "models": [{"id": "dari/model/openai/gpt-5.5", "name": "GPT-5.5"}, {"id": "dari/model/openai/gpt-6.1-sol", "name": "GPT-6.1 Sol"}],
+  "routes": true
+}
+```
+
+`serves` is `any_app`, `claude_code_only`, or `muse_code_only`. `state` is the one answer to "can this plan serve the app now": `ready`; `plan_limit`, the plan is at its own usage limit; or `budget_limit`, the grant used the share of a window the user allowed. `available_at` is when it serves again (null when ready or unknown; a plan at both is `plan_limit`, available once both pass). `user` is the Dari account that approved the grant (null on a self-hosted gateway, which has no accounts), so an app can show "Dari · you@example.com" even when the plans belong to other accounts. `label` is the user's name for the plan, else its account. `usage` lists the quota windows the plan last reported (five hours and a week for these plans), each with the share used from 0 to 1 and when it resets; it is empty until the plan has served a request through Dari (any request, not only this app's, including the user's own Claude Code or Codex through Dari), because plans report their windows only on responses. Dari does not read a fresh plan's windows when it connects: that takes a call to the provider with the user's credential that neither Claude nor ChatGPT documents for third parties, so a just-connected plan shows no usage until its first request. A plan's `budget` is how much of each budget window this grant used on it (see **Budgets**). A plan's `models` are those it serves its clients now, each with the name a request uses (`id`) and the catalog's display name (`name`); the top-level `models` are what a plain API client can name now, and `routes` says whether `dari/routing` serves it. `GET /v1/models` with a link token lists the same models in the OpenAI list shape, empty when none can serve. `GET /v1/link/grant` makes no provider call, so it is the cheap check before a long run: a dead grant answers 401, and `unavailable_until` and `usage` say whether the plans have room.
+
+**Budgets.** A user can cap how much of each plan an app may use: on hosted Dari's approval page, or later with `PUT /v1/link/grants/<id>/budget` and `{"budget": [{"window_minutes": 10080, "max_share": 0.5}]}` (the user's key; `[]` removes it). One budget applies to each granted plan on its own. Once a plan is at its cap in any window, the grant gets nothing from it until that window resets; when every plan that could serve a request is out, it fails with 424 `grant_budget_exhausted` and `resets_at`.
+
+How use is measured: every response a plan serves reports each window's utilization. When the grant's request is the one reporting, the grant is charged the rise since the plan's previous report of that window (never below zero; everything used in a window that reset since; nothing for a plan's very first report, which only sets the baseline). This is what the provider says was used, not an estimate from tokens, and it is conservative: anything else that used the plan between two reports (the user's own Claude Code or claude.ai, another app) is charged to the grant too, so a busy user's other traffic makes an app's share look larger, never smaller. Its limits:
+
+- the cap is checked before each request, so the last request may take the grant past it;
+- several requests in flight at once can each pass the check;
+- on hosted Dari, reports of the user's other traffic are sent at most once a minute per plan (the grant's always are), which widens what is charged to the grant;
+- a Codex plan served over WebSocket reports at most once a minute, so its use between reports is charged to whichever request reports next: the grant's when it is the grant's, otherwise not at all.
+
+**Usage.** Every request a grant's tokens make, child tokens' included, streamed or not, is recorded once it finishes (a moment after the response). `GET /v1/link/usage` (bearer: the access token; CORS open) reads it back:
+
+- `tag=<key>=<value>`, repeatable: only requests carrying every given tag, from `X-Dari-Tags` or the child token's `tags`;
+- `since`, `until`: ISO 8601 times bounding when a request was received (`since` inclusive, `until` exclusive);
+- `group_by=tag:<key>`: also total per value of that tag, in `by_tag` (`value` null for requests without it).
+
+Every response to a link token carries `X-Request-Id`. `GET /v1/link/usage/requests/<id>` (same bearer) answers that one request's usage in the same shape once it is recorded, and 404 until then.
+
+```json
+{
+  "requests": 7, "errors": 1, "input_tokens": 70, "output_tokens": 14, "cache_read_tokens": 28, "cache_write_tokens": 2,
+  "complete_through": "2026-11-14T07:00:00.000Z",
+  "by_model": [{"model": "openai/gpt-5.5", "thinking": "high", "requests": 4, "errors": 0, "input_tokens": 40, "output_tokens": 8, "cache_read_tokens": 16, "cache_write_tokens": 0}],
+  "by_tag": [{"value": "7", "requests": 3, "errors": 0, "input_tokens": 30, "output_tokens": 6, "cache_read_tokens": 12, "cache_write_tokens": 0}]
+}
+```
+
+`errors` counts the requests the provider or Dari failed (they count in `requests` too); a request the client aborted is not an error. `complete_through` says how far the counts are complete: every request received before it has been recorded. On the self-hosted gateway, which serves and records every request itself, it is the time the oldest request still being served was received, or 30 seconds ago when none is (a request still resolving has not started being tracked). On hosted Dari it is `null`: requests are recorded from several instances after they finish, so no instance can say; read again until the counts stop changing.
+
+Token counts mean the same for every protocol: `input_tokens` excludes cache reads and writes (an OpenAI response's cached tokens are moved out of its input count). `by_model` has one entry per model and thinking level served (`thinking` as `X-Dari-Thinking-Level` reported it), most requests first. A provider failure counts in `requests` and `errors`, with the tokens the provider reported, if any; a request refused before any provider call (such as a 424) is not counted. A child token cannot read usage (403 `permission_denied`). So a server that gives each trial a child token tagged `trial=<id>` gets that trial's cost with `?tag=trial=<id>`, with no relay in between.
+
+**Child tokens.** A server that hands work to sandboxes or workers trades its access token for a child token (RFC 8693) instead of relaying their traffic: `POST /v1/link/token` with `grant_type=urn:ietf:params:oauth:grant-type:token-exchange`, `subject_token=<dlk_at_…>`, `subject_token_type=urn:ietf:params:oauth:token-type:access_token`, and
+
+- `model` (required, repeatable up to 16 times): the models the token serves, each named as a request may name it (`dari/model/openai/gpt-5.5`, `gpt-5.5`, a dated snapshot); each must be one the grant serves now, or the whole mint fails with `invalid_target`;
+- `thinking`: the level requests for a model are served at, whatever the request asks for. Give it once to pin every model to it, or once per `model` in the same order, with `default` for a model left unpinned (`model=a&thinking=high&model=b&thinking=default`). A level a model does not offer fails with `invalid_target`;
+- `expires_in`: 60 to 43200 seconds (default 3600), so it can outlive the access token that minted it;
+- `tags`: labels for its requests, like the `X-Dari-Tags` header (`run=r1,trial=7`).
+
+It returns `{"access_token": "dlk_ct_…", "issued_token_type", "token_type": "Bearer", "expires_in", "grant_id", "models": [{"model", "thinking"}], "tags"}`, each `model` by its catalog name and `thinking` null when not pinned. A child token serves only those models on the gateway's ordinary endpoints, and `GET /v1/models` lists just them: any other model, and `dari/routing`, fail with `model_not_granted`. It cannot refresh, mint another token, or read `/v1/link/grant`, and it stops working when the grant is revoked.
+
+A sandbox given a child token needs to reach only the gateway's host (for hosted Dari, `routing.dari.dev`) over HTTPS; it never talks to a provider, the approval page, or the app.
+
+**Errors.** Token and revocation endpoints answer in the OAuth shape, `{"error", "error_description"}`; every other endpoint in the gateway's, `{"error": {"code", "message", ...}}`.
+
+| Status | Code | Meaning | What to do |
+| --- | --- | --- | --- |
+| 400 | `invalid_grant` | The code or refresh token is used, expired, or revoked | Send the user through approval again |
+| 400 | `invalid_grant` + `error_code: refresh_race` | Another request rotated this refresh token a moment ago | Use the tokens that request saved |
+| 400 | `invalid_target` | The grant serves no model by the child token's `model` now, or the model lacks its `thinking` level | Mint for a model in the grant's `models`, at a level it offers |
+| 400 | `invalid_request`, `unsupported_grant_type` | A missing or malformed parameter | Fix the request |
+| 401 | `invalid_client` | Unknown client, or a missing or wrong client secret | Check the client id and secret |
+| 401 | `link_token_expired` | The access or child token passed its expiry | Refresh (or mint a new child token) and retry |
+| 401 | `grant_revoked` | The grant is gone; `revoked_by` is `user`, `app`, or `reuse_detected`, and `revoked_at` says when | Show the user Reconnect |
+| 403 | `permission_denied` | A child token read the grant or its usage | Use the access token |
+| 400 | `thinking_level_unavailable`, `unsupported_reasoning_effort` | The model does not offer the level the request names | Name a level the model supports |
+| 424 | `grant_budget_exhausted` | The plans that serve this client are at the budget the user set for this app; `resets_at` and `Retry-After` say when the first is back, when known | Wait for the window, or ask the user to raise the budget |
+| 424 | `subscription_exhausted` | The plans that serve this client are at their limits; `resets_at` and `Retry-After` say when the first is back, when known | Wait, or ask the user for another plan |
+| 424 | `subscription_client_mismatch` | The granted plans serve only another client | Ask the user to grant a plan that serves any app |
+| 424 | `model_not_granted` | The name is no catalog model, or no granted plan serves it, or any model the router lists | Name a model in the grant's `models` |
+| 5xx | `link_request_failed` and others | The gateway failed; the message carries only a `request_id`, which its log line has with the cause | Retry, and report the request id |
+
+Error text replaces anything shaped like an `sk-` key with `sk-…`, and responses replace the serving plan's own credential wherever it appears.
+
+**Client.** `@mupt-ai/dari-gateway/link_client` (fetch and Web Crypto only; browsers, Node, Bun, Deno; erasable TypeScript only, so `node` runs the `.ts` file as is) has `DariLink` (`open`, `callback`, `renderButton`), `createAuthorization` (a PKCE pair and state for your server), `registerClient`, `authorizeUrl` (makes the PKCE verifier and state; takes `clients`, `plans`, `purposes`, and `grantId`), `exchange`, `refresh`, `childToken`, `revoke`, and `linkFetch`. Every call takes `clientSecret` for a confidential client. `linkFetch` is a fetch that treats your storage as the source of truth: it reads the tokens with your `loadTokens` on every call, attaches the access token, refreshes it before it expires or once after a 401 for an expired token with one refresh at a time, and passes every new token set to your `saveTokens` before using it. `childToken` takes the same `loadTokens` and `saveTokens` instead of an `accessToken`, refreshing the grant's access token as needed. When the user is unlinked:
+
+- `loadTokens` returning null makes both throw `LinkError` `not_linked`, with no call to the gateway;
+- a `LinkError` with code `invalid_grant` from a refresh means the grant is gone;
+- a revoked grant's tokens, access tokens included, answer 401 `grant_revoked` at once, which `linkFetch` returns as it is, with no refresh attempted.
+
+Each means: show the user Reconnect. `usage({ fetcher: gatewayFetch, tags, since, until, groupByTag })` reads the grant's usage through the `linkFetch` your app already has, sharing its refresh (or pass the client with `loadTokens` and `saveTokens` instead of `fetcher`). `childToken({ ..., models: [{ model, thinking? }] })` mints for several models at once, and `registerClient({ ..., confidential: true })` returns a `clientSecret` too.
+
+A server-side integration, start to finish:
+
+```ts
+import { authorizeUrl, childToken, exchange, linkFetch, revoke } from "@mupt-ai/dari-gateway/link_client";
+
+// Registered once, under Settings → Dari Link Apps or with POST /v1/link/register.
+const client = { gatewayUrl, clientId, clientSecret: process.env.DARI_LINK_CLIENT_SECRET };
+
+// 1. Send the user to approve. Keep codeVerifier and state in their session.
+const { url, codeVerifier, state } = await authorizeUrl({ ...client, redirectUri, plans: ["openai_codex"] });
+
+// 2. On the redirect back, check state, redeem the code, and store the tokens.
+await db.saveTokens(userId, await exchange({ ...client, redirectUri, code, codeVerifier }));
+
+// 3. Call the gateway from any instance.
+const gatewayFetch = linkFetch({
+  ...client,
+  loadTokens: () => db.loadTokens(userId),
+  saveTokens: (tokens) => db.saveTokens(userId, tokens),
+});
+const grant = await (await gatewayFetch("/v1/link/grant")).json(); // the cheap check before a long run
+
+// 4. Hand a sandbox one model for one trial; it calls the gateway itself.
+const sandbox = await childToken({
+  ...client,
+  loadTokens: () => db.loadTokens(userId),
+  saveTokens: (tokens) => db.saveTokens(userId, tokens),
+  models: [{ model: grant.models[0], thinking: "high" }],
+  expiresIn: 6 * 3600,
+  tags: { run, trial },
+});
+
+// 5. When the user disconnects in the app.
+await revoke({ ...client, token: (await db.loadTokens(userId)).refreshToken });
+```
+
+**Forwarding proxy.** An app that fronts real Claude Code or Codex processes (agents it runs for the user) forwards their requests to the gateway as they are:
+
+- pass the client's own headers through, dropping only hop-by-hop headers (`host`, `connection`, `content-length`, `transfer-encoding`, `keep-alive`, `upgrade`, `te`, `trailer`, `proxy-*`) and the client's own auth (`authorization`, `x-api-key`), and set `Authorization: Bearer dlk_…`;
+- keep the model as the client named it: bare and dated ids are served as exactly that model;
+- never add or change `user-agent`, `x-app`, or other client headers. A Claude Code plan serves only what really is Claude Code; anything else that sends Claude Code's headers is impersonating it;
+- treat `invalid_grant`, `grant_revoked`, and `not_linked` as unlinked: stop the agent and show Reconnect.
+
+```ts
+import { LinkError, linkFetch } from "@mupt-ai/dari-gateway/link_client";
+
+const DROP = new Set(["host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade", "te", "trailer", "authorization", "x-api-key"]);
+
+async function forward(request: Request, userId: string): Promise<Response> {
+  const headers = new Headers();
+  request.headers.forEach((value, name) => {
+    if (!DROP.has(name) && !name.startsWith("proxy-")) headers.set(name, value);
+  });
+  const gatewayFetch = linkFetch({
+    ...client,
+    loadTokens: () => db.loadTokens(userId),
+    saveTokens: (tokens) => db.saveTokens(userId, tokens),
+  });
+  const { pathname, search } = new URL(request.url);
+  try {
+    // linkFetch sets the bearer and refreshes; the body (and its model) is unchanged.
+    const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer();
+    const response = await gatewayFetch(`${pathname}${search}`, { method: request.method, headers, body });
+    if (response.status === 401 && (await response.clone().json()).error?.code === "grant_revoked") await markUnlinked(userId);
+    return response;
+  } catch (error) {
+    if (error instanceof LinkError && (error.code === "invalid_grant" || error.code === "not_linked")) await markUnlinked(userId);
+    throw error;
+  }
+}
+```
+
+A child token is simpler still when the agent runs somewhere you control: give the agent the `dlk_ct_…` token as its API key and base URL, and it calls the gateway itself.
+
+**Connect with Dari button.** Use `DariLink.renderButton(container, { onClick, theme })`, or this markup, rather than drawing your own: the Dari mark (`DARI_MARK_SVG` from the client) at 20px, then "Connect with Dari" in your UI font at 14px, medium weight; 40px tall, 8px radius, 12px padding before the mark and 16px after the text, 8px between them. `theme: "dark"` (the default, for light pages) is a black button with white text and an inverted mark; `light` (for dark pages) is white with black text and a light gray border. Keep the words "Connect with Dari" (or "Reconnect Dari" for a revoked grant), and do not recolor the mark.
+
+```html
+<button type="button" style="display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 16px 0 12px;border-radius:8px;border:1px solid #000;background:#000;color:#fff;font:500 14px/1 system-ui,sans-serif;cursor:pointer">
+  <!-- DARI_MARK_SVG, with its disc white and its figure black on this dark button -->
+  Connect with Dari
+</button>
+```
+
+**Users with their own gateway.** A user who runs their own gateway links it the same way: ask for its base URL, read `GET <base>/.well-known/oauth-authorization-server`, and register there with `POST /v1/link/register` (a server registers as a confidential client with `"token_endpoint_auth_method": "client_secret_basic"`). Keep each registration (client id, endpoints) keyed by the metadata's `issuer`, and show the issuer's host to the user wherever the link appears, so they can see which gateway an app is using.
+
+**Testing an integration.** `startStubGateway` from `@mupt-ai/dari-gateway/self_host/stub_gateway` (Bun) runs a self-hosted gateway on stand-in plans, for example `{ plans: ["openai_codex"] }`, whose provider calls go to a local stand-in that answers "hi" (or your `upstream`), so tests make no paid calls. `gateway.approve(authorizeUrl, { credentialIds?, deny? })` goes through the approval page as a user would and returns what it hands your app, `{message, targetOrigin}` (the popup's `web_message` post, or the redirect's query), also kept in `gateway.messages`. `gateway.setState({ limited: true })` makes every provider call a usage-limit refusal (plans go `plan_limit` with `unavailable_until`, requests get 424 `subscription_exhausted`), and `{ five_hour: 0.4, weekly: 0.9 }` makes each reply report that plan usage (filling `plans[].usage`, and against a grant's budget leading to `grant_budget_exhausted`). `gateway.calls` records each provider call's path, model, thinking settings, the effort it is served at (for Claude models that take a per-turn effort, the latest effort message, not the top-level `output_config.effort` that stays fixed for caching), and client headers, to assert on. Under any other test runner, run it as a process: `dari-gateway-stub --plans openai_codex,anthropic_claude_code` (Bun runs it) prints one JSON line, `{"baseUrl", "gatewayKey", "planIds", "userCookie", "controlUrl"}` (the stand-in plans belong to the approval page's user, and `userCookie` is the `Cookie` header that opens the page as them); `GET <controlUrl>/served` answers `{"calls": [...]}`, `POST <controlUrl>/approve` with `{"url", "credential_ids"?, "deny"?}` answers `{"message", "target_origin"}` (listed at `GET <controlUrl>/messages`), and `POST <controlUrl>/state` takes the same fields as `setState`. A gateway config can send ChatGPT plan traffic elsewhere the same way, with `providers.openai-codex.baseUrl`.
+
 ## Embed
 
-Deployments with their own storage and accounting compose the runtime with a `GatewayPlatform` (router resolution, conversation state, session pins, subscription holds, request records, error reporting) and a selector backend:
+Deployments with their own storage and accounting compose the runtime with a `GatewayPlatform` (router resolution, conversation state, session pins, subscription holds, request records, error reporting, and optionally Dari Link grants through `link`) and a selector backend:
 
 ```ts
 import { createPrioritySelectorBackend, createRequestHandler } from "@mupt-ai/dari-gateway";

@@ -4,6 +4,7 @@ import { errorResponse } from "../http/errors.js";
 import { captureRequestError } from "../observability/errors.js";
 import { chatCompletionResponse, chatCompletionsSseStream } from "../protocol/output/chat_completions.js";
 import { chatCompletionsToInteraction } from "../protocol/input/chat_completions.js";
+import { linkTokenModel } from "../protocol/input/router_model.js";
 import { handleRoutedCompletion } from "../runtime/routed_completion.js";
 import type { SelectorBackend } from "../strategies/routing.js";
 import {
@@ -24,7 +25,11 @@ export async function handleChatCompletions(
   try {
     const apiKey = bearerToken(request.headers);
     const payload = await parseJsonRequest<ChatCompletionRequest>(request);
-    const interaction = chatCompletionsToInteraction({ ...payload, source_protocol: "openai_chat" });
+    const interaction = chatCompletionsToInteraction({
+      ...payload,
+      model: linkTokenModel(apiKey, payload.model),
+      source_protocol: "openai_chat",
+    });
     const piContext = piRequestContext(request.headers);
     const openCodeContext = openCodeRequestContext(request.headers);
     const agentContext = piContext ?? openCodeContext;

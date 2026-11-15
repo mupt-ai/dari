@@ -238,6 +238,10 @@ export type ReasoningControls = {
   hasConfigurationUpdate?: boolean;
   enabled?: boolean;
   budgetTokens?: number;
+  // Serve exactly the reasoning the client sent: when it names no effort,
+  // none is chosen for it and the provider's default applies. Set for a Dari
+  // Link token's named model.
+  clientOnly?: boolean;
 };
 
 // Anthropic's server-side safeguards (Claude Code auto mode's classifier) and

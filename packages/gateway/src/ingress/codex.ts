@@ -1,4 +1,4 @@
-import { explicitModelId } from "../protocol/input/router_model.js";
+import { explicitModelId, linkTokenModel } from "../protocol/input/router_model.js";
 import { bearerToken } from "../http/auth.js";
 import { errorResponse } from "../http/errors.js";
 import { captureRequestError } from "../observability/errors.js";
@@ -25,7 +25,7 @@ export async function handleResponses(
   try {
     const apiKey = bearerToken(request.headers);
     const rawPayload = await parseJsonRequest<Record<string, unknown>>(request);
-    const interaction = openAIResponsesToInteraction(rawPayload);
+    const interaction = openAIResponsesToInteraction({ ...rawPayload, model: linkTokenModel(apiKey, rawPayload.model) });
     const requestPurpose = codexRequestPurpose(request.headers, rawPayload);
     const agentContext = codexRequestContext(request.headers, rawPayload);
     const museClientId = museCodeClientId(request.headers);

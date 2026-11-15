@@ -4,6 +4,7 @@
 // write so the immediate next turn can see next_model. Reporting failures are
 // always logged and swallowed.
 
+import { linkRequestRecorded, linkRequestStarted } from "../runtime/link_in_flight.js";
 import {
   selectPrefixHit,
   type CandidateCostEstimate,
@@ -198,7 +199,10 @@ export class RequestReporter {
       fingerprints: { tool_choice_fp: string; response_format_fp: string };
       billingFinalization: RoutingBillingFinalization;
     }
-  ) {}
+  ) {
+    // A Dari Link request counts as unrecorded from here until it is sent.
+    if (args.credentials.link_grant_id) linkRequestStarted(args.credentials.link_grant_id, args.requestId, args.receivedAt);
+  }
 
   attachSelectorRun(run: SelectorRun): void {
     this.selectorRun = run;
@@ -505,6 +509,13 @@ export class RequestReporter {
         trackBackgroundTelemetry(this.prefixStatePromise);
       }
 
+      // A Dari Link request's usage is readable back by its app.
+      const link = a.credentials.link_grant_id
+        ? {
+            grantId: a.credentials.link_grant_id,
+            thinking: outcome.providerExecution?.thinkingLevel ?? reasoningBucket,
+          }
+        : undefined;
       const ingestPayload = {
         request_id: this.args.requestId,
         client_request_id: a.clientRequestId,
@@ -606,9 +617,11 @@ export class RequestReporter {
         }),
         prefix_entry: prefixEntry,
         touched_prefix_hash: touchedHash,
+        ...(link === undefined ? {} : { link: { grant_id: link.grantId, thinking: link.thinking, tags: a.tags } }),
       };
 
       gatewayPlatform().recordRequest({
+        ...(link === undefined ? {} : { link }),
         router: requestRecordRouter(a.credentials),
         candidates: a.candidates.map(({ model, reasoningEffort }) => ({ model, reasoningEffort })),
         ...(a.sessionPinKey === undefined ? {} : { sessionPinKey: a.sessionPinKey }),
@@ -668,6 +681,9 @@ export class RequestReporter {
         requestId: this.args.requestId,
         routerId: this.args.routerId,
       });
+    } finally {
+      const grantId = this.args.credentials.link_grant_id;
+      if (grantId) linkRequestRecorded(grantId, this.args.requestId);
     }
   }
 }

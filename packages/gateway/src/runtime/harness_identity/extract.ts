@@ -90,50 +90,21 @@ export function codexConversationIdentity(
   if (turnMetadata.length === 0) {
     return undefined;
   }
-  const candidates = [
-    ...turnMetadata.map((metadata) => uuidIdentity(
-      metadata.thread_id,
-      "x-codex-turn-metadata.thread_id",
-    )),
-    uuidIdentity(headers.get("thread-id"), "thread-id"),
-    uuidIdentity(clientMetadata?.thread_id, "client_metadata.thread_id"),
-  ].filter((value): value is string => value !== undefined);
-  if (candidates.length === 0) {
+  // Clients can carry a stale projection after a resume or fork. Conflicts
+  // must not fail the request, and fields must not mix across projections:
+  // take thread, turn, and parent from one turn metadata projection, header
+  // first, falling back to the standalone thread fields only for the thread.
+  const entry = turnMetadata.find((metadata) => metadata.thread_id !== undefined)
+    ?? turnMetadata[0]!;
+  const threadId = uuidIdentity(entry.thread_id, "x-codex-turn-metadata.thread_id")
+    ?? uuidIdentity(headers.get("thread-id"), "thread-id")
+    ?? uuidIdentity(clientMetadata?.thread_id, "client_metadata.thread_id");
+  if (threadId === undefined) {
     return undefined;
   }
-  const [threadId] = candidates;
-  if (candidates.some((candidate) => candidate !== threadId)) {
-    throw new HttpError(
-      400,
-      "Codex thread identity fields must agree.",
-      "invalid_request_error",
-      "thread-id",
-    );
-  }
-  const userTurnIds = turnMetadata
-    .map((metadata) => uuidIdentity(
-      metadata.turn_id,
-      "x-codex-turn-metadata.turn_id",
-    ))
-    .filter((value): value is string => value !== undefined);
-  const [userTurnId] = userTurnIds;
-  if (userTurnIds.some((candidate) => candidate !== userTurnId)) {
-    throw new HttpError(
-      400,
-      "Codex turn identity fields must agree.",
-      "invalid_request_error",
-      "x-codex-turn-metadata.turn_id",
-    );
-  }
-  const parentThreadIds = turnMetadata
-    .map((metadata) => uuidIdentity(metadata.parent_thread_id,
-      "x-codex-turn-metadata.parent_thread_id"))
-    .filter((value): value is string => value !== undefined);
-  const [parentThreadId] = parentThreadIds;
-  if (parentThreadIds.some((candidate) => candidate !== parentThreadId)) {
-    throw new HttpError(400, "Codex parent thread identity fields must agree.",
-      "invalid_request_error", "x-codex-turn-metadata.parent_thread_id");
-  }
+  const userTurnId = uuidIdentity(entry.turn_id, "x-codex-turn-metadata.turn_id");
+  const parentThreadId = uuidIdentity(entry.parent_thread_id,
+    "x-codex-turn-metadata.parent_thread_id");
   return {
     kind: "codex_thread",
     value: threadId,
@@ -158,16 +129,12 @@ export function codexRequestContext(
 ): AgentRequestContext | undefined {
   const metadata = codexTurnMetadataCollection(headers, payload);
   if (metadata.length === 0) return undefined;
-  // HTTP and body projections must agree before either can classify a turn.
-  const kinds = new Set(metadata.map((entry) => entry.request_kind));
-  const agents = new Set(metadata.map((entry) => entry.subagent_kind));
-  if (kinds.size > 1 || agents.size > 1) {
-    throw new HttpError(400, "Codex request classification fields must agree.",
-      "invalid_request_error", "x-codex-turn-metadata");
-  }
-  const [kind] = kinds;
-  const [agentKind] = agents;
-  const entry = metadata[0]!;
+  // Classify from one projection, header first, skipping one that omits the
+  // request kind so a partial header falls back to a complete body.
+  const entry = metadata.find((candidate) => candidate.request_kind !== undefined)
+    ?? metadata[0]!;
+  const kind = entry.request_kind;
+  const agentKind = entry.subagent_kind;
   const agentId = uuidIdentity(entry.thread_id, "x-codex-turn-metadata.thread_id");
   const requestClass = kind === "compaction" ? "compaction"
     : kind === "memory" || kind === "prewarm" ? "auxiliary"
@@ -208,15 +175,9 @@ export function claudeCodeConversationIdentity(
     ),
   ].filter((value): value is string => value !== undefined);
   if (candidates.length === 0) return undefined;
+  // Claude Code can carry a stale metadata session after a resume or fork.
+  // The header names the live session, so it wins over the metadata.
   const [sessionId] = candidates;
-  if (candidates.some((candidate) => candidate !== sessionId)) {
-    throw new HttpError(
-      400,
-      "Claude Code session identity fields must agree.",
-      "invalid_request_error",
-      "x-claude-code-session-id",
-    );
-  }
   // Claude Code reuses the parent session UUID for every subagent, but gives
   // each subagent a stable agent header. Keep the parent thread on the bare
   // session identity and scope each subagent to its own composite identity.

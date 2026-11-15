@@ -127,13 +127,6 @@ test("Codex rejects malformed or conflicting thread projections", () => {
     {},
   )).toThrow("thread-id must be a UUID");
 
-  expect(() => codexConversationIdentity(
-    new Headers({
-      "thread-id": THREAD_ID,
-      "x-codex-turn-metadata": JSON.stringify({ thread_id: THREAD_ID }),
-    }),
-    { client_metadata: { thread_id: OTHER_THREAD_ID } },
-  )).toThrow("Codex thread identity fields must agree");
 
   expect(() => codexConversationIdentity(
     new Headers({ "x-codex-turn-metadata": "not-json" }),
@@ -145,22 +138,24 @@ test("Codex rejects malformed or conflicting thread projections", () => {
     { client_metadata: { "x-codex-turn-metadata": "not-json" } },
   )).toThrow("must contain a JSON object");
 
-  expect(() => codexConversationIdentity(
+});
+
+test("Codex prefers header projections when thread or turn projections conflict", () => {
+  expect(codexConversationIdentity(
     new Headers({
-      "x-codex-turn-metadata": JSON.stringify({
-        thread_id: THREAD_ID,
-        turn_id: TURN_ID,
-      }),
+      "thread-id": OTHER_THREAD_ID,
+      "x-codex-turn-metadata": JSON.stringify({ thread_id: THREAD_ID, turn_id: TURN_ID }),
     }),
     {
       client_metadata: {
+        thread_id: OTHER_THREAD_ID,
         "x-codex-turn-metadata": JSON.stringify({
-          thread_id: THREAD_ID,
+          thread_id: OTHER_THREAD_ID,
           turn_id: OTHER_TURN_ID,
         }),
       },
     },
-  )).toThrow("Codex turn identity fields must agree");
+  )).toEqual({ kind: "codex_thread", value: THREAD_ID, userTurnId: TURN_ID });
 });
 
 test("Claude Code identity accepts canonical UUID syntax and normalizes case", () => {
@@ -198,11 +193,11 @@ test("Claude Code includes opaque subagent ids in conversation identity", () => 
   }
 });
 
-test("Claude Code rejects conflicting header and metadata sessions", () => {
-  expect(() => claudeCodeConversationIdentity(
+test("Claude Code prefers the header session when metadata conflicts", () => {
+  expect(claudeCodeConversationIdentity(
     new Headers({ "x-claude-code-session-id": THREAD_ID }),
     OTHER_THREAD_ID,
-  )).toThrow("Claude Code session identity fields must agree");
+  )).toEqual({ kind: "claude_code_session", value: THREAD_ID });
 });
 
 test("Chat Completions identity reads the session affinity header", () => {

@@ -10,6 +10,8 @@ import {
   subscriptionSwitchedMessage,
   subscriptionUsageLimitMessage,
   subscriptionUsageFromHeaders,
+  museSubscriptionUsage,
+  openCodeGoUsageFromReport,
 } from "./subscription_limits.js";
 import { createProviderResponseCapture, type CapturedProviderResponse } from "./response_capture.js";
 
@@ -484,4 +486,48 @@ test("only OpenCode Go's own usage-limit refusal holds a Go plan", () => {
     failure: {},
     now,
   })).toBeNull();
+});
+
+describe("plan usage reports", () => {
+  const windowReset = new Date(NOW.getTime() + 2 * 3600_000);
+  const weekReset = new Date(NOW.getTime() + 3 * 86_400_000);
+
+  test("a Muse Code stream's usage event gives both windows", () => {
+    const usage = museSubscriptionUsage({
+      window: { used_percent: 37, resets_at: windowReset.getTime() / 1000, window_duration_mins: 300 },
+      // Over-quota percentages are valid; the meter tops out full.
+      weekly: { used_percent: 104, resets_at: weekReset.getTime() / 1000 },
+      tier: "28367280949604159",
+    }, NOW);
+    expect(usage).toEqual({
+      utilization: 1,
+      resetsAt: weekReset,
+      windows: [
+        { minutes: 300, utilization: 0.37, resetsAt: windowReset },
+        { minutes: 10080, utilization: 1, resetsAt: weekReset },
+      ],
+    });
+  });
+
+  test("a Muse Code event without usable usage reports none", () => {
+    expect(museSubscriptionUsage(null, NOW)).toBeNull();
+    expect(museSubscriptionUsage({ window: { used_percent: "n/a", resets_at: windowReset.getTime() / 1000 } }, NOW)).toBeNull();
+  });
+
+  test("OpenCode Go's report gives every window, a refused one full", () => {
+    const usage = openCodeGoUsageFromReport({
+      usage: {
+        rolling: { status: "ok", percent: 42, resetsAt: windowReset.toISOString() },
+        weekly: { status: "ok", percent: 18, resetsAt: weekReset.toISOString() },
+        monthly: { status: "rate-limited", percent: 99.6, resetsAt: "2026-10-01T00:00:00.000Z" },
+      },
+    }, NOW);
+    expect(usage?.windows.map((window) => [window.minutes, window.utilization])).toEqual([
+      [300, 0.42],
+      [10080, 0.18],
+      [43200, 1],
+    ]);
+    expect(usage?.resetsAt).toEqual(new Date("2026-10-01T00:00:00.000Z"));
+    expect(openCodeGoUsageFromReport({ usage: {} }, NOW)).toBeNull();
+  });
 });

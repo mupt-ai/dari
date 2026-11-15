@@ -96,6 +96,59 @@ export function subscriptionUsageFromHeaders(
   return subscriptionUsageFromWindows(windows, now);
 }
 
+/**
+ * The plan usage a Muse Code stream reports as its last event,
+ * `response.subscription_usage`: `{window: {used_percent, resets_at,
+ * window_duration_mins}, weekly: {used_percent, resets_at}, tier}`, the
+ * current five hour block and the rolling week, resets in unix seconds and
+ * percent that may exceed 100.
+ */
+export function museSubscriptionUsage(snapshot: unknown, now: Date): SubscriptionUsage | null {
+  if (!isRecord(snapshot)) return null;
+  const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : NaN;
+  return subscriptionUsageFromWindows(
+    ([["window", FIVE_HOURS], ["weekly", ONE_WEEK]] as const).map(([name, minutes]) => {
+      const raw = snapshot[name];
+      const window = isRecord(raw) ? raw : {};
+      const resetsAt = number(window.resets_at);
+      return {
+        minutes: number(window.window_duration_mins) > 0 ? Math.round(number(window.window_duration_mins)) : minutes,
+        used: number(window.used_percent) / 100,
+        resetsAt: Number.isNaN(resetsAt) ? null : new Date(resetsAt * 1000),
+      };
+    }),
+    now,
+  );
+}
+
+// OpenCode Go's windows by their usage report names; the monthly one follows
+// the billing cycle.
+const OPENCODE_GO_USAGE_WINDOWS = [["rolling", FIVE_HOURS], ["weekly", ONE_WEEK], ["monthly", 30 * 24 * 60]] as const;
+
+/**
+ * The usage OpenCode Go reports at `GET /zen/go/v1/usage`, which OpenCode's
+ * own `/usage` reads: `{usage: {rolling|weekly|monthly: {status: "ok" |
+ * "rate-limited", percent, resetsAt}}}`, percent out of 100. A window Go
+ * refuses on is at its limit whatever it rounds to.
+ */
+export function openCodeGoUsageFromReport(report: unknown, now: Date): SubscriptionUsage | null {
+  const usage = isRecord(report) && isRecord(report.usage) ? report.usage : {};
+  return subscriptionUsageFromWindows(
+    OPENCODE_GO_USAGE_WINDOWS.map(([name, minutes]) => {
+      const raw = usage[name];
+      const meter = isRecord(raw) ? raw : {};
+      const percent = typeof meter.percent === "number" ? meter.percent / 100 : NaN;
+      const resetsAt = typeof meter.resetsAt === "string" ? new Date(meter.resetsAt) : null;
+      return {
+        minutes,
+        used: meter.status === "rate-limited" && Number.isFinite(percent) ? 1 : percent,
+        resetsAt: resetsAt === null || Number.isNaN(resetsAt.getTime()) ? null : resetsAt,
+      };
+    }),
+    now,
+  );
+}
+
 // Neither provider guarantees a reset time on every usage-limit response.
 // Without one, hold the subscription out for an hour rather than hammering an
 // exhausted plan on every request.

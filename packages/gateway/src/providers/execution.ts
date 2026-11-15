@@ -55,6 +55,7 @@ import {
   codexUsageLimitError,
   subscriptionOAuthProviderFor,
   subscriptionUsageFromHeaders,
+  museSubscriptionUsage,
   failureWithSubscriptionUsageLimit,
   retryAfterSeconds,
   subscriptionUsageLimitFromFailure,
@@ -914,16 +915,20 @@ function noteSubscriptionUsage(
   const fromHeaders = headers === undefined
     ? null
     : subscriptionUsageFromHeaders(execution.provider, execution.providerKeySource, headers);
+  const oauthProvider = subscriptionOAuthProviderFor(execution.provider, execution.providerKeySource);
   // Codex's WebSocket transport carries no headers; its usage report does.
+  // Muse Code's usage is the last event of its stream.
   const usage = fromHeaders !== null
     ? Promise.resolve(fromHeaders)
-    : subscriptionOAuthProviderFor(execution.provider, execution.providerKeySource) === "openai_codex"
+    : oauthProvider === "openai_codex"
       ? readCodexUsage({
         credentialId,
         accessToken: execution.apiKey,
         baseUrl: execution.endpoint?.baseUrl ?? execution.config?.base_url ?? undefined,
       })
-      : Promise.resolve(null);
+      : oauthProvider === "meta_muse" && responseCapture !== undefined
+        ? responseCapture.streamedSubscriptionUsage.then((snapshot) => museSubscriptionUsage(snapshot, new Date()))
+        : Promise.resolve(null);
   usage
     .then((reported) => reported === null ? undefined : record({ userId, credentialId, usage: reported }))
     .catch((error: unknown) => {

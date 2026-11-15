@@ -42,6 +42,7 @@ import {
   type ProviderFetch,
   type ProviderResponseCapture,
 } from "./response_capture.js";
+import { subscriptionOAuthProviderFor } from "./subscription_limits.js";
 import {
   completeInteractionModel,
   streamInteractionModel,
@@ -213,9 +214,12 @@ export function startProviderCompletion(args: {
 function responseCaptureFor(execution: ProviderExecution): ProviderResponseCapture | undefined {
   // A subscription's failures carry its usage limit; a customer key's say
   // whether the provider refused the key itself.
+  // Muse Code reports its plan's usage as the stream's last event.
   return execution.providerKeySource === "managed"
     ? undefined
-    : createProviderResponseCapture();
+    : createProviderResponseCapture({
+      watchSubscriptionUsage: subscriptionOAuthProviderFor(execution.provider, execution.providerKeySource) === "meta_muse",
+    });
 }
 
 export async function startProviderStream(args: {

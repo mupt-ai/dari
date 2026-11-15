@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 
 import { handleSubscriptionRequest } from "./http.js";
 import { SubscriptionStore } from "./store.js";
-import { codexAccessToken, fakeFetch, jsonResponse, type RecordedCall } from "./test_support.js";
+import { codexAccessToken, fakeFetch, jsonResponse, tokens, type RecordedCall } from "./test_support.js";
 
 const BASE = "http://gateway.test/v1/organizations/current/credentials";
 const now = new Date("2026-10-20T12:00:00Z");
@@ -229,5 +229,73 @@ describe("managing", () => {
       fetch: g.fetch,
     });
     expect(elsewhere).toBeNull();
+  });
+});
+
+describe("plan usage reads", () => {
+  function routedGateway(routes: Record<string, () => Response>) {
+    const store = new SubscriptionStore(new Database(":memory:"));
+    const calls: RecordedCall[] = [];
+    const fetch = async (url: string, init: RequestInit) => {
+      calls.push({ url, init, body: String(init.body) });
+      const route = routes[url];
+      if (route === undefined) throw new Error(`unexpected request to ${url}`);
+      return route();
+    };
+    const list = async (at: Date, refresh = true) => {
+      const response = await handleSubscriptionRequest(
+        new Request(`${BASE}${refresh ? "?refresh_usage=true" : ""}`),
+        { store, fetch, now: () => at },
+      );
+      const body = (await response!.json()) as any;
+      return Object.fromEntries(body.credentials.map((c: any) => [c.oauth_provider, c.usage]));
+    };
+    return { store, calls, list };
+  }
+
+  const goUsage = jsonResponse({
+    usage: {
+      rolling: { status: "ok", percent: 5, resetsAt: "2026-10-20T16:00:00.000Z" },
+      weekly: { status: "ok", percent: 40, resetsAt: "2026-10-25T00:00:00.000Z" },
+      monthly: { status: "rate-limited", percent: 100, resetsAt: "2026-11-01T00:00:00.000Z" },
+    },
+  });
+
+  function connectPlans(store: SubscriptionStore) {
+    store.connect(tokens({ provider: "meta_muse", accessToken: "meta-minted-key", refreshToken: "meta-sign-in", accountEmail: "muse@example.com" }), null, now);
+    store.connect(tokens({ provider: "opencode_go", accessToken: "oc-access", refreshToken: "oc-refresh", accountId: "wrk_go", accountEmail: "go@example.com" }), null, now);
+    store.connect(tokens(), null, now);
+  }
+
+  test("refresh_usage reads OpenCode Go from its usage report", async () => {
+    const g = routedGateway({ "https://opencode.ai/zen/go/v1/usage": goUsage });
+    connectPlans(g.store);
+
+    expect(await g.list(now, false)).toEqual({ meta_muse: null, opencode_go: null, anthropic_claude_code: null });
+    expect(g.calls).toHaveLength(0);
+
+    const usage = await g.list(now);
+    // The other plans report usage on the responses they serve.
+    expect(usage.anthropic_claude_code).toBeNull();
+    expect(usage.meta_muse).toBeNull();
+    expect(usage.opencode_go.windows.map((w: any) => [w.minutes, w.utilization])).toEqual([
+      [300, 0.05], [10080, 0.4], [43200, 1],
+    ]);
+    expect(g.calls).toHaveLength(1);
+    expect(g.calls[0]!.init.headers).toMatchObject({ Authorization: "Bearer oc-access", "x-opencode-org-id": "wrk_go" });
+    // Reading the plan is not using it.
+    expect(g.store.list().every((credential) => credential.lastUsedAt === null)).toBe(true);
+
+    // A fresh reading is not read again; a stale one is.
+    await g.list(new Date(now.getTime() + 30_000));
+    expect(g.calls).toHaveLength(1);
+    await g.list(new Date(now.getTime() + 2 * 60_000));
+    expect(g.calls).toHaveLength(2);
+  });
+
+  test("a failed read keeps the listing", async () => {
+    const g = routedGateway({ "https://opencode.ai/zen/go/v1/usage": () => Response.json({}, { status: 403 }) });
+    connectPlans(g.store);
+    expect(await g.list(now)).toEqual({ meta_muse: null, opencode_go: null, anthropic_claude_code: null });
   });
 });

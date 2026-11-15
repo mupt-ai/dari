@@ -126,7 +126,8 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 	result := accountsResult{}
 	for {
 		var raw json.RawMessage
-		if err := page.client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &raw); err != nil {
+		// OpenCode Go reports plan usage only when asked.
+		if err := page.client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials?refresh_usage=true", nil, &raw); err != nil {
 			return result, api.HumanError(err)
 		}
 		var listed struct {
@@ -438,21 +439,25 @@ func subscriptionDetails(subscription subscriptionCredential) []string {
 const (
 	fiveHourMinutes = 5 * 60
 	weekMinutes     = 7 * 24 * 60
+	monthMinutes    = 30 * 24 * 60
 )
 
 // subscriptionUsageWindows is every window that has not reset, shortest
 // first. A held subscription's hold ends when the window that ran out
 // resets, so that window shows full. Usage reported without per-window
 // detail, and holds without a matching window, are named by how far off
-// their reset is: only the weekly window resets more than five hours out.
-// Muse Code plans have only the five hour window.
+// their reset is: only a weekly or monthly window resets more than five
+// hours out, and only OpenCode Go's monthly one more than a week.
 func subscriptionUsageWindows(subscription subscriptionCredential, now time.Time) []subscriptionUsageWindow {
-	fiveHourOnly := subscription.OAuthProvider == "meta_muse"
 	inferred := func(resets time.Time) int {
-		if !fiveHourOnly && resets.Sub(now) > fiveHourMinutes*time.Minute {
+		switch left := resets.Sub(now); {
+		case left > weekMinutes*time.Minute:
+			return monthMinutes
+		case left > fiveHourMinutes*time.Minute:
 			return weekMinutes
+		default:
+			return fiveHourMinutes
 		}
-		return fiveHourMinutes
 	}
 	running := func(resetsAt string) (time.Time, bool) {
 		resets, err := time.Parse(time.RFC3339Nano, resetsAt)
@@ -497,11 +502,13 @@ func subscriptionUsageWindows(subscription subscriptionCredential, now time.Time
 	return limited
 }
 
-// usageWindowLabel names a quota window by its length: 5h, Weekly, 30d.
+// usageWindowLabel names a quota window by its length: 5h, Weekly, Monthly, 2d.
 func usageWindowLabel(minutes int) string {
 	switch {
-	case minutes == 7*24*60:
+	case minutes == weekMinutes:
 		return "Weekly"
+	case minutes == monthMinutes:
+		return "Monthly"
 	case minutes%(24*60) == 0:
 		return fmt.Sprintf("%dd", minutes/(24*60))
 	case minutes%60 == 0:

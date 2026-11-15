@@ -9,6 +9,9 @@
  *   database file; protect that file like a secret.
  * - `access.ts`: `freshAccessToken` refreshes a token expiring within five
  *   minutes before handing it out, one refresh per credential at a time.
+ * - `usage.ts`: `refreshStaleUsage` reads OpenCode Go plan usage from its
+ *   usage endpoint, which its responses never report, when the accounts view
+ *   asks.
  * - `http.ts`: `handleSubscriptionRequest` serves the credential endpoints the
  *   Dari CLI uses to connect, list, rename, release, and disconnect
  *   subscriptions. The caller authenticates the request first.

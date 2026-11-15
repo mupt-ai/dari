@@ -16,8 +16,17 @@ export async function freshAccessToken(
   credential: SubscriptionCredential,
   options: { fetch: OAuthFetch; now?: Date },
 ): Promise<string> {
+  store.touch(credential.id, options.now ?? new Date());
+  return await refreshedAccessToken(store, credential, options);
+}
+
+/** A usable access token without recording a use. */
+export async function refreshedAccessToken(
+  store: SubscriptionStore,
+  credential: SubscriptionCredential,
+  options: { fetch: OAuthFetch; now?: Date },
+): Promise<string> {
   const now = options.now ?? new Date();
-  store.touch(credential.id, now);
   if (!expiresSoon(credential, now)) return credential.accessToken;
 
   const pending = inFlight.get(credential.id);

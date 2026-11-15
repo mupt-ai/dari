@@ -23,7 +23,7 @@ var (
 	claudeSubscription = agentSubscriptionProvider{"anthropic_claude_code", "Claude Code", "anthropic", "Anthropic", false, "https://claude.ai/upgrade", "https://claude.ai/settings/billing"}
 	codexSubscription  = agentSubscriptionProvider{"openai_codex", "ChatGPT", "openai", "OpenAI", true, "https://chatgpt.com/#pricing", "https://chatgpt.com/#settings/Account"}
 	// Muse Code subscriptions serve only Muse Code.
-	museSubscription = agentSubscriptionProvider{"meta_muse", "Muse Code", "meta", "Meta", true, "", ""}
+	museSubscription = agentSubscriptionProvider{"meta_muse", "Muse Code", "meta", "Meta", true, "https://accountscenter.meta.com/muse_code/", "https://accountscenter.meta.com/muse_code/"}
 	// OpenCode Go signs in with the OpenCode Console device flow that
 	// `opencode auth login` runs.
 	opencodeGoSubscription = agentSubscriptionProvider{"opencode_go", "OpenCode Go", "opencode-go", "OpenCode", true, "https://opencode.ai/go", "https://opencode.ai/console"}

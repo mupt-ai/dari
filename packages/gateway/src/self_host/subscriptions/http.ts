@@ -21,6 +21,7 @@ import {
   type SubscriptionCredential,
   type SubscriptionStore,
 } from "./store.js";
+import { refreshStaleUsage } from "./usage.js";
 
 export type SubscriptionHttpDeps = {
   store: SubscriptionStore;
@@ -49,7 +50,13 @@ export async function handleSubscriptionRequest(
   const path = url.pathname.slice(BASE.length);
   const now = deps.now?.() ?? new Date();
   try {
-    if (path === "" && request.method === "GET") return json(200, listBody(deps.store, now));
+    if (path === "" && request.method === "GET") {
+      // OpenCode Go reports usage only when asked.
+      if (url.searchParams.get("refresh_usage") === "true") {
+        await refreshStaleUsage(deps.store, { fetch: deps.fetch, now });
+      }
+      return json(200, listBody(deps.store, now));
+    }
     if (path === "/oauth/sessions" && request.method === "POST") {
       return json(201, await startSession(deps, await readBody(request), now));
     }

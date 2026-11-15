@@ -382,6 +382,29 @@ func TestSubscriptionDetailsShowEveryUsageWindow(t *testing.T) {
 	}
 }
 
+func TestSubscriptionDetailsShowOpenCodeGoMonthlyWindow(t *testing.T) {
+	rolling := time.Now().Add(time.Hour)
+	week := time.Now().Add(48 * time.Hour)
+	month := time.Now().Add(20 * 24 * time.Hour)
+	got := subscriptionDetails(subscriptionCredential{OAuthProvider: "opencode_go", Usage: &subscriptionUsage{
+		Utilization: 1,
+		ResetsAt:    month.Format(time.RFC3339),
+		Windows: []subscriptionUsageWindow{
+			{Minutes: 300, Utilization: 0.05, ResetsAt: rolling.Format(time.RFC3339)},
+			{Minutes: 10080, Utilization: 0.4, ResetsAt: week.Format(time.RFC3339)},
+			{Minutes: 43200, Utilization: 1, ResetsAt: month.Format(time.RFC3339)},
+		},
+	}})
+	want := []string{
+		"5h · 5% used · Resets " + usageResetTime(rolling),
+		"Weekly · 40% used · Resets " + usageResetTime(week),
+		"Monthly · Limit reached · Resets " + usageResetTime(month),
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("details = %q, want %q", got, want)
+	}
+}
+
 func TestSubscriptionDetailsShowEachModelAtItsLimit(t *testing.T) {
 	resets := time.Now().Add(72 * time.Hour)
 	got := subscriptionDetails(subscriptionCredential{ModelHolds: []subscriptionModelHold{
@@ -402,13 +425,15 @@ func TestSubscriptionDetailsShowEachModelAtItsLimit(t *testing.T) {
 func TestSubscriptionDetailsNameAHoldWithoutUsage(t *testing.T) {
 	soon := time.Now().Add(3 * time.Hour).Format(time.RFC3339)
 	later := time.Now().Add(50 * time.Hour).Format(time.RFC3339)
+	nextMonth := time.Now().Add(20 * 24 * time.Hour).Format(time.RFC3339)
 	cases := []struct {
 		provider, until, want string
 	}{
 		{"openai_codex", soon, "5h"},
 		{"openai_codex", later, "Weekly"},
-		// Muse Code plans have only the five hour window.
-		{"meta_muse", later, "5h"},
+		{"meta_muse", later, "Weekly"},
+		// Only OpenCode Go's monthly window resets more than a week out.
+		{"opencode_go", nextMonth, "Monthly"},
 	}
 	for _, c := range cases {
 		got := subscriptionDetails(subscriptionCredential{OAuthProvider: c.provider, UnavailableUntil: &c.until})

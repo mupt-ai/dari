@@ -461,6 +461,44 @@ test("Fireworks Kimi K3 applies DeepSeek thinking format, image input, and low/h
   });
 });
 
+test("Fireworks Kimi K3.1 Pro and Muse Spark Open use native Pi registry metadata", () => {
+  const kimi = buildModel(pi, "moonshotai/Kimi-K3.1-Pro", null, {
+    provider: "fireworks",
+    native_model_id: "accounts/fireworks/models/kimi-k3p1-pro",
+    api: "openai-completions",
+    base_url: "https://api.fireworks.ai/inference/v1",
+    context_window: 1_048_576,
+    max_output_tokens: 131_072,
+    supported_thinking_levels: ["low", "high", "max"],
+    default_thinking_level: "max",
+    supports_managed_key: true,
+    cost: { input: 2, output: 10, cached_input: 0.2, cache_write: 0 },
+  });
+  expect(kimi).toMatchObject({ name: "Kimi K3.1 Pro", input: ["text", "image"], reasoning: true });
+  expect(kimi.compat).toMatchObject({
+    sendSessionAffinityHeaders: true,
+    supportsDeveloperRole: false,
+    requiresReasoningContentOnAssistantMessages: true,
+  });
+  expect(kimi.thinkingLevelMap).toMatchObject({ off: null, medium: null, xhigh: null, max: "max" });
+
+  const muse = buildModel(pi, "meta/muse-spark-open", null, {
+    provider: "fireworks",
+    native_model_id: "accounts/fireworks/models/muse-spark-open",
+    api: "anthropic-messages",
+    base_url: "https://api.fireworks.ai/inference",
+    context_window: 1_048_576,
+    max_output_tokens: 131_072,
+    supported_thinking_levels: ["low", "medium", "high", "xhigh"],
+    default_thinking_level: "medium",
+    supports_managed_key: true,
+    cost: { input: 1.25, output: 4.25, cached_input: 0.15, cache_write: 0 },
+  });
+  expect(muse).toMatchObject({ name: "Muse Spark Open", input: ["text", "image"], reasoning: true });
+  expect(muse.compat).toMatchObject({ forceAdaptiveThinking: true, supportsMessageThreads: false });
+  expect(muse.thinkingLevelMap).toMatchObject({ off: null, minimal: null, xhigh: "xhigh", max: null });
+});
+
 test("builds OpenRouter GLM 5.3 Flash with local multimodal metadata", () => {
   const config: ResolvedRouterModelConfig = {
     provider: "openrouter",

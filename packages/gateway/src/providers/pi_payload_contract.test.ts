@@ -177,6 +177,37 @@ const cases: PayloadCase[] = [
     expected: { reasoning_effort: level },
   })),
   ...(["low", "high", "max"] as const).map((level) => ({
+    model: "moonshotai/Kimi-K3.1-Pro",
+    config: modelConfig(
+      "fireworks",
+      "accounts/fireworks/models/kimi-k3p1-pro",
+      "openai-completions",
+      1_048_576,
+      ["low", "high", "max"],
+      "max",
+      131_072,
+    ),
+    level,
+    expected: { reasoning_effort: level },
+  })),
+  ...(["low", "medium", "high", "xhigh"] as const).map((level) => ({
+    model: "meta/muse-spark-open",
+    config: {
+      ...modelConfig(
+        "fireworks",
+        "accounts/fireworks/models/muse-spark-open",
+        "anthropic-messages",
+        1_048_576,
+        ["low", "medium", "high", "xhigh"],
+        "medium",
+        131_072,
+      ),
+      base_url: "https://api.fireworks.ai/inference",
+    },
+    level,
+    expected: { thinking: { type: "adaptive" }, output_config: { effort: level } },
+  })),
+  ...(["low", "high", "max"] as const).map((level) => ({
     model: "zai-org/GLM-5.3-Flash",
     config: modelConfig(
       "openrouter",
@@ -310,6 +341,12 @@ const defaultExpectations: Record<
   },
   "zai-org/GLM-5.3": {
     expected: { reasoning_effort: "max" },
+  },
+  "moonshotai/Kimi-K3.1-Pro": {
+    expected: { reasoning_effort: "max" },
+  },
+  "meta/muse-spark-open": {
+    expected: { thinking: { type: "adaptive" }, output_config: { effort: "medium" } },
   },
   "zai-org/GLM-5.3-Flash": {
     expected: { reasoning: { effort: "max" } },

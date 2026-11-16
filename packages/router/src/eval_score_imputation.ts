@@ -33,6 +33,7 @@ const PREVIOUS_GENERATION: Readonly<Record<string, string>> = {
   "anthropic/claude-fable-5-1": "anthropic/claude-fable-5",
   "anthropic/claude-fable-5-2": "anthropic/claude-fable-5-1",
   "meta/muse-spark-1.3": "meta/muse-spark-1.2",
+  "moonshotai/Kimi-K3.1-Pro": "moonshotai/Kimi-K3",
   "zai-org/GLM-5.3": "zai-org/GLM-5.2",
   "xai/grok-4.7": "xai/grok-4.6",
 };

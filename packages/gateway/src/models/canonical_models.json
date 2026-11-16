@@ -232,6 +232,16 @@
     ]
   },
   {
+    "id": "meta/muse-spark-open",
+    "name": "Muse Spark Open",
+    "thinking_levels": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+    ]
+  },
+  {
     "id": "meta/muse-spark-1.2",
     "name": "Muse Spark 1.2",
     "thinking_levels": [
@@ -245,6 +255,15 @@
   {
     "id": "moonshotai/Kimi-K3",
     "name": "Kimi K3",
+    "thinking_levels": [
+      "low",
+      "high",
+      "max"
+    ]
+  },
+  {
+    "id": "moonshotai/Kimi-K3.1-Pro",
+    "name": "Kimi K3.1 Pro",
     "thinking_levels": [
       "low",
       "high",

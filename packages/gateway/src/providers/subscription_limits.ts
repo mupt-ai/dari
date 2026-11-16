@@ -21,6 +21,8 @@ export type SubscriptionUsageLimit = {
 
 /** One quota window of a plan: its length, share used (0 to 1), and reset. */
 export type SubscriptionUsageWindow = {
+  // Absent for shared plan quota; a family limit must not exhaust the plan.
+  modelFamily?: "fable";
   minutes: number;
   utilization: number;
   resetsAt: Date;
@@ -29,7 +31,8 @@ export type SubscriptionUsageWindow = {
 /**
  * How much of a subscription's quota is used, from a successful response.
  * `windows` lists every window with a future reset, shortest first;
- * `utilization` and `resetsAt` are the binding window's: the one closest to
+ * Model-family windows are separate meters and never bind the whole plan.
+ * `utilization` and `resetsAt` are the shared binding window's: the one closest to
  * its limit.
  */
 export type SubscriptionUsage = {
@@ -44,7 +47,7 @@ const ONE_WEEK = 7 * 24 * 60;
 // Claude Code's unified limiter reports each window on every response, the
 // same headers Claude Code itself reads: `-utilization` as a fraction of the
 // window and `-reset` in unix seconds.
-const CLAUDE_CODE_USAGE_WINDOWS = [["5h", FIVE_HOURS], ["7d", ONE_WEEK]] as const;
+const CLAUDE_CODE_USAGE_WINDOWS = [["5h", FIVE_HOURS], ["7d", ONE_WEEK], ["7d_oi", ONE_WEEK]] as const;
 
 // The ChatGPT backend reports each Codex window on every response, the same
 // headers the Codex CLI reads: `-used-percent` out of 100, `-reset-at` in
@@ -53,20 +56,23 @@ export const CODEX_USAGE_WINDOWS = [["primary", FIVE_HOURS], ["secondary", ONE_W
 
 /** Usage from raw windows, dropping malformed or already-reset ones. */
 export function subscriptionUsageFromWindows(
-  raw: Array<{ minutes: number; used: number; resetsAt: Date | null }>,
+  raw: Array<{ minutes: number; used: number; resetsAt: Date | null; modelFamily?: "fable" }>,
   now: Date,
 ): SubscriptionUsage | null {
   const windows = raw
     .filter((window) => Number.isFinite(window.used) && window.resetsAt !== null && window.resetsAt > now)
     .map((window) => ({
+      ...(window.modelFamily === undefined ? {} : { modelFamily: window.modelFamily }),
       minutes: window.minutes,
       utilization: Math.max(0, Math.min(1, window.used)),
       resetsAt: window.resetsAt as Date,
     }))
-    .sort((a, b) => a.minutes - b.minutes);
+    .sort((a, b) => a.minutes - b.minutes || (a.modelFamily ?? "").localeCompare(b.modelFamily ?? ""));
   if (windows.length === 0) return null;
-  const binding = windows.reduce((a, b) => (b.utilization > a.utilization ? b : a));
-  return { utilization: binding.utilization, resetsAt: binding.resetsAt, windows };
+  const binding = windows.filter((window) => window.modelFamily === undefined)
+    .reduce<SubscriptionUsageWindow | null>((a, b) => a === null || b.utilization > a.utilization ? b : a, null);
+  // Family-only reports still carry useful meters, but no shared-plan usage.
+  return { utilization: binding?.utilization ?? 0, resetsAt: binding?.resetsAt ?? windows[0]!.resetsAt, windows };
 }
 
 /**
@@ -82,6 +88,7 @@ export function subscriptionUsageFromHeaders(
   const oauthProvider = subscriptionOAuthProviderFor(provider, keySource);
   const windows = oauthProvider === "anthropic_claude_code"
     ? CLAUDE_CODE_USAGE_WINDOWS.map(([window, minutes]) => ({
+      ...(window === "7d_oi" ? { modelFamily: "fable" as const } : {}),
       minutes,
       used: Number(headers.get(`anthropic-ratelimit-unified-${window}-utilization`) ?? NaN),
       resetsAt: unixSecondsDeadline(headers.get(`anthropic-ratelimit-unified-${window}-reset`), now),
@@ -210,7 +217,9 @@ export function detectSubscriptionUsageLimit(args: {
 
 // Claude Code plans also cap some model families on their own
 // (`seven_day_opus`, `seven_day_sonnet`). The representative claim names the
-// window that refused, and `-fallback: available` says another model can still
+// window that refused. Fable uses `seven_day_overage_included` (the separate
+// included Fable allowance), not the shared `seven_day` window.
+// `-fallback: available` also says another model can still
 // serve; either way the rest of the plan is not exhausted.
 const ANTHROPIC_MODEL_CLAIM = /^(?:five_hour|seven_day)_(?:opus|sonnet|haiku|fable|mythos)(?:_|$)/;
 
@@ -228,12 +237,13 @@ function anthropicUsageLimit(
     return null;
   }
   const claim = captured.headers.get("anthropic-ratelimit-unified-representative-claim");
-  const modelLimit = (claim !== null && ANTHROPIC_MODEL_CLAIM.test(claim))
+  const fableLimit = claim === "seven_day_overage_included";
+  const modelLimit = fableLimit || (claim !== null && ANTHROPIC_MODEL_CLAIM.test(claim))
     || captured.headers.get("anthropic-ratelimit-unified-fallback") === "available";
   return {
     oauthProvider: "anthropic_claude_code",
     resetsAt: resetFromUnixSeconds(captured.headers.get("anthropic-ratelimit-unified-reset"), now),
-    reason: claim
+    reason: fableLimit ? "Claude Code Fable usage limit reached." : claim
       ? `Claude Code ${claim.replaceAll("_", " ")} usage limit reached.`
       : modelLimit ? `Claude Code usage limit for ${model} reached.` : "Claude Code usage limit reached.",
     ...(modelLimit ? { model } : {}),

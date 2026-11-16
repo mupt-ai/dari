@@ -314,6 +314,7 @@ type subscriptionModelHold struct {
 }
 
 type subscriptionUsageWindow struct {
+	ModelFamily string  `json:"model_family,omitempty"`
 	Minutes     int     `json:"minutes"`
 	Utilization float64 `json:"utilization"`
 	ResetsAt    string  `json:"resets_at"`

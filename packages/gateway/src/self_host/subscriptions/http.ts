@@ -181,6 +181,7 @@ function usageBody(credential: SubscriptionCredential, now: Date) {
     utilization: usage.utilization,
     resets_at: usage.resetsAt.toISOString(),
     windows: usage.windows.map((window) => ({
+      ...(window.modelFamily === undefined ? {} : { model_family: window.modelFamily }),
       minutes: window.minutes,
       utilization: window.utilization,
       resets_at: window.resetsAt.toISOString(),

@@ -258,6 +258,10 @@ describe("per-model usage limits", () => {
       model: MODEL,
     });
     expect(anthropic({ "anthropic-ratelimit-unified-representative-claim": "seven_day_fable" })?.model).toBe(MODEL);
+    expect(anthropic({ "anthropic-ratelimit-unified-representative-claim": "seven_day_overage_included" })).toMatchObject({
+      model: MODEL,
+      reason: "Claude Code Fable usage limit reached.",
+    });
     // The limiter offering a fallback model means the plan itself has room.
     expect(anthropic({ "anthropic-ratelimit-unified-fallback": "available" })).toMatchObject({
       model: MODEL,
@@ -266,7 +270,7 @@ describe("per-model usage limits", () => {
   });
 
   test("plan-wide Claude Code windows still hold the whole plan", () => {
-    for (const claim of ["five_hour", "seven_day", "seven_day_overage_included", "seven_day_oauth_apps"]) {
+    for (const claim of ["five_hour", "seven_day", "seven_day_oauth_apps"]) {
       expect(anthropic({ "anthropic-ratelimit-unified-representative-claim": claim })?.model).toBeUndefined();
     }
   });
@@ -361,13 +365,27 @@ describe("subscriptionUsageFromHeaders", () => {
       "anthropic-ratelimit-unified-7d-utilization": "0.81",
       "anthropic-ratelimit-unified-7d-reset": String(WEEK_RESET),
       "anthropic-ratelimit-unified-7d-status": "allowed_warning",
+      "anthropic-ratelimit-unified-7d_oi-utilization": "1",
+      "anthropic-ratelimit-unified-7d_oi-reset": String(WEEK_RESET),
     }), NOW)).toEqual({
       utilization: 0.81,
       resetsAt: new Date(WEEK_RESET * 1000),
       windows: [
         { minutes: 300, utilization: 0.42, resetsAt: new Date(FIVE_HOUR_RESET * 1000) },
         { minutes: 10_080, utilization: 0.81, resetsAt: new Date(WEEK_RESET * 1000) },
+        { modelFamily: "fable", minutes: 10_080, utilization: 1, resetsAt: new Date(WEEK_RESET * 1000) },
       ],
+    });
+  });
+
+  test("a Fable-only report never marks the shared plan exhausted", () => {
+    expect(subscriptionUsageFromHeaders("anthropic", "subscription", headers({
+      "anthropic-ratelimit-unified-7d_oi-utilization": "0.73",
+      "anthropic-ratelimit-unified-7d_oi-reset": String(WEEK_RESET),
+    }), NOW)).toEqual({
+      utilization: 0,
+      resetsAt: new Date(WEEK_RESET * 1000),
+      windows: [{ modelFamily: "fable", minutes: 10_080, utilization: 0.73, resetsAt: new Date(WEEK_RESET * 1000) }],
     });
   });
 

@@ -200,7 +200,10 @@ describe("usage", () => {
     const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
     expect(store.selectCredential(CLAUDE, "conv-1", now)?.id).toBe(a!.id);
     // Another plan now resets sooner, but moving would lose conv-1's cache.
-    store.recordUsage(a!.id, used(0.5, 240), now);
+    store.recordUsage(a!.id, {
+      ...used(0.5, 240),
+      windows: [...used(0.5, 240).windows, { modelFamily: "fable", minutes: 10_080, utilization: 1, resetsAt: later(6000) }],
+    }, now);
     store.recordUsage(b!.id, used(0.1, 30), now);
     expect(store.selectCredential(CLAUDE, "conv-1", later(1))?.id).toBe(a!.id);
   });
@@ -219,6 +222,23 @@ describe("usage", () => {
     expect(store.list()[0]!.usage).toEqual({ ...usage, observedAt: now });
   });
 
+  test("partial reports preserve other quota windows and update only the reported meter", () => {
+    const { store, credentials: [a] } = connected("a@example.com");
+    store.recordUsage(a!.id, used(0.7, 240), now);
+    const family = { modelFamily: "fable" as const, minutes: 10_080, utilization: 1, resetsAt: later(6000) };
+    store.recordUsage(a!.id, { utilization: 0, resetsAt: family.resetsAt, windows: [family] }, later(1));
+    expect(currentUsage(store.list()[0]!, later(1))).toEqual({
+      ...used(0.7, 240), windows: [...used(0.7, 240).windows, family],
+    });
+    store.recordUsage(a!.id, used(0.8, 300), later(2));
+    expect(currentUsage(store.list()[0]!, later(2))).toEqual({
+      ...used(0.8, 300), windows: [...used(0.8, 300).windows, family],
+    });
+    // An explicit reset retires that meter, not the omitted Fable allowance.
+    store.recordUsage(a!.id, used(0, 1), later(3));
+    expect(currentUsage(store.list()[0]!, later(3))?.windows).toEqual([family]);
+  });
+
   test("a short window resetting leaves the longer ones in force", () => {
     const { store, credentials: [a] } = connected("a@example.com");
     store.recordUsage(a!.id, {
@@ -227,21 +247,32 @@ describe("usage", () => {
       windows: [
         { minutes: 300, utilization: 0.9, resetsAt: later(30) },
         { minutes: 10_080, utilization: 0.4, resetsAt: later(6000) },
+        { modelFamily: "fable", minutes: 10_080, utilization: 1, resetsAt: later(7000) },
       ],
     }, now);
     expect(currentUsage(store.list()[0]!, later(31))).toEqual({
       utilization: 0.4,
       resetsAt: later(6000),
-      windows: [{ minutes: 10_080, utilization: 0.4, resetsAt: later(6000) }],
+      windows: [
+        { minutes: 10_080, utilization: 0.4, resetsAt: later(6000) },
+        { modelFamily: "fable", minutes: 10_080, utilization: 1, resetsAt: later(7000) },
+      ],
     });
-    expect(currentUsage(store.list()[0]!, later(6001))).toBeNull();
+    expect(currentUsage(store.list()[0]!, later(6001))).toMatchObject({
+      utilization: 0,
+      windows: [{ modelFamily: "fable", utilization: 1 }],
+    });
+    expect(currentUsage(store.list()[0]!, later(7001))).toBeNull();
   });
 
   test("a new conversation goes where quota resets soonest, so it is spent before it is lost", () => {
     const { store, credentials: [a, b, c] } = connected("a@example.com", "b@example.com", "c@example.com");
     store.recordUsage(a!.id, used(0.4, 240), now);
     store.recordUsage(b!.id, used(0.9, 20), now);
-    // c has reported nothing: fresh quota is kept for later.
+    // c has only a Fable meter: its reset must not steer shared quota selection.
+    store.recordUsage(c!.id, { utilization: 0, resetsAt: later(5), windows: [
+      { modelFamily: "fable", minutes: 10_080, utilization: 1, resetsAt: later(5) },
+    ] }, now);
     expect(store.selectCredential(CLAUDE, "new", now)?.id).toBe(b!.id);
     store.recordUsage(b!.id, used(0.96, 20), now);
     expect(store.selectCredential(CLAUDE, "newer", now)?.id).toBe(a!.id);

@@ -787,6 +787,7 @@ async function grantBody(platform: GatewayPlatform, request: Request, accessToke
         serves: client === undefined ? "any_app" : `${client}_only`,
         unavailable_until: subscription.unavailableUntil,
         usage: subscription.usage.map((window) => ({
+          ...(window.modelFamily === undefined ? {} : { model_family: window.modelFamily }),
           window_minutes: window.minutes,
           utilization: window.utilization,
           resets_at: window.resetsAt,
@@ -817,7 +818,7 @@ function planState(subscription: LinkSubscription, now: number): {
 } {
   const planTimes = [
     ...(subscription.unavailableUntil !== null && Date.parse(subscription.unavailableUntil) > now ? [subscription.unavailableUntil] : []),
-    ...subscription.usage.filter((window) => window.utilization >= 1 && Date.parse(window.resetsAt) > now).map((window) => window.resetsAt),
+    ...subscription.usage.filter((window) => window.modelFamily === undefined && window.utilization >= 1 && Date.parse(window.resetsAt) > now).map((window) => window.resetsAt),
   ];
   return planTimes.length > 0 ? { state: "plan_limit", available_at: latest(planTimes) } : { state: "ready", available_at: null };
 }
@@ -1593,7 +1594,7 @@ function planOption(authorize: AuthorizeRequest, subscription: LinkSubscription,
   const kind = subscription.provider as SubscriptionKind;
   const only = subscriptionClient(kind);
   const purpose = authorize.purposes[only === "claude_code" || only === "muse_code" ? only : "any_app"];
-  const binding = subscription.usage.reduce<LinkSubscription["usage"][number] | null>(
+  const binding = subscription.usage.filter((window) => window.modelFamily === undefined).reduce<LinkSubscription["usage"][number] | null>(
     (most, window) => most === null || window.utilization > most.utilization ? window : most,
     null,
   );

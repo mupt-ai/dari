@@ -40,6 +40,13 @@ func multipleSubscriptionsHandler(t *testing.T, seen map[string]map[string]any) 
 				map[string]any{
 					"name": "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN", "credential_scope": "user",
 					"oauth_provider": "anthropic_claude_code", "created_at": "2026-10-01T00:00:00Z", "subscription_active": true,
+					"usage": map[string]any{
+						"utilization": 0.2, "resets_at": "2099-10-16T12:00:00Z",
+						"windows": []any{
+							map[string]any{"minutes": 10080, "utilization": 0.2, "resets_at": "2099-10-16T12:00:00Z"},
+							map[string]any{"model_family": "fable", "minutes": 10080, "utilization": 0.73, "resets_at": "2099-10-17T12:00:00Z"},
+						},
+					},
 					"model_holds": []any{
 						map[string]any{"model": "anthropic/claude-fable-5", "unavailable_until": "2099-10-16T12:00:00Z", "reason": "Claude Code seven day opus usage limit reached."},
 						map[string]any{"model": "anthropic/claude-opus-5", "unavailable_until": "2020-10-16T12:00:00Z", "reason": "Claude Code seven day opus usage limit reached."},
@@ -87,6 +94,7 @@ func TestSubscriptionListShowsConnectionOrderWithActiveAndHeld(t *testing.T) {
 			Name, Provider, Status string
 			AccountEmail           *string                 `json:"account_email"`
 			ModelHolds             []subscriptionModelHold `json:"model_holds"`
+			Usage                  *subscriptionUsage      `json:"usage"`
 		} `json:"subscriptions"`
 	}
 	if err := json.Unmarshal(output, &listed); err != nil {
@@ -108,6 +116,10 @@ func TestSubscriptionListShowsConnectionOrderWithActiveAndHeld(t *testing.T) {
 	}
 	if email := listed.Subscriptions[3].AccountEmail; email == nil || *email != "second@example.test" {
 		t.Fatalf("account_email = %v", email)
+	}
+	usage := listed.Subscriptions[0].Usage
+	if usage == nil || len(usage.Windows) != 2 || usage.Windows[1].ModelFamily != "fable" || usage.Windows[1].Utilization != 0.73 {
+		t.Fatalf("Fable usage lost in subscription list: %+v", usage)
 	}
 	// A model at its own limit leaves the plan active; a reset hold is gone.
 	if holds := listed.Subscriptions[0].ModelHolds; len(holds) != 1 || holds[0].Model != "anthropic/claude-fable-5" {

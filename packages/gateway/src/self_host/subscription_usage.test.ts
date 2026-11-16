@@ -67,7 +67,7 @@ test("a request refused at one model's own limit holds only that model", async (
         headers: {
           "anthropic-ratelimit-unified-status": "rejected",
           "anthropic-ratelimit-unified-reset": RESET(),
-          "anthropic-ratelimit-unified-representative-claim": "seven_day_fable",
+          "anthropic-ratelimit-unified-representative-claim": "seven_day_overage_included",
         },
       },
     )

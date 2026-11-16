@@ -178,6 +178,7 @@ function linkSubscription(credential: SubscriptionCredential): LinkSubscription 
       ? credential.unavailableUntil.toISOString()
       : null,
     usage: (currentUsage(credential, now)?.windows ?? []).map((window) => ({
+      ...(window.modelFamily === undefined ? {} : { modelFamily: window.modelFamily }),
       minutes: window.minutes,
       utilization: window.utilization,
       resetsAt: window.resetsAt.toISOString(),

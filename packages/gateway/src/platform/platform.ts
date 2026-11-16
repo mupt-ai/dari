@@ -283,6 +283,7 @@ export type LinkApp = {
 
 /** One quota window of a plan: its length, share used (0 to 1), and reset. */
 export type LinkUsageWindow = {
+  modelFamily?: "fable";
   minutes: number;
   utilization: number;
   resetsAt: string;

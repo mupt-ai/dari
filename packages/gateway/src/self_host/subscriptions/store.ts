@@ -27,7 +27,7 @@
 import type { Database } from "bun:sqlite";
 import { randomBytes, randomUUID } from "node:crypto";
 
-import type { SubscriptionUsage } from "../../providers/subscription_limits.js";
+import { subscriptionUsageFromWindows, type SubscriptionUsage } from "../../providers/subscription_limits.js";
 import { type SecretBox, openWithoutKey } from "../secret_box.js";
 import type { OAuthTokens, SubscriptionProvider } from "./oauth.js";
 
@@ -326,6 +326,15 @@ export class SubscriptionStore {
 
   /** Record the usage a response reported for a subscription. */
   recordUsage(id: string, usage: SubscriptionUsage, now = new Date()): void {
+    if (usage.windows.length > 0) {
+      // Responses may omit meters belonging to another model family. Only
+      // replace matching windows, including explicit resets, and age out the rest.
+      const previous = this.get(id)?.usage?.windows ?? [];
+      const windows = [...previous.filter((old) => !usage.windows.some((window) =>
+        window.minutes === old.minutes && window.modelFamily === old.modelFamily,
+      )), ...usage.windows];
+      usage = subscriptionUsageFromWindows(windows.map((window) => ({ ...window, used: window.utilization })), now) ?? usage;
+    }
     this.db.run(
       `UPDATE subscription_credentials SET usage_utilization = ?, usage_resets_at = ?, usage_observed_at = ?,
          usage_windows = ? WHERE id = ?`,
@@ -608,10 +617,7 @@ export function currentUsage(credential: SubscriptionCredential, now: Date): Sub
   if (usage === null) return null;
   // Usage recorded before per-window reports has only the binding window.
   if (usage.windows.length === 0) return usage.resetsAt > now ? usage : null;
-  const windows = usage.windows.filter((window) => window.resetsAt > now);
-  if (windows.length === 0) return null;
-  const binding = windows.reduce((a, b) => (b.utilization > a.utilization ? b : a));
-  return { utilization: binding.utilization, resetsAt: binding.resetsAt, windows };
+  return subscriptionUsageFromWindows(usage.windows.map((window) => ({ ...window, used: window.utilization })), now);
 }
 
 function hasHeadroom(credential: SubscriptionCredential, now: Date): boolean {
@@ -638,9 +644,19 @@ function rotationFrom(all: SubscriptionCredential[], anchor: SubscriptionCredent
 // Spend quota about to reset first; a subscription with no current usage
 // report (fresh, or its window reset) comes after, then rotation order.
 function soonestResetFirst(now: Date, order: Map<string, number>) {
+  const sharedReset = (credential: SubscriptionCredential): number => {
+    const usage = currentUsage(credential, now);
+    if (usage === null) return Infinity;
+    if (usage.windows.length === 0) return usage.resetsAt.getTime();
+    const binding = usage.windows.filter((window) => window.modelFamily === undefined)
+      .reduce<SubscriptionUsage["windows"][number] | null>(
+        (most, window) => most === null || window.utilization > most.utilization ? window : most, null,
+      );
+    return binding?.resetsAt.getTime() ?? Infinity;
+  };
   return (a: SubscriptionCredential, b: SubscriptionCredential): number => {
-    const resetA = currentUsage(a, now)?.resetsAt.getTime() ?? Infinity;
-    const resetB = currentUsage(b, now)?.resetsAt.getTime() ?? Infinity;
+    const resetA = sharedReset(a);
+    const resetB = sharedReset(b);
     return resetA - resetB || order.get(a.id)! - order.get(b.id)!;
   };
 }
@@ -713,6 +729,6 @@ function parseModelHolds(value: string | null): SubscriptionModelHold[] {
 // Rows recorded before windows were stored have none.
 function parseWindows(value: string | null): SubscriptionUsage["windows"] {
   if (value === null) return [];
-  return (JSON.parse(value) as Array<{ minutes: number; utilization: number; resetsAt: number }>)
+  return (JSON.parse(value) as Array<Omit<SubscriptionUsage["windows"][number], "resetsAt"> & { resetsAt: number }>)
     .map((window) => ({ ...window, resetsAt: new Date(window.resetsAt) }));
 }

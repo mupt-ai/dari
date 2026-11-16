@@ -291,7 +291,7 @@ func (page accountsPage) addSubscription(ctx context.Context, subscriptions []su
 }
 
 // manageSubscription is one subscription's page: its plan at the vendor, its
-// name, its connection, a usage-limit hold, and banked Codex resets.
+// name, its connection, a usage-limit hold, and banked limit resets.
 func (page accountsPage) manageSubscription(ctx context.Context, subscription subscriptionCredential, stdin io.Reader, stderr io.Writer) error {
 	name := subscriptionName(subscription)
 	provider := subscriptionProviderFor(subscription.OAuthProvider)
@@ -328,8 +328,8 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			return api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
 		})
 	}
-	if page.hosted && provider == codexSubscription {
-		label := "Use banked resets when every ChatGPT subscription is exhausted"
+	if page.hosted && (provider == codexSubscription || provider == claudeSubscription) {
+		label := "Use banked resets when every " + provider.name + " subscription is exhausted"
 		if subscription.AutoRedeemResets {
 			label = "Stop using banked resets"
 		}

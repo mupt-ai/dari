@@ -418,8 +418,8 @@ func newSubscriptionCredentialCmd(gf *globalFlags, use, short, method string, pa
 
 func newSubscriptionAutoResetCmd(gf *globalFlags) *cobra.Command {
 	return &cobra.Command{
-		Use:   "auto-reset <codex|NAME> <on|off>",
-		Short: "Let Dari spend a ChatGPT subscription's banked Codex resets when every ChatGPT subscription is exhausted",
+		Use:   "auto-reset <codex|claude-code|NAME> <on|off>",
+		Short: "Let Dari spend a ChatGPT or Claude Code subscription's banked limit resets when every subscription for that provider is exhausted",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var enabled bool

@@ -91,7 +91,7 @@ export async function handleSubscriptionRequest(
       return json(200, summary(deps.store, found(deps.store.markAvailable(name, now), name), now));
     }
     if (action === "/auto-reset" && request.method === "POST") {
-      throw new HttpError(400, "Spending banked Codex resets is not supported by this gateway.");
+      throw new HttpError(400, "Spending banked limit resets is not supported by this gateway.");
     }
     return null;
   } catch (error) {
@@ -214,7 +214,7 @@ function credentialBody(credential: SubscriptionCredential, active: boolean, now
     // The share of its tightest window the plan last reported used, while
     // that window has not reset; null when it reports none.
     usage: usageBody(credential, now),
-    // Spending banked Codex resets is hosted-only.
+    // Spending banked limit resets is hosted-only.
     auto_redeem_resets: false,
   };
 }

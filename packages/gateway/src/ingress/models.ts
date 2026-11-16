@@ -8,7 +8,7 @@
 
 import { anthropicToken, bearerToken } from "../http/auth.js";
 import { errorResponse, HttpError } from "../http/errors.js";
-import { LINK_GRANT_ERROR_CODES } from "../models/link_errors.js";
+import { LINK_GRANT_ERROR_CODES } from "../link/errors.js";
 import { captureRequestError } from "../observability/errors.js";
 import { anthropicErrorResponse } from "./anthropic_messages.js";
 import { listModelCatalog } from "../models/catalog.js";

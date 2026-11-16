@@ -16,7 +16,7 @@ import { checkProviderKey } from "../providers/key_check.js";
 import { CANONICAL_MODELS } from "../models/canonical.js";
 import { allRouterModels, loadGatewayConfig, type GatewayConfig, type RouterConfig } from "./config.js";
 import { configuredProviderApiKey, gatewayKeyIndex, providersWithoutCredentials } from "./resolve.js";
-import { LinkStore } from "./link_store.js";
+import { SqliteLinkStore } from "../link/sqlite_store.js";
 import { secretBoxFromEnv } from "./secret_box.js";
 import { PrefixStore } from "./prefix_store.js";
 import { handleRouterModelsRequest, ROUTER_MODELS_ROUTE, RouterModelStore } from "./router_models.js";
@@ -72,7 +72,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   const prefixes = new PrefixStore(db);
   const sessionPins = new SessionPinStore(db);
   const routerModels = new RouterModelStore(db);
-  const links = new LinkStore(db, secrets);
+  const links = new SqliteLinkStore(db, secrets);
   // Pi's provider auth reads each provider's standard key variable, such as
   // OPENAI_API_KEY, from this environment only.
   const piModels = builtinModels({

@@ -1,5 +1,5 @@
 import type { InteractionRequest } from "../interaction/types.js";
-import { linkGrantError, modelNotServed } from "../models/link_errors.js";
+import { linkGrantError, modelNotServed } from "./errors.js";
 import { CANONICAL_MODELS } from "../models/canonical.js";
 import { explicitModelId, explicitModelSlug } from "../protocol/input/router_model.js";
 import { modelMetadataLookup } from "../providers/pi.js";

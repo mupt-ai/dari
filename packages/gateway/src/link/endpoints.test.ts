@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { GatewayPlatform, LinkPlatform } from "../platform/platform.js";
-import { handleLinkRequest } from "./link.js";
+import { handleLinkRequest } from "./endpoints.js";
 
 // A platform whose storage fails: the cause stays in the log, not the response.
 test("a failed link request answers with a request id and none of the cause", async () => {
@@ -46,7 +46,6 @@ test("a gateway without Dari Link answers 404", async () => {
 test("http redirect URIs are allowed only on loopback and the hosts the gateway lists", async () => {
   const registered: string[][] = [];
   const link = {
-    approval: { consentUrl: "https://app.example/link/authorize", connectedAppsUrl: "https://app.example/connected-apps" },
     httpRedirectHosts: ["*.example.ts.net", "dev.local"],
     registerApp: async ({ name, redirectUris }: { name: string; redirectUris: string[] }) => {
       registered.push(redirectUris);
@@ -68,14 +67,14 @@ test("http redirect URIs are allowed only on loopback and the hosts the gateway 
   expect((await register("http://evil.test/cb")).status).toBe(400);
   expect(registered).toHaveLength(3);
 
-  // A platform with its own app names where users manage connections.
+  // Users approve and manage connections on the gateway's own pages.
   const metadata = await handleLinkRequest(
     new Request("http://gateway.test/.well-known/oauth-authorization-server"),
     { link } as unknown as GatewayPlatform,
   );
   expect(await metadata.json()).toMatchObject({
-    web_message_origin: "https://app.example",
-    connected_apps_uri: "https://app.example/connected-apps",
+    web_message_origin: "http://gateway.test",
+    connected_apps_uri: "http://gateway.test/v1/link/connections",
     callback_script: "http://gateway.test/v1/link/callback.js",
   });
 });

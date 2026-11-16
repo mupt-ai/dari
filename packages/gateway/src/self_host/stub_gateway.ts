@@ -51,9 +51,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { zstdDecompressSync } from "node:zlib";
 
-import { linkUserCookie } from "../ingress/link.js";
+import { linkUserCookie } from "../link/endpoints.js";
 import type { SubscriptionKind } from "../types.js";
-import { LinkStore } from "./link_store.js";
+import { SqliteLinkStore } from "../link/sqlite_store.js";
 import { secretBoxFromEnv } from "./secret_box.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 
@@ -246,7 +246,7 @@ export async function startStubGateway(options: StubGatewayOptions = {}): Promis
     }, null, new Date(), options.owner === "gateway" ? null : STUB_USER)!.id;
   });
   const keys = options.keys ?? [];
-  const links = new LinkStore(new Database(dbPath), secrets);
+  const links = new SqliteLinkStore(new Database(dbPath), secrets);
   const keyIds = keys.map((key) => links.addKey(STUB_USER, key, `stub-key-${key}`).id);
   const stubUrl = `http://127.0.0.1:${provider.port}`;
   const configPath = join(dir, "dari-gateway.yaml");

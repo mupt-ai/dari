@@ -2,16 +2,18 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
 import { HttpError } from "../http/errors.js";
-import { pkceChallenge } from "../ingress/link.js";
+import { pkceChallenge } from "../link/endpoints.js";
 import type { InteractionRequest } from "../interaction/types.js";
-import { linkGrantAccess } from "../runtime/link_grant_access.js";
+import { linkGrantAccess } from "../link/grant_access.js";
 import type { ResolveRouterRequest } from "../platform/platform.js";
 import { parseGatewayConfig } from "./config.js";
 import { providersWithoutCredentials, resolveSelfHostedRouter, type SelfHostedResolverDeps } from "./resolve.js";
-import { LinkStore } from "./link_store.js";
+import { linkGrants } from "../link/grants.js";
+import { SqliteLinkStore } from "../link/sqlite_store.js";
 import { RouterModelStore } from "./router_models.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 import { codexAccessToken, tokens } from "./subscriptions/test_support.js";
+import { addTestApp, approveTestGrant } from "../link/test_support.js";
 
 const FUTURE = new Date(Date.now() + 24 * 60 * 60_000);
 
@@ -35,7 +37,7 @@ function deps(overrides: {
     routerModels: new RouterModelStore(db),
     gatewayKeys: ["gw-1", "gw-2"],
     subscriptions: new SubscriptionStore(db),
-    links: new LinkStore(db),
+    links: new SqliteLinkStore(db),
     prefixHits: () => [],
     providerApiKey: async (provider) => overrides.apiKeys?.[provider],
     autoRouting: overrides.autoRouting ?? false,
@@ -345,17 +347,17 @@ test("routing is listed only with Dari Auto Routing", async () => {
 // failed refresh there would fail a request whose own plan is fine.
 test("a grant with a gateway API key is served that gateway's models by name", async () => {
   const resolver = deps();
-  const app = resolver.links.registerApp("App", ["http://127.0.0.1:1/callback"], false);
+  const app = addTestApp(resolver.links, "App", ["http://127.0.0.1:1/callback"], false);
   const key = resolver.links.addKey("lu_1", "openrouter", "sk-or-test");
   const challenge = pkceChallenge("v".repeat(43));
-  const code = resolver.links.approve({
+  const code = approveTestGrant(resolver.links, {
     subject: "lu_1",
     clientId: app.clientId,
     redirectUri: "http://127.0.0.1:1/callback",
     codeChallenge: challenge,
     credentialIds: [key.id],
   });
-  const tokens = resolver.links.exchangeCode({ clientId: app.clientId, code, redirectUri: "http://127.0.0.1:1/callback", codeChallenge: challenge });
+  const tokens = await linkGrants(resolver.links).exchangeCode({ clientId: app.clientId, code, redirectUri: "http://127.0.0.1:1/callback", codeChallenge: challenge });
   const resolved = await resolveSelfHostedRouter(resolver, request({ apiKey: tokens.accessToken }));
   expect(resolved.provider_keys).toEqual({ openrouter: "sk-or-test" });
   expect(resolved.link_key_gateways).toEqual({ openrouter: null });

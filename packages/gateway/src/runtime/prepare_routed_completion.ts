@@ -19,7 +19,7 @@ import { RequestReporter, type ReportedCandidatePruning } from "../telemetry/rep
 import { RoutingBillingFinalization } from "../telemetry/billing_finalization.js";
 import type { ClientHarness, ProviderCredential, ResolvedRouter, RouterRole } from "../types.js";
 import { requestTags } from "./request_tags.js";
-import { linkGrantAccess } from "./link_grant_access.js";
+import { linkGrantAccess } from "../link/grant_access.js";
 import { rolePrompt, withRoleModel } from "./role_model.js";
 import { strictProviderAccess } from "./strict_provider_access.js";
 import type { RoutedRuntimeReporter } from "./runtime_reporter.js";

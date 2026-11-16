@@ -95,31 +95,26 @@ export type GatewayPlatform = {
 };
 
 /**
- * Dari Link storage and authorization. The gateway serves the OAuth protocol
- * (authorization code with PKCE S256) and validates its parameters; the
- * platform authenticates users and clients, stores apps and grants, and
- * issues tokens.
+ * Dari Link as the gateway's endpoints use it. A platform builds it with
+ * `linkPlatform` (link/service.ts) from its storage and its users, so the
+ * rules are the same everywhere.
  *
  * Methods throw HttpError(401) for a key that cannot act, HttpError(401,
  * `invalid_client`) for a confidential client without its secret, and
  * HttpError(400) with code `invalid_grant`, `refresh_race`, `invalid_client`,
  * or `invalid_request` for a request the protocol refuses.
  *
- * A link token is a gateway key for `resolveRouter`: the platform serves it
- * the default router on only the grant's subscriptions, never an API key or
- * credits, and sets `link_grant_id` and `link_models`. It fails the request
- * with 424 `subscription_exhausted` (and `resets_at`),
- * `subscription_client_mismatch`, or `model_not_granted` when no granted plan
- * can serve, and with 401 `link_token_expired` or `grant_revoked` (and
- * `revoked_by`) for a dead token. A revoked grant's tokens stop at once.
+ * A link token is a gateway key for `resolveRouter`: the platform checks it
+ * with `linkTokenGrant` (live, within its budget) and serves it the default
+ * router on only the grant's subscriptions, never an API key or credits, and
+ * sets `link_grant_id` and `link_models`. It fails the request with 424
+ * `subscription_exhausted` (and `resets_at`), `subscription_client_mismatch`,
+ * or `model_not_granted` when no granted plan can serve. A revoked grant's
+ * tokens stop at once.
  */
 export type LinkPlatform = {
-  /**
-   * How a user approves a grant. A platform with its own signed-in web app
-   * names its consent page, and the gateway sends the authorization request
-   * there; otherwise the gateway serves the approval page itself.
-   */
-  approval: LinkConsentPage | LinkApprovalPage;
+  /** What the gateway's approval and connections pages need. */
+  approval: LinkApprovalPage;
   /**
    * Hosts, besides loopback, an app may register an http (not https) redirect
    * URI on: exact names, or `*.suffix` for any subdomain. For private dev hosts
@@ -181,27 +176,15 @@ export type LinkPlatform = {
 };
 
 /**
- * A consent page the platform serves to its signed-in users. The gateway
- * validates the authorization request and redirects to `consentUrl` with the
- * request's query; the page creates the grant and returns the code to the app.
- */
-export type LinkConsentPage = {
-  consentUrl: string;
-  // Where signed-in users see and manage the apps they connected; a grant's
-  // own entry adds `grant=<id>` to its query.
-  connectedAppsUrl: string;
-};
-
-/**
- * What the gateway's own approval page needs from the platform. The page
- * needs no account: a user connects a plan by signing in to its provider, and
- * the gateway remembers them in a signed cookie as an opaque subject, so their
- * plans are there the next time an app asks.
+ * What the gateway's approval and connections pages need. The pages need no
+ * account: a user connects a plan by signing in to its provider, and the
+ * gateway remembers them in a signed cookie as a subject, so their plans are
+ * there the next time an app asks and they manage their connections there.
  */
 export type LinkApprovalPage = {
   /**
-   * The secret that signs the approval page's cookies. Throws
-   * HttpError(503, `link_not_configured`) when the platform has none.
+   * The secret that signs the pages' cookies. Throws HttpError(503,
+   * `link_not_configured`) when the platform has none.
    */
   sessionSecret(): string;
   /** The kinds of plan a user can connect on the page, in the order offered. */
@@ -210,20 +193,22 @@ export type LinkApprovalPage = {
   keyProviders: readonly LinkKeyProvider[];
   /**
    * Add the user's API key for one of `keyProviders`, replacing their earlier
-   * key for it. Throws HttpError(400) for a key the provider refuses.
+   * key for it; without a subject, the key makes a new user. Throws
+   * HttpError(400) for a key the provider refuses.
    */
-  addKey(subject: string, provider: string, apiKey: string): Promise<{ credentialId: string }>;
+  addKey(subject: string | null, provider: string, apiKey: string): Promise<LinkPlanAdded>;
   /** The plans this user connected and the API keys they added, which an approval chooses among. */
   subscriptions(subject: string): Promise<LinkSubscription[]>;
   /** Start the provider's sign-in for a plan of this kind. */
-  startConnect(subject: string, kind: SubscriptionKind): Promise<LinkConnect>;
+  startConnect(kind: SubscriptionKind): Promise<LinkConnect>;
   /**
    * Finish a sign-in `startConnect` began: with the code the provider showed
    * the user, or for a provider that shows the user a code to enter, with
-   * nothing. Null while the provider still waits on the user. Throws
-   * HttpError(400) for a code the provider refuses or a sign-in that ended.
+   * nothing. Without a subject, the plan makes a new user. Null while the
+   * provider still waits on the user. Throws HttpError(400) for a code the
+   * provider refuses or a sign-in that ended.
    */
-  completeConnect(subject: string, session: string, authorizationResponse: string): Promise<{ credentialId: string } | null>;
+  completeConnect(subject: string | null, session: string, authorizationResponse: string): Promise<LinkPlanAdded | null>;
   /**
    * Forget one of the user's plans or API keys: its stored tokens or key are
    * deleted, every app loses it, and a grant left with nothing is revoked.
@@ -237,7 +222,19 @@ export type LinkApprovalPage = {
   grant(subject: string, grantId: string, clientId: string): Promise<Pick<LinkGrant, "credentialIds" | "budget"> | null>;
   /** Create a grant on the chosen subscriptions and return its one-time code. */
   approve(request: LinkApproval): Promise<{ code: string }>;
+  /** The user's live grants, oldest first, as the connections page shows them. */
+  connections(subject: string): Promise<LinkConnection[]>;
+  /** The user ends one of their grants; false when they have none by that id. */
+  disconnect(subject: string, grantId: string): Promise<boolean>;
+  /** Replace one of the user's grants' budget (empty removes it); false when they have none by that id. */
+  setBudget(subject: string, grantId: string, budget: LinkBudget[]): Promise<boolean>;
 };
+
+/** A plan or API key the user added, and who they are now. */
+export type LinkPlanAdded = { subject: string; credentialId: string };
+
+/** One of a user's grants on the connections page. */
+export type LinkConnection = LinkGrantDetail & { usage: LinkUsageTotals };
 
 /** A model provider or gateway whose API key a user can add on the approval page. */
 export type LinkKeyProvider = { id: string; name: string };
@@ -255,7 +252,7 @@ export type LinkConnect = {
 
 /**
  * The most tokens a grant's app may use in a rolling window, across all of
- * the grant's plans and API keys. See runtime/link_budget.ts for how tokens
+ * the grant's plans and API keys. See link/budget.ts for how tokens
  * are counted.
  */
 export type LinkBudget = { windowMinutes: number; maxTokens: number };
@@ -401,9 +398,6 @@ export type LinkUsage = LinkUsageTotals & {
 export type LinkGrantDetail = Omit<LinkGrant, "credentialIds" | "budget"> & {
   budget: LinkBudgetStanding[];
   subscriptions: LinkSubscription[];
-  // The account that approved the grant; null where accounts have no
-  // identity, as on a self-hosted gateway.
-  user: { email: string | null; name: string | null } | null;
 };
 
 export type ResolveRouterRequest = {

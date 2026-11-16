@@ -65,7 +65,7 @@ docker run -p 8080:8080 \
 | `DARI_GATEWAY_CONFIG` | Router config file. Default `dari-gateway.yaml`. |
 | `DARI_GATEWAY_DB` | SQLite database for subscriptions, Dari Link grants, model lists saved with `dari gateway models`, and conversation state. Default `dari-gateway.db`. Without `DARI_GATEWAY_ENCRYPTION_KEY` it stores subscription tokens in plaintext; protect it like a secret either way. |
 | `DARI_GATEWAY_ENCRYPTION_KEY` | Encrypts the subscription tokens, pending sign-ins, and API keys in the database: a 32-byte key in base64 (`openssl rand -base64 32`). Each value is sealed with AES-256-GCM and bound to its own row, so a copied database, or a token moved into another row, is useless without the key. Keep the key outside the database's storage and backups (a secret manager, not the same disk). To rotate, list the new key first and the old one after a comma, start the gateway once (it re-encrypts everything under the first), then drop the old one. Required for Dari Link: without it the approval page takes nobody's subscriptions or keys. Losing the key loses the stored subscriptions; users connect again. |
-| `DARI_LINK_SESSION_SECRET` | Signs the cookie that remembers a Dari Link approval page's user. Unset, each gateway process makes its own, so a restart forgets who connected which plans. Set it on any gateway that serves Dari Link. |
+| `DARI_LINK_SESSION_SECRET` | Signs the cookie that remembers the user of Dari Link's approval and connections pages. Unset, each gateway process makes its own, so a restart forgets who connected which plans. Set it on any gateway that serves Dari Link. |
 | `DARI_AUTO_ROUTING_API_KEY` | Optional. Select among a router's models with Dari Auto Routing. |
 | `PORT` | Listen port. Default `8080`. |
 | `DARI_GATEWAY_HOST` | Listen address. Default `127.0.0.1`, so only this machine can connect. The container image sets `0.0.0.0`; set it yourself to expose a process on your network. |
@@ -132,7 +132,7 @@ For a server app (a confidential client), the server makes the PKCE pair and sta
 
 ```ts
 // On your server: start a connection and keep the verifier with the session.
-import { createAuthorization } from "@mupt-ai/dari-gateway/link_client";
+import { createAuthorization } from "@mupt-ai/dari-gateway/link/client";
 
 app.post("/api/dari/start", async (req, res) => {
   const { codeVerifier, codeChallenge, state } = await createAuthorization();
@@ -143,7 +143,7 @@ app.post("/api/dari/start", async (req, res) => {
 
 ```ts
 // In your app's bundle. The client uses only fetch (and Web Crypto when it makes PKCE itself).
-import { DariLink } from "@mupt-ai/dari-gateway/link_client";
+import { DariLink } from "@mupt-ai/dari-gateway/link/client";
 
 DariLink.renderButton(document.getElementById("connect-dari"), {
   onClick: async () => {
@@ -167,7 +167,7 @@ DariLink.renderButton(document.getElementById("connect-dari"), {
 Your server checks `state`, redeems the code with the verifier it kept, and keeps the tokens with the user:
 
 ```ts
-import { exchange, linkFetch } from "@mupt-ai/dari-gateway/link_client";
+import { exchange, linkFetch } from "@mupt-ai/dari-gateway/link/client";
 
 const client = { gatewayUrl: "https://routing.dari.dev", clientId, clientSecret };
 const { codeVerifier, state: expected } = req.session.dariLink;
@@ -181,10 +181,10 @@ await dari("/v1/chat/completions", { method: "POST", headers: { "content-type": 
 - A browser-only app (a public client) leaves out `codeChallenge` and `state`: `DariLink.open` makes the PKCE pair in the page and resolves with `{ code, state, codeVerifier }` (`codeVerifier` is null when the server made it). That needs a secure page (https, or localhost); elsewhere it rejects with `insecure_context` before opening anything.
 - Get `clientId` (and a server's `clientSecret`) by registering the app: on hosted Dari under **Settings → Dari Link Apps**, or with the API or CLI in step 1 below.
 - Call `DariLink.open` from the click handler, so the browser allows the popup. It opens the popup before awaiting anything, so its options may be a function returning a promise (`DariLink.open(async () => ({ ...await fetchConfig() }))`), fetched after the popup is open; Safari blocks a popup opened after an `await`. It rejects with a `LinkError`: `access_denied` when the user denies, `popup_closed`, or `popup_blocked`.
-- `onEvent(step)` hears each step the user reaches in the popup (`sign_in`, `connect_subscription` when they have no plan to share yet, `choose_plans`), and `onExit({ error, step })` says where they left before it rejects (`step` is `denied` when they denied, null when they reached none), so you can tell "closed at sign-in" from "closed after seeing the plans". The popup posts each step as `{"type": "dari-link-event", "version": "1", "event": "<step>", "state"}` to your redirect URI's origin; only the result is `{"type": "dari-link", ...}`, with `code` or `error`. A client reading the messages itself should ignore any other type, and any `dari-link` message with neither `code` nor `error`.
+- `onEvent(step)` hears each step the user reaches in the popup (`connect_subscription` when they have no plan to share yet, `choose_plans`), and `onExit({ error, step })` says where they left before it rejects (`step` is `denied` when they denied, null when they reached none), so you can tell "closed while connecting a plan" from "closed after seeing the plans". The popup posts each step as `{"type": "dari-link-event", "version": "1", "event": "<step>", "state"}` to your redirect URI's origin; only the result is `{"type": "dari-link", ...}`, with `code` or `error`. A client reading the messages itself should ignore any other type, and any `dari-link` message with neither `code` nor `error`.
 - The popup posts its result to your window with `response_mode=web_message`, readable only by your redirect URI's origin; `DariLink.open` accepts it only from the popup, from the origin the gateway's metadata names (`web_message_origin`), and with the state it made.
-- Put `DariLink.callback()` on your redirect URI's page. A popup that signed the user in along the way can lose its link to your window; the approval then arrives on that page inside the popup, and `callback()` hands it to the window that opened it and closes the popup. A page whose CSP keeps it from bundling the client can load `<script src="<gateway>/v1/link/callback.js"></script>` (the metadata's `callback_script`) instead. The contract is stable: on the `BroadcastChannel` named `dari-link`, the page posts `{"type": "dari-link", "state", "code"}` or `{"type": "dari-link", "state", "error", "error_description"}`, then closes.
-- Users see and disconnect the apps they connected under **Subscriptions & Keys → Connected Apps** on hosted Dari. Link there with the grant's `manage_url` (that app's row, highlighted) or the metadata's `connected_apps_uri` (the section); both are null on a self-hosted gateway, which has no such page.
+- Put `DariLink.callback()` on your redirect URI's page. A popup that sent the user to a provider's sign-in along the way can lose its link to your window; the approval then arrives on that page inside the popup, and `callback()` hands it to the window that opened it and closes the popup. A page whose CSP keeps it from bundling the client can load `<script src="<gateway>/v1/link/callback.js"></script>` (the metadata's `callback_script`) instead. The contract is stable: on the `BroadcastChannel` named `dari-link`, the page posts `{"type": "dari-link", "state", "code"}` or `{"type": "dari-link", "state", "error", "error_description"}`, then closes.
+- Users see the apps they connected on the gateway's connections page, `/v1/link/connections`, in the browser they connected from: what each shares and used, its budget, and Disconnect, and the plans and keys they can remove. Link there with the grant's `manage_url` (that app's card) or the metadata's `connected_apps_uri`.
 - **Update mode.** To let the user change which plans an app has, open the same flow with `grantId` (`grant_id=<lgr_…>` on the authorize request): the page is titled "Update Plans For <App>", starts with the grant's plans and budget, and saves to the same grant. Its id and every token it issued keep working; the new code redeems for more tokens of it, which you may keep or drop. A `grant_id` that is not this browser's user's grant for this app (another browser, cleared cookies) starts a new connection instead, and leaves that grant as it was.
 - One grant may back several records in your app (one per plan, say) only with a confidential client: a public client's refresh token rotates on every use, so two records holding it race.
 
@@ -202,11 +202,9 @@ await dari("/v1/chat/completions", { method: "POST", headers: { "content-type": 
    - `response_mode=web_message`: for a page opened as a popup. The result is posted to the window that opened it (`{"type": "dari-link", "code" | "error", "state"}`, addressed to the redirect URI's origin) instead of sent on a redirect; a page with no opener left redirects to `redirect_uri` instead. `DariLink.open` does this for you.
    - `grant_id`: update mode (above).
 
-   On hosted Dari the gateway checks the request and sends the user to Dari's own consent page, where they are signed in to their Dari account (Google or an emailed link; a new user gets an account). It shows the app's name, the host it returns to, and who is signed in; the plans the app can use start ticked, and the user can connect another subscription right there. It never asks for a key.
+   The gateway serves the page itself, hosted and self-hosted alike, and it needs no sign-in, like a bank link. A new user sees what connecting means, picks a subscription (Claude, ChatGPT, Meta Muse, OpenCode Go) or a provider to add an API key for, signs in to that provider (Claude shows a code to paste back; the others take a code the page shows and continue on their own), and allows the app with what they connected ticked. Their first plan or key makes them a user (on hosted Dari, a Dari account they never sign in to), and the gateway remembers them in a signed HttpOnly cookie, so the next app that asks finds their plans connected and takes one click. A self-hosted gateway takes their subscriptions and keys only when it encrypts what it stores (`DARI_GATEWAY_ENCRYPTION_KEY`). A plan a user connects this way is theirs alone: it serves only the grants they approve, never a gateway key, and the gateway owner's own plans are never offered on the page.
 
-   The self-hosted gateway serves the page itself, and it needs no account, like a bank link. A new user sees what connecting means, picks a subscription (Claude, ChatGPT, Meta Muse, OpenCode Go) or a provider to add an API key for, signs in to that provider (Claude shows a code to paste back; the others take a code the page shows and continue on their own), and allows the app with what they connected ticked. The gateway remembers them in a signed HttpOnly cookie, so the next app that asks finds their plans connected and takes one click. The gateway takes their subscriptions and keys only when it encrypts what it stores (`DARI_GATEWAY_ENCRYPTION_KEY`). A plan a user connects this way is theirs alone: it serves only the grants they approve, never a gateway key, and the gateway owner's own plans are never offered on the page.
-
-   Either way the user approves; they can later cap the tokens the app may use per 5 hours and per week (see **Budgets**). The app gets `code` and `state`, or `error=access_denied`, on `redirect_uri` or as the popup's message.
+   The user approves; they can later cap the tokens the app may use per 5 hours and per week (see **Budgets**). The app gets `code` and `state`, or `error=access_denied`, on `redirect_uri` or as the popup's message.
 3. `POST /v1/link/token` (form or JSON; CORS open) with `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier` returns an access token (`dlk_at_…`, one hour) and a refresh token (`dlk_rt_…`), with the grant's fields below. `grant_type=refresh_token` with `refresh_token` returns a new access token:
    - Every access token lives until its own expiry, so requests in flight on an older one complete.
    - A public client's refresh token rotates on every use. Presenting the rotated one again within a minute is refused as `invalid_grant` with `"error_code": "refresh_race"` and nothing is revoked: use the tokens the winning request received. Presenting it later revokes the grant.
@@ -217,7 +215,7 @@ await dari("/v1/chat/completions", { method: "POST", headers: { "content-type": 
    - `opus`, `sonnet`, `haiku`, and the other Anthropic tier names route, as `dari/routing` does.
    - `POST /v1/messages/count_tokens` is not served: it answers an Anthropic-shaped 404, on which Claude Code estimates locally.
    - A non-streamed response carries `X-Dari-Usage: {"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"}` (input excludes cache reads and writes) beside `X-Dari-Selected-Model` and `X-Dari-Thinking-Level`, the same whatever protocol the app speaks. A stream reports usage in its protocol's own final event; `GET /v1/link/usage` has both.
-5. The app ends its grant with `POST /v1/link/revoke` (RFC 7009: `client_id` and `token`, any of the grant's tokens; always 200). The user lists and revokes grants under **Subscriptions & Keys → Connected Apps** on hosted Dari, or with `GET` and `DELETE /v1/link/grants[/<id>]` (with their key), and changes a grant's budget there or with `PUT /v1/link/grants/<id>/budget`. A revoked grant's tokens, access tokens included, stop working at once.
+5. The app ends its grant with `POST /v1/link/revoke` (RFC 7009: `client_id` and `token`, any of the grant's tokens; always 200). The user disconnects an app and changes its budget on the connections page. With a key, `GET` and `DELETE /v1/link/grants[/<id>]` and `PUT /v1/link/grants/<id>/budget` do the same: on hosted Dari a personal key manages its own user's grants, and on a self-hosted gateway a gateway key manages every grant. A revoked grant's tokens, access tokens included, stop working at once.
 
 **The grant.** The token response and `GET /v1/link/grant` (bearer: the access token) describe the grant:
 
@@ -226,8 +224,7 @@ await dari("/v1/chat/completions", { method: "POST", headers: { "content-type": 
   "grant_id": "lgr_…", "client_id": "lnk_…", "app_name": "Notes", "created_at": "…", "scope": "route",
   "budget": [{"window_minutes": 10080, "max_tokens": 5000000, "used_tokens": 312000, "resets_at": null}],
   "state": "ready", "available_at": null,
-  "user": {"email": "you@example.com", "name": "You"},
-  "manage_url": "https://app.dari.dev/connected-apps&grant=lgr_…",
+  "manage_url": "https://routing.dari.dev/v1/link/connections#lgr_…",
   "plans": [{
     "id": "…", "kind": "openai_codex", "plan": "ChatGPT Plus/Pro", "label": "a@example.com", "account_email": "a@example.com",
     "serves": "any_app", "state": "ready", "available_at": null, "unavailable_until": null,
@@ -239,11 +236,11 @@ await dari("/v1/chat/completions", { method: "POST", headers: { "content-type": 
 }
 ```
 
-`serves` is `any_app`, `claude_code_only`, or `muse_code_only`. A plan's `state` is the one answer to "can this plan serve the app now": `ready`, or `plan_limit`, the plan is at its own usage limit; `available_at` is when it serves again (null when ready or unknown). The grant's own `state` is `budget_limit` while a window of its budget is at its cap, until `available_at` (see **Budgets**). `user` is the Dari account that approved the grant (null on a self-hosted gateway, which has no accounts), so an app can show "Dari · you@example.com" even when the plans belong to other accounts. `label` is the user's name for the plan, else its account. `usage` lists the quota windows the plan last reported (five hours and a week for these plans), each with the share used from 0 to 1 and when it resets; it is empty until the plan has served a request through Dari (any request, not only this app's, including the user's own Claude Code or Codex through Dari), because plans report their windows only on responses. Dari does not read a fresh plan's windows when it connects: that takes a call to the provider with the user's credential that neither Claude nor ChatGPT documents for third parties, so a just-connected plan shows no usage until its first request. A plan's `models` are those it serves its clients now, each with the name a request uses (`id`) and the catalog's display name (`name`); the top-level `models` are what a plain API client can name now, and `routes` says whether `dari/routing` serves it. `GET /v1/models` with a link token lists the same models in the OpenAI list shape, empty when none can serve. `GET /v1/link/grant` makes no provider call, so it is the cheap check before a long run: a dead grant answers 401, and `unavailable_until` and `usage` say whether the plans have room.
+`serves` is `any_app`, `claude_code_only`, or `muse_code_only`. A plan's `state` is the one answer to "can this plan serve the app now": `ready`, or `plan_limit`, the plan is at its own usage limit; `available_at` is when it serves again (null when ready or unknown). The grant's own `state` is `budget_limit` while a window of its budget is at its cap, until `available_at` (see **Budgets**). `label` is the user's name for the plan, else its account. `usage` lists the quota windows the plan last reported (five hours and a week for these plans), each with the share used from 0 to 1 and when it resets; it is empty until the plan has served a request through Dari (any request, not only this app's, including the user's own Claude Code or Codex through Dari), because plans report their windows only on responses. Dari does not read a fresh plan's windows when it connects: that takes a call to the provider with the user's credential that neither Claude nor ChatGPT documents for third parties, so a just-connected plan shows no usage until its first request. A plan's `models` are those it serves its clients now, each with the name a request uses (`id`) and the catalog's display name (`name`); the top-level `models` are what a plain API client can name now, and `routes` says whether `dari/routing` serves it. `GET /v1/models` with a link token lists the same models in the OpenAI list shape, empty when none can serve. `GET /v1/link/grant` makes no provider call, so it is the cheap check before a long run: a dead grant answers 401, and `unavailable_until` and `usage` say whether the plans have room.
 
-**Budgets.** A user can cap the tokens an app may use per five hours and per week: on hosted Dari's Connected Apps page, or with `PUT /v1/link/grants/<id>/budget` and `{"budget": [{"window_minutes": 10080, "max_tokens": 5000000}]}` (the user's key; `window_minutes` is `300` or `10080`; `[]` removes it). The budget covers the whole grant: all its plans and API keys together.
+**Budgets.** A user can cap the tokens an app may use per five hours and per week: on the connections page, or with `PUT /v1/link/grants/<id>/budget` and `{"budget": [{"window_minutes": 10080, "max_tokens": 5000000}]}` (the user's key; `window_minutes` is `300` or `10080`; `[]` removes it). The budget covers the whole grant: all its plans and API keys together.
 
-Tokens are what Dari recorded for the grant's requests, child tokens' included: input + output + cache read + cache write, the same total `GET /v1/link/usage` and the Connected Apps page show. Windows roll: a window's `used_tokens` are those of requests received in its last `window_minutes`. Before each request, a grant with any window at its cap is refused with 424 `grant_budget_exhausted`, with `resets_at` (and `Retry-After`) set to when enough of the window's oldest requests roll off to bring it under the cap; a budget window's `resets_at` is that same time, and null while under the cap. A request is counted once it finishes, so requests in flight may take a window past its cap.
+Tokens are what Dari recorded for the grant's requests, child tokens' included: input + output + cache read + cache write, the same total `GET /v1/link/usage` and the connections page show. Windows roll: a window's `used_tokens` are those of requests received in its last `window_minutes`. Before each request, a grant with any window at its cap is refused with 424 `grant_budget_exhausted`, with `resets_at` (and `Retry-After`) set to when enough of the window's oldest requests roll off to bring it under the cap; a budget window's `resets_at` is that same time, and null while under the cap. A request is counted once it finishes, so requests in flight may take a window past its cap.
 
 **Usage.** Every request a grant's tokens make, child tokens' included, streamed or not, is recorded once it finishes (a moment after the response). `GET /v1/link/usage` (bearer: the access token; CORS open) reads it back:
 
@@ -298,7 +295,7 @@ A sandbox given a child token needs to reach only the gateway's host (for hosted
 
 Error text replaces anything shaped like an `sk-` key with `sk-…`, and responses replace the serving plan's own credential wherever it appears.
 
-**Client.** `@mupt-ai/dari-gateway/link_client` (fetch and Web Crypto only; browsers, Node, Bun, Deno; erasable TypeScript only, so `node` runs the `.ts` file as is) has `DariLink` (`open`, `callback`, `renderButton`), `createAuthorization` (a PKCE pair and state for your server), `registerClient`, `authorizeUrl` (makes the PKCE verifier and state; takes `clients`, `plans`, `purposes`, and `grantId`), `exchange`, `refresh`, `childToken`, `revoke`, and `linkFetch`. Every call takes `clientSecret` for a confidential client. `linkFetch` is a fetch that treats your storage as the source of truth: it reads the tokens with your `loadTokens` on every call, attaches the access token, refreshes it before it expires or once after a 401 for an expired token with one refresh at a time, and passes every new token set to your `saveTokens` before using it. `childToken` takes the same `loadTokens` and `saveTokens` instead of an `accessToken`, refreshing the grant's access token as needed. When the user is unlinked:
+**Client.** `@mupt-ai/dari-gateway/link/client` (fetch and Web Crypto only; browsers, Node, Bun, Deno; erasable TypeScript only, so `node` runs the `.ts` file as is) has `DariLink` (`open`, `callback`, `renderButton`), `createAuthorization` (a PKCE pair and state for your server), `registerClient`, `authorizeUrl` (makes the PKCE verifier and state; takes `clients`, `plans`, `purposes`, and `grantId`), `exchange`, `refresh`, `childToken`, `revoke`, and `linkFetch`. Every call takes `clientSecret` for a confidential client. `linkFetch` is a fetch that treats your storage as the source of truth: it reads the tokens with your `loadTokens` on every call, attaches the access token, refreshes it before it expires or once after a 401 for an expired token with one refresh at a time, and passes every new token set to your `saveTokens` before using it. `childToken` takes the same `loadTokens` and `saveTokens` instead of an `accessToken`, refreshing the grant's access token as needed. When the user is unlinked:
 
 - `loadTokens` returning null makes both throw `LinkError` `not_linked`, with no call to the gateway;
 - a `LinkError` with code `invalid_grant` from a refresh means the grant is gone;
@@ -309,7 +306,7 @@ Each means: show the user Reconnect. `usage({ fetcher: gatewayFetch, tags, since
 A server-side integration, start to finish:
 
 ```ts
-import { authorizeUrl, childToken, exchange, linkFetch, revoke } from "@mupt-ai/dari-gateway/link_client";
+import { authorizeUrl, childToken, exchange, linkFetch, revoke } from "@mupt-ai/dari-gateway/link/client";
 
 // Registered once, under Settings → Dari Link Apps or with POST /v1/link/register.
 const client = { gatewayUrl, clientId, clientSecret: process.env.DARI_LINK_CLIENT_SECRET };
@@ -350,7 +347,7 @@ await revoke({ ...client, token: (await db.loadTokens(userId)).refreshToken });
 - treat `invalid_grant`, `grant_revoked`, and `not_linked` as unlinked: stop the agent and show Reconnect.
 
 ```ts
-import { LinkError, linkFetch } from "@mupt-ai/dari-gateway/link_client";
+import { LinkError, linkFetch } from "@mupt-ai/dari-gateway/link/client";
 
 const DROP = new Set(["host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade", "te", "trailer", "authorization", "x-api-key"]);
 

@@ -2,16 +2,17 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 
-import { handleLinkRequest, pkceChallenge } from "../ingress/link.js";
-import { parseGatewayConfig } from "./config.js";
-import { LinkStore } from "./link_store.js";
-import { createSelfHostedPlatform } from "./platform.js";
-import { PrefixStore } from "./prefix_store.js";
-import { RouterModelStore } from "./router_models.js";
-import { SecretBox } from "./secret_box.js";
-import { SessionPinStore } from "./session_pin_store.js";
-import { SubscriptionStore } from "./subscriptions/index.js";
-import { codexAccessToken, fakeFetch, jsonResponse } from "./subscriptions/test_support.js";
+import { handleLinkRequest, pkceChallenge } from "./endpoints.js";
+import { parseGatewayConfig } from "../self_host/config.js";
+import { SqliteLinkStore } from "./sqlite_store.js";
+import { createSelfHostedPlatform } from "../self_host/platform.js";
+import { PrefixStore } from "../self_host/prefix_store.js";
+import { RouterModelStore } from "../self_host/router_models.js";
+import { SecretBox } from "../self_host/secret_box.js";
+import { SessionPinStore } from "../self_host/session_pin_store.js";
+import { SubscriptionStore } from "../self_host/subscriptions/index.js";
+import { codexAccessToken, fakeFetch, jsonResponse } from "../self_host/subscriptions/test_support.js";
+import { addTestApp, approveTestGrant } from "./test_support.js";
 
 const BASE = "http://gateway.test";
 const REDIRECT_URI = "http://127.0.0.1:9999/callback";
@@ -22,7 +23,7 @@ function gateway(responses: Array<() => Response>) {
   const db = new Database(":memory:");
   const secrets = new SecretBox([randomBytes(32)]);
   const subscriptions = new SubscriptionStore(db, secrets);
-  const links = new LinkStore(db, secrets);
+  const links = new SqliteLinkStore(db, secrets);
   const platform = createSelfHostedPlatform({
     config: parseGatewayConfig({ routers: { default: { models: ["anthropic/claude-sonnet-5-5", "openai/gpt-5.5"] } } }),
     routerModels: new RouterModelStore(db),
@@ -36,7 +37,7 @@ function gateway(responses: Array<() => Response>) {
     env: {},
     fetch: fakeFetch(responses),
   });
-  const app = links.registerApp("Notes App", [REDIRECT_URI], false);
+  const app = addTestApp(links, "Notes App", [REDIRECT_URI], false);
   const params = {
     response_type: "code",
     client_id: app.clientId,
@@ -69,6 +70,9 @@ function gateway(responses: Array<() => Response>) {
     },
     submit: async (form: Record<string, string>, headers: Record<string, string> = {}) =>
       await send(new Request(`${BASE}/v1/link/authorize`, { method: "POST", headers, body: new URLSearchParams({ ...params, ...form }) })),
+    connections: async () => await (await send(new Request(`${BASE}/v1/link/connections`))).text(),
+    manage: async (form: Record<string, string>) =>
+      await send(new Request(`${BASE}/v1/link/connections`, { method: "POST", body: new URLSearchParams(form) })),
   };
 }
 
@@ -133,7 +137,7 @@ test("a new user connects plans by signing in to their providers, then allows th
   expect(browser.subscriptions.withIds(new Set(ids))).toHaveLength(2);
   await browser.submit({ decision: "remove", remove_id: ids[0]!, csrf });
   expect(browser.subscriptions.withIds(new Set(ids)).map((plan) => plan.id)).toEqual([ids[1]!]);
-  expect(browser.links.grants()).toEqual([]);
+  expect(browser.links.grants(null)).toEqual([]);
 
   browser.cookies.clear();
   expect(await browser.page()).toContain("Uses Dari To Connect");
@@ -155,7 +159,7 @@ test("the page takes no submission another site sends", async () => {
 test("without an encryption key the page connects nothing and says why", async () => {
   const db = new Database(":memory:");
   const subscriptions = new SubscriptionStore(db);
-  const links = new LinkStore(db);
+  const links = new SqliteLinkStore(db);
   const platform = createSelfHostedPlatform({
     config: parseGatewayConfig({ routers: { default: { models: ["openai/gpt-5.5"] } } }),
     routerModels: new RouterModelStore(db),
@@ -169,7 +173,7 @@ test("without an encryption key the page connects nothing and says why", async (
     env: {},
     fetch: fakeFetch([]),
   });
-  const app = links.registerApp("Notes App", [REDIRECT_URI], false);
+  const app = addTestApp(links, "Notes App", [REDIRECT_URI], false);
   const submit = async (form: Record<string, string>) =>
     await (await handleLinkRequest(new Request(`${BASE}/v1/link/authorize`, {
       method: "POST",
@@ -186,4 +190,46 @@ test("without an encryption key the page connects nothing and says why", async (
   expect(await submit({ decision: "add_key", key_provider: "openai", api_key: "sk-test" })).toContain("DARI_GATEWAY_ENCRYPTION_KEY");
   expect(subscriptions.owned("lu_any")).toEqual([]);
   expect(db.query("SELECT COUNT(*) AS n FROM link_api_keys").get()).toEqual({ n: 0 });
+});
+
+// The user manages what they connected on the connections page, known by the
+// same cookie: each app's budget, Disconnect, and their plans.
+test("the connections page sets a grant's budget, disconnects it, and removes plans", async () => {
+  const browser = gateway([
+    jsonResponse({ access_token: "sk-ant-oat01-a", refresh_token: "r", expires_in: 3600, account: { email_address: "me@example.com" } }),
+  ]);
+  expect(await browser.connections()).toContain("No apps are connected in this browser");
+
+  await browser.submit({ connect: "anthropic_claude_code" });
+  const claude = await browser.page();
+  const state = new URL(/href="([^"]+)"/.exec(claude)![1]!.replaceAll("&amp;", "&")).searchParams.get("state")!;
+  await browser.submit({ decision: "complete", authorization_response: `code#${state}` });
+  const choose = await browser.page();
+  const id = /name="credential_id" value="([^"]+)"/.exec(choose)![1]!;
+  const csrf = /name="csrf" value="([^"]+)"/.exec(choose)![1]!;
+  await browser.submit({ decision: "approve", csrf, credential_id: id });
+  const [grant] = browser.links.grants(null);
+
+  const page = await browser.connections();
+  expect(page).toContain("Notes App");
+  expect(page).toContain("Shares Claude");
+  expect(page).toContain(`id="${grant!.id}"`);
+
+  // A limit is whole tokens; a forged form changes nothing.
+  expect(await (await browser.manage({ csrf, grant_id: grant!.id, decision: "budget", max_300: "lots" })).text())
+    .toContain("whole number of tokens");
+  await browser.manage({ csrf: "forged", grant_id: grant!.id, decision: "budget", max_300: "1000" });
+  expect(browser.links.grant(grant!.id)!.budget).toEqual([]);
+  expect((await browser.manage({ csrf, grant_id: grant!.id, decision: "budget", max_300: "1,000", max_10080: "" })).status).toBe(303);
+  expect(browser.links.grant(grant!.id)!.budget).toEqual([{ windowMinutes: 300, maxTokens: 1000 }]);
+  expect(await browser.connections()).toContain('value="1000"');
+
+  await browser.manage({ csrf, grant_id: grant!.id, decision: "disconnect" });
+  expect(browser.links.grants(null)).toEqual([]);
+  expect(await browser.connections()).toContain("No apps are connected.");
+
+  // Removing a plan asks once.
+  expect(await (await browser.manage({ csrf, remove_id: id, decision: "remove" })).text()).toContain("Remove Claude");
+  await browser.manage({ csrf, remove_id: id, decision: "remove_confirmed" });
+  expect(browser.subscriptions.withIds(new Set([id]))).toEqual([]);
 });

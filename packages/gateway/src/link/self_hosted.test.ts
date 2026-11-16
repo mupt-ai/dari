@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 
-import { pkceChallenge } from "../ingress/link.js";
+import { pkceChallenge } from "./endpoints.js";
 import {
   authorizeUrl,
   childToken,
@@ -15,10 +15,10 @@ import {
   usage as linkUsage,
   type LinkTokenSet,
   type LinkUsage,
-} from "../link_client.js";
-import { startStubGateway, type StubGateway } from "./stub_gateway.js";
-import { anthropicReply, startSubscriptionGateway } from "./subscription_test_gateway.js";
-import { codexReply } from "./stub_gateway.js";
+} from "./client.js";
+import { startStubGateway, type StubGateway } from "../self_host/stub_gateway.js";
+import { anthropicReply, startSubscriptionGateway } from "../self_host/subscription_test_gateway.js";
+import { codexReply } from "../self_host/stub_gateway.js";
 
 let stop: (() => Promise<void>) | undefined;
 afterEach(async () => {
@@ -715,8 +715,7 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
     plans: [],
     models: [],
     routes: true,
-    user: null,
-    manageUrl: null,
+    manageUrl: "",
   };
   const storage = { gatewayUrl: gateway.baseUrl, clientId, loadTokens: () => stored, saveTokens: (next: LinkTokenSet) => { stored = next; } };
   const viaClient = await linkUsage({ ...storage, tags: { run: "r1", trial: "3" } });
@@ -1228,7 +1227,7 @@ test("the stub gives its user API keys, and a gateway key serves any model of it
 // The stub gateway as a process, for test runners that are not Bun: one JSON
 // line to find it by, and the provider calls it made at /served.
 test("the stub gateway runs as a process and reports the calls it served", async () => {
-  const stub = Bun.spawn([process.execPath, new URL("./stub_main.ts", import.meta.url).pathname, "--plans", "openai_codex"], {
+  const stub = Bun.spawn([process.execPath, new URL("../self_host/stub_main.ts", import.meta.url).pathname, "--plans", "openai_codex"], {
     stdout: "pipe",
     stderr: "inherit",
   });

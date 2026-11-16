@@ -14,15 +14,11 @@ import { codexModelConfig, subscriptionClient, subscriptionModelProvider } from 
 import { CANONICAL_MODELS } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
 import {
-  budgetExhausted,
-  linkGrantRevoked,
   linkGrantUnavailableError,
-  linkTokenExpired,
-  linkUnavailableError,
   modelNotServed,
   plansExhausted,
   plansForAnotherClient,
-} from "../models/link_errors.js";
+} from "../link/errors.js";
 import { registeredModelPrice } from "../providers/pi.js";
 import type { LinkUnavailable, ProviderKeySource, ResolvedRouter } from "../types.js";
 import {
@@ -32,8 +28,9 @@ import {
   type RouterConfig,
   type RouterModelConfig,
 } from "./config.js";
-import type { ActiveLinkGrant, LinkStore } from "./link_store.js";
-import { overBudgetUntil } from "../runtime/link_budget.js";
+import type { ActiveLinkGrant } from "../link/grants.js";
+import type { SqliteLinkStore } from "../link/sqlite_store.js";
+import { linkTokenGrant } from "../link/service.js";
 import type { RouterModelStore } from "./router_models.js";
 import {
   activeModelHolds,
@@ -55,7 +52,7 @@ export type SelfHostedResolverDeps = {
   routerModels: RouterModelStore;
   gatewayKeys: readonly string[];
   subscriptions: SubscriptionStore;
-  links: LinkStore;
+  links: SqliteLinkStore;
   prefixHits: (args: {
     routerId: string;
     prefixHashes: readonly string[];
@@ -94,17 +91,12 @@ export async function resolveSelfHostedRouter(
   request: ResolveRouterRequest,
 ): Promise<ResolvedRouter> {
   const keyIndex = gatewayKeyIndex(deps.gatewayKeys, request.apiKey);
-  const grant = keyIndex === null ? activeLinkGrant(deps.links, request.apiKey) : null;
+  const grant = keyIndex === null ? await linkTokenGrant(deps.links, request.apiKey) : null;
   if (keyIndex === null && grant === null) {
     throw new HttpError(401, "Missing or invalid gateway key.", "authentication_error");
   }
   if (grant !== null && request.routerId !== DEFAULT_ROUTER_ALIAS) {
     throw new HttpError(403, "Dari Link tokens serve only the default router.", "permission_denied");
-  }
-  if (grant !== null) {
-    // A grant at its token budget serves nothing until its window rolls on.
-    const back = overBudgetUntil(deps.links.budgetStandings(grant.id));
-    if (back !== undefined) throw linkUnavailableError(budgetExhausted(back));
   }
   const configured = deps.config.routers[request.routerId];
   if (configured === undefined) {
@@ -270,13 +262,6 @@ export async function resolveSelfHostedRouter(
 
 // The grant a live link token belongs to, or null for a token that is not
 // one. A dead token is refused with the reason.
-function activeLinkGrant(links: LinkStore, token: string): ActiveLinkGrant | null {
-  const auth = links.authenticate(token);
-  if (auth === null) return null;
-  if (auth.status === "expired") throw linkTokenExpired();
-  if (auth.status === "revoked") throw linkGrantRevoked(auth.revokedBy, auth.revokedAt);
-  return auth.grant;
-}
 
 /**
  * The models a grant's request may be served: a child token's one model, or

@@ -2,7 +2,7 @@ import {
   handleResponses,
   handleResponsesWebSocketFallback,
 } from "../ingress/codex.js";
-import { handleLinkRequest, LINK_METADATA_PATH, LINK_ROUTE_PREFIX } from "../ingress/link.js";
+import { handleLinkRequest, LINK_METADATA_PATH, LINK_ROUTE_PREFIX } from "../link/endpoints.js";
 import { handleModels } from "../ingress/models.js";
 import { handleMuseCodeModels } from "../ingress/muse_models.js";
 import { handleChatCompletions } from "../ingress/chat_completions.js";

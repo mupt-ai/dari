@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 import { randomBytes } from "node:crypto";
 
-import { LinkStore } from "./link_store.js";
+import { SqliteLinkStore } from "../link/sqlite_store.js";
 import { SecretBox, secretBoxFromEnv } from "./secret_box.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 import { tokens } from "./subscriptions/test_support.js";
@@ -17,7 +17,7 @@ test("with a key, no token, pending sign-in, or API key is readable in the datab
   const db = new Database(":memory:");
   const box = new SecretBox([randomBytes(32)]);
   const subscriptions = new SubscriptionStore(db, box);
-  const links = new LinkStore(db, box);
+  const links = new SqliteLinkStore(db, box);
   const plan = subscriptions.connect(tokens({ accessToken: "sk-ant-oat01-secret", refreshToken: "sk-ant-ort01-secret" }), null)!;
   const session = subscriptions.createSession({
     provider: "anthropic_claude_code",
@@ -66,12 +66,12 @@ test("turning encryption on seals what was stored, and a new first key re-seals 
   const db = new Database(":memory:");
   const plain = new SubscriptionStore(db);
   const plan = plain.connect(tokens({ accessToken: "sk-ant-oat01-old" }), null)!;
-  new LinkStore(db).addKey("lu_1", "openai", "sk-openai-old");
+  new SqliteLinkStore(db).addKey("lu_1", "openai", "sk-openai-old");
   expect(dump(db)).toContain("sk-ant-oat01-old");
 
   const first = randomBytes(32);
   const sealed = new SubscriptionStore(db, new SecretBox([first]));
-  const links = new LinkStore(db, new SecretBox([first]));
+  const links = new SqliteLinkStore(db, new SecretBox([first]));
   expect(dump(db)).not.toContain("sk-ant-oat01-old");
   expect(dump(db)).not.toContain("sk-openai-old");
   expect(sealed.get(plan.id)!.accessToken).toBe("sk-ant-oat01-old");

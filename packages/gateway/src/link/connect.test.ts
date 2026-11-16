@@ -8,8 +8,8 @@ import {
   type LinkBrowser,
   type LinkExit,
   type LinkStep,
-} from "../link_client.js";
-import { startStubGateway, type StubGateway } from "./stub_gateway.js";
+} from "./client.js";
+import { startStubGateway, type StubGateway } from "../self_host/stub_gateway.js";
 
 // Connect with Dari as an app builds it: update mode, plan states, the stub's
 // approval driver and error states, and the popup's step events.
@@ -69,9 +69,8 @@ test("update mode changes a grant's plans in place, and its tokens keep working"
   const [a, b] = gateway.planIds as [string, string];
   const first = await connect(gateway, { credentialIds: [a] });
   expect(first.grantId).toStartWith("lgr_");
-  // A self-hosted gateway has no accounts or Connected Apps page.
-  expect(first.user).toBeNull();
-  expect(first.manageUrl).toBeNull();
+  // The user manages the grant on the gateway's connections page.
+  expect(first.manageUrl).toBe(`${gateway.baseUrl}/v1/link/connections#${first.grantId}`);
 
   // The page opens on the grant as it stands: titled for an update, its plan ticked.
   const request = await authorizeUrl({ gatewayUrl: gateway.baseUrl, clientId: gateway.clientId, redirectUri: REDIRECT_URI, grantId: first.grantId! });
@@ -236,7 +235,7 @@ test("the gateway serves the callback script, and the stub approves through its 
   const gateway = await start(["openai_codex"]);
   const metadata = (await (await fetch(`${gateway.baseUrl}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
   expect(metadata.callback_script).toBe(`${gateway.baseUrl}/v1/link/callback.js`);
-  expect(metadata.connected_apps_uri).toBeNull();
+  expect(metadata.connected_apps_uri).toBe(`${gateway.baseUrl}/v1/link/connections`);
   const script = await fetch(`${gateway.baseUrl}/v1/link/callback.js`);
   expect(script.headers.get("content-type")).toStartWith("text/javascript");
   const text = await script.text();
@@ -251,9 +250,9 @@ test("the gateway serves the callback script, and the stub approves through its 
   expect(body.target_origin).toBe(new URL(REDIRECT_URI).origin);
 });
 
-// link_client.ts uses only erasable TypeScript, so Node runs it as is.
+// client.ts uses only erasable TypeScript, so Node runs it as is.
 test.skipIf(Bun.which("node") === null)("Node imports the link client with type stripping", () => {
-  const path = new URL("../link_client.ts", import.meta.url).pathname;
+  const path = new URL("./client.ts", import.meta.url).pathname;
   const run = Bun.spawnSync([
     "node",
     "--input-type=module",

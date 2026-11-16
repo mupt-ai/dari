@@ -4,7 +4,7 @@
 // write so the immediate next turn can see next_model. Reporting failures are
 // always logged and swallowed.
 
-import { linkRequestRecorded, linkRequestStarted } from "../runtime/link_in_flight.js";
+import { linkRequestRecorded, linkRequestStarted } from "../link/in_flight.js";
 import {
   selectPrefixHit,
   type CandidateCostEstimate,

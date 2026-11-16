@@ -3,7 +3,7 @@ import { anthropicMessagesResponse } from "../protocol/output/anthropic_messages
 import { anthropicMessagesSseStream } from "../protocol/output/anthropic_messages_stream.js";
 import { anthropicToken } from "../http/auth.js";
 import { errorResponseHeaders, HttpError, normalizeError } from "../http/errors.js";
-import { LINK_GRANT_ERROR_CODES, LINK_TOKEN_ERROR_CODES } from "../models/link_errors.js";
+import { LINK_GRANT_ERROR_CODES, LINK_TOKEN_ERROR_CODES } from "../link/errors.js";
 import { captureRequestError } from "../observability/errors.js";
 import { anthropicMessagesToInteraction } from "../protocol/input/anthropic_messages.js";
 import { explicitModelId, linkTokenModel } from "../protocol/input/router_model.js";

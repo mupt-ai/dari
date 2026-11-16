@@ -8,7 +8,7 @@
  * popup, the user signs in, picks plans, and approves, and the popup closes.
  *
  * ```ts
- * import { DariLink } from "@mupt-ai/dari-gateway/link_client";
+ * import { DariLink } from "@mupt-ai/dari-gateway/link/client";
  *
  * button.onclick = async () => {
  *   const { code, codeVerifier } = await DariLink.open({ gatewayUrl, clientId, redirectUri });
@@ -19,7 +19,7 @@
  * Without a popup, send the user to the approval URL yourself:
  *
  * ```ts
- * import { authorizeUrl, exchange, linkFetch } from "@mupt-ai/dari-gateway/link_client";
+ * import { authorizeUrl, exchange, linkFetch } from "@mupt-ai/dari-gateway/link/client";
  *
  * const { url, codeVerifier, state } = await authorizeUrl({ gatewayUrl, clientId, redirectUri });
  * // Keep codeVerifier and state with the user's session, send them to `url`;
@@ -95,10 +95,8 @@ export type LinkTokenSet = {
   plans: LinkPlan[];
   // The models a plain API client can name now.
   models: LinkModel[];
-  // The Dari account that approved the grant, when accounts have one.
-  user: { email: string | null; name: string | null } | null;
-  // Where the user manages this connection on Dari; null on a self-hosted gateway.
-  manageUrl: string | null;
+  // The connections page, where the user manages this connection.
+  manageUrl: string;
   // Whether `dari/routing` serves a plain API client now.
   routes: boolean;
 };
@@ -254,14 +252,14 @@ const POPUP_POLL_MS = 400;
 // A closed popup may have just handed its result to `completeLink`.
 const POPUP_CLOSED_GRACE_MS = 300;
 const LINK_CHANNEL = "dari-link";
-const STEPS: readonly LinkStep[] = ["sign_in", "connect_subscription", "choose_plans"];
+const STEPS: readonly LinkStep[] = ["connect_subscription", "choose_plans"];
 
 /**
- * The approval step the user reached in the popup: `sign_in`,
- * `connect_subscription` (no plan to share yet), or `choose_plans`. A user who
- * denies leaves at `denied`.
+ * The approval step the user reached in the popup: `connect_subscription`
+ * (no plan to share yet) or `choose_plans`. A user who denies leaves at
+ * `denied`.
  */
-export type LinkStep = "sign_in" | "connect_subscription" | "choose_plans" | "denied";
+export type LinkStep = "connect_subscription" | "choose_plans" | "denied";
 
 /** Why the popup ended without a code, and the step the user left at (null before any). */
 export type LinkExit = { error: string; step: LinkStep | null };
@@ -478,7 +476,7 @@ export function renderButton(
 export const DariLink = { open: openLink, callback: completeLink, renderButton };
 
 // The origin the approval page posts its result from, as the gateway's
-// metadata names it: the gateway itself, or its platform's consent page.
+// metadata names it: the gateway's public origin.
 async function approvalOrigin(args: Gateway): Promise<string> {
   const response = await (args.fetch ?? fetch)(endpoint(args.gatewayUrl, "/.well-known/oauth-authorization-server"));
   const origin = (await json(response)).web_message_origin;
@@ -733,8 +731,7 @@ function tokenSet(payload: Record<string, unknown>): LinkTokenSet {
     plans: Array.isArray(payload.plans) ? payload.plans as LinkPlan[] : [],
     models: Array.isArray(payload.models) ? payload.models as LinkModel[] : [],
     routes: payload.routes === true,
-    user: typeof payload.user === "object" && payload.user !== null ? payload.user as LinkTokenSet["user"] : null,
-    manageUrl: typeof payload.manage_url === "string" ? payload.manage_url : null,
+    manageUrl: String(payload.manage_url),
   };
 }
 

@@ -1,7 +1,7 @@
 import type { RoutingCandidate, RoutingDecision } from "@mupt-ai/dari-router/policy-engine";
 
 import { HttpError } from "../http/errors.js";
-import { modelNotServed } from "../models/link_errors.js";
+import { modelNotServed } from "../link/errors.js";
 import { explicitModelId } from "../protocol/input/router_model.js";
 import type { RoutedDecision } from "../strategies/route_decision.js";
 import type { PreparedRoutedCompletion } from "./prepare_routed_completion.js";

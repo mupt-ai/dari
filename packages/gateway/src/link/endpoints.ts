@@ -1,14 +1,13 @@
 /* Dari Link: OAuth 2.0 authorization code grants with PKCE (S256) that let an
    app send one user's requests on the subscriptions the user chose. The
-   gateway serves the protocol and validates its parameters; the platform
-   (GatewayPlatform.link) authenticates users and clients and stores apps,
-   grants, and tokens.
+   gateway serves the protocol, the approval page, and the connections page
+   on every platform; the platform (GatewayPlatform.link, made by
+   link/service.ts) stores apps, grants, and tokens, and says who its users
+   are.
 
    - GET  /.well-known/oauth-authorization-server   metadata (RFC 8414)
    - POST /v1/link/register      open client registration (RFC 7591)
-   - GET  /v1/link/authorize     the approval page. A platform with its own
-                                 consent page gets the validated request
-                                 redirected there
+   - GET  /v1/link/authorize     the approval page
    - POST /v1/link/authorize     each step of the page: connect a plan, then
                                  approve or deny; returns `code`
                                  or `error` to the app: on its redirect URI,
@@ -25,6 +24,10 @@
    - PUT  /v1/link/grants/{id}/budget  the user sets or removes the grant's
                                  budget: the most tokens the app may use per
                                  five hours and per week
+   - GET  /v1/link/connections   the page where the approval page's user sees
+                                 the apps they connected, sets each one's
+                                 budget, disconnects it, and removes plans
+   - POST /v1/link/connections   each of those changes
 
    A confidential client authenticates at the token and revocation endpoints
    with HTTP Basic (`client_id:client_secret`); a public one sends `client_id`
@@ -32,10 +35,11 @@
 
    The gateway's own approval page needs no account, like a bank link: the
    user picks a plan, signs in to its provider, and allows the app. Their first
-   plan makes them an opaque subject the gateway keeps in a signed, HttpOnly,
-   SameSite=Lax cookie scoped to the authorize path, so the next app that asks
-   finds their plans connected. Approving needs that cookie and a form token
-   derived from it, so another site cannot approve. */
+   plan makes them a user (hosted: a Dari account with no sign-in) the gateway
+   keeps in a signed, HttpOnly, SameSite=Lax cookie scoped to /v1/link/, so
+   the next app that asks finds their plans connected and the connections page
+   knows them. Every change needs that cookie and a form token derived from
+   it, so another site cannot make one. */
 
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 
@@ -43,7 +47,7 @@ import { isReasoningEffort, providerForModel } from "@mupt-ai/dari-router/policy
 
 import { bearerToken } from "../http/auth.js";
 import { errorResponse, HttpError } from "../http/errors.js";
-import { SUBSCRIPTION_PLAN_LABELS } from "../models/link_errors.js";
+import { SUBSCRIPTION_PLAN_LABELS } from "./errors.js";
 import { subscriptionClient, subscriptionModelProvider } from "../models/subscriptions.js";
 import type {
   GatewayPlatform,
@@ -51,6 +55,8 @@ import type {
   LinkApprovalPage,
   LinkClient,
   LinkConnect,
+  LinkConnection,
+  LinkPlanAdded,
   LinkGrantDetail,
   LinkKeyProvider,
   LinkUsageTotals,
@@ -64,13 +70,13 @@ import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
 import { explicitModelId, explicitModelSlug } from "../protocol/input/router_model.js";
 import { CANONICAL_MODELS, canonicalModelName } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
-import { budgetBody, validBudget } from "../runtime/link_budget.js";
-import { catalogModelFor } from "../runtime/link_grant_access.js";
+import { budgetBody, validBudget } from "./budget.js";
+import { catalogModelFor } from "./grant_access.js";
 import { requestTags } from "../runtime/request_tags.js";
 import type { ClientHarness, ResolvedRouter, SubscriptionKind } from "../types.js";
-import { parseJsonRequest } from "./json.js";
-import { DARI_MARK, ICONS, linkLogo } from "./link_assets.js";
-import { GEIST_WOFF2 } from "./link_font.js";
+import { parseJsonRequest } from "../ingress/json.js";
+import { DARI_MARK, ICONS, linkLogo } from "./assets.js";
+import { GEIST_WOFF2 } from "./font.js";
 
 const VERIFIER = /^[A-Za-z0-9._~-]{43,128}$/;
 // The base64url SHA-256 of a verifier.
@@ -93,6 +99,9 @@ const CONNECT_SECONDS = 15 * 60;
 // How often the page asks a provider whether the user approved its code.
 const DEVICE_POLL_SECONDS = 5;
 const AUTHORIZE_PATH = "/v1/link/authorize";
+const CONNECTIONS_PATH = "/v1/link/connections";
+// Where the pages' cookies are sent.
+const COOKIE_PATH = "/v1/link/";
 const CALLBACK_SCRIPT_PATH = "/v1/link/callback.js";
 // The approval page's typeface.
 const FONT_PATH = "/v1/link/geist.woff2";
@@ -159,6 +168,12 @@ export async function handleLinkRequest(request: Request, platform: GatewayPlatf
     }
     if (pathname === AUTHORIZE_PATH && request.method === "POST") {
       return await authorizeSubmit(link, request, new URLSearchParams(await request.text()));
+    }
+    if (pathname === CONNECTIONS_PATH && request.method === "GET") {
+      return await connectionsPage(link.approval, request);
+    }
+    if (pathname === CONNECTIONS_PATH && request.method === "POST") {
+      return await connectionsSubmit(link.approval, request, new URLSearchParams(await request.text()));
     }
     if (request.method === "OPTIONS" && (CORS_PATHS.has(pathname) || USAGE_REQUEST_ROUTE.test(pathname))) {
       return withCors(new Response(null, { status: 204 }));
@@ -253,16 +268,15 @@ function metadata(origin: string, link: LinkPlatform) {
     authorization_endpoint: `${origin}${AUTHORIZE_PATH}`,
     response_modes_supported: ["query", WEB_MESSAGE],
     // The origin a `web_message` result is posted from: the page that approves.
-    web_message_origin: "consentUrl" in link.approval ? new URL(link.approval.consentUrl).origin : origin,
+    web_message_origin: origin,
     token_endpoint: `${origin}/v1/link/token`,
     registration_endpoint: `${origin}/v1/link/register`,
     revocation_endpoint: `${origin}/v1/link/revoke`,
     // A script for the redirect URI's page that hands an approval back to the
     // window that opened the popup (see the README's callback contract).
     callback_script: `${origin}${CALLBACK_SCRIPT_PATH}`,
-    // Where users manage the apps they connected; null when the platform has
-    // no signed-in app for it.
-    connected_apps_uri: "consentUrl" in link.approval ? link.approval.connectedAppsUrl : null,
+    // Where users manage the apps they connected.
+    connected_apps_uri: `${origin}${CONNECTIONS_PATH}`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code", "refresh_token", TOKEN_EXCHANGE_GRANT],
     code_challenge_methods_supported: ["S256"],
@@ -481,7 +495,7 @@ async function token(platform: GatewayPlatform, link: LinkPlatform, request: Req
     if (!VERIFIER.test(verifier)) {
       return oauthError("invalid_request", "code_verifier must be 43 to 128 unreserved characters.");
     }
-    return await tokenResponse(platform, link, await link.exchangeCode({
+    return await tokenResponse(platform, link, request, await link.exchangeCode({
       ...client,
       code,
       redirectUri,
@@ -491,7 +505,7 @@ async function token(platform: GatewayPlatform, link: LinkPlatform, request: Req
   if (grantType === "refresh_token") {
     const refreshToken = body.get("refresh_token") ?? "";
     if (!refreshToken) return oauthError("invalid_request", "refresh_token is required.");
-    return await tokenResponse(platform, link, await link.refresh({ ...client, refreshToken }));
+    return await tokenResponse(platform, link, request, await link.refresh({ ...client, refreshToken }));
   }
   if (grantType === TOKEN_EXCHANGE_GRANT) return await childToken(platform, link, client, body);
   return oauthError(
@@ -631,7 +645,7 @@ async function revoke(link: LinkPlatform, request: Request): Promise<Response> {
 async function grant(platform: GatewayPlatform, link: LinkPlatform, request: Request): Promise<Response> {
   const accessToken = bearerToken(request.headers);
   const detail = await link.grant(accessToken);
-  return Response.json(await grantBody(platform, accessToken, detail), { headers: { "Cache-Control": "no-store" } });
+  return Response.json(await grantBody(platform, request, accessToken, detail), { headers: { "Cache-Control": "no-store" } });
 }
 
 /**
@@ -707,14 +721,14 @@ function stringFields(body: Record<string, unknown>): Record<string, string> {
   );
 }
 
-async function tokenResponse(platform: GatewayPlatform, link: LinkPlatform, tokens: LinkTokens): Promise<Response> {
+async function tokenResponse(platform: GatewayPlatform, link: LinkPlatform, request: Request, tokens: LinkTokens): Promise<Response> {
   return Response.json(
     {
       access_token: tokens.accessToken,
       token_type: "Bearer",
       expires_in: tokens.expiresIn,
       refresh_token: tokens.refreshToken,
-      ...(await grantBody(platform, tokens.accessToken, await link.grant(tokens.accessToken))),
+      ...(await grantBody(platform, request, tokens.accessToken, await link.grant(tokens.accessToken))),
     },
     { headers: { "Cache-Control": "no-store", Pragma: "no-cache" } },
   );
@@ -726,8 +740,7 @@ async function tokenResponse(platform: GatewayPlatform, link: LinkPlatform, toke
  * `models` is what a plain API client (anything but Claude Code or Muse Code)
  * can name, and `routes` whether `dari/routing` serves it.
  */
-async function grantBody(platform: GatewayPlatform, accessToken: string, detail: LinkGrantDetail) {
-  const approval = platform.link?.approval;
+async function grantBody(platform: GatewayPlatform, request: Request, accessToken: string, detail: LinkGrantDetail) {
   const now = Date.now();
   const kinds = detail.subscriptions
     .filter((subscription) => subscription.apiKeyProvider === undefined)
@@ -752,10 +765,8 @@ async function grantBody(platform: GatewayPlatform, accessToken: string, detail:
     })),
     // `budget_limit` while a window is at its cap, until `available_at`.
     ...grantState(detail.budget),
-    // The Dari account that approved the grant, when accounts have one.
-    user: detail.user,
-    // Where the user manages this grant; null without a signed-in app.
-    manage_url: approval !== undefined && "consentUrl" in approval ? manageUrl(approval.connectedAppsUrl, detail.id) : null,
+    // Where the user manages this grant: the connections page, in the browser they approved it in.
+    manage_url: `${publicOrigin(request)}${CONNECTIONS_PATH}#${encodeURIComponent(detail.id)}`,
     plans: detail.subscriptions.map((subscription) => {
       // An API key serves its provider's models to any app.
       const keyFor = subscription.apiKeyProvider;
@@ -788,12 +799,6 @@ async function grantBody(platform: GatewayPlatform, accessToken: string, detail:
     models: models(plain).map(namedModel),
     routes: (plain?.enabled_models.length ?? 0) > 0,
   };
-}
-
-function manageUrl(connectedAppsUrl: string, grantId: string): string {
-  const url = new URL(connectedAppsUrl);
-  url.searchParams.set("grant", grantId);
-  return url.toString();
 }
 
 /** The latest of some times, or null for none. */
@@ -980,18 +985,10 @@ async function authorizePage(link: LinkPlatform, request: Request, params: URLSe
   const authorize = await authorizeRequest(link, params);
   if (authorize instanceof Response) return authorize;
   const approval = link.approval;
-  if ("consentUrl" in approval) {
-    // The platform's own page signs the user in and approves; it gets the
-    // request as validated here.
-    return new Response(null, {
-      status: 303,
-      headers: { Location: `${approval.consentUrl}?${authorizeQuery(authorize)}`, "Cache-Control": "no-store" },
-    });
-  }
   const secret = approval.sessionSecret();
   const session = sessionFrom(request, secret);
-  const connect = session === null ? null : connectFrom(request, secret);
-  if (session !== null && connect !== null) {
+  const connect = connectFrom(request, secret);
+  if (connect !== null) {
     // A provider that gave the user a code to enter is asked whether they approved.
     return connect.userCode === null
       ? providerPage(authorize, connect)
@@ -1029,9 +1026,7 @@ async function grantToUpdate(
 type GrantToUpdate = { credentialIds: string[]; budget: LinkBudget[] };
 
 async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSearchParams): Promise<Response> {
-  // A platform with its own consent page takes no approval here.
-  if ("consentUrl" in link.approval) return errorResponse(new HttpError(404, "Not found", "not_found"));
-  const approval: LinkApprovalPage = link.approval;
+  const approval = link.approval;
   // Only the page itself submits here: another site's form would otherwise
   // arrive without the user's cookie and replace it with a new identity.
   if (crossSite(request)) {
@@ -1058,11 +1053,9 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
     if (!connectKinds(approval, authorize).includes(kind as SubscriptionKind)) {
       return selectPage(approval, authorize, "Choose a subscription to connect.", [endConnect]);
     }
-    // A first plan makes the user: an opaque subject the cookie remembers.
-    const subject = session?.subject ?? `lu_${randomUUID().replaceAll("-", "")}`;
     let started: LinkConnect;
     try {
-      started = await approval.startConnect(subject, kind as SubscriptionKind);
+      started = await approval.startConnect(kind as SubscriptionKind);
     } catch (error) {
       if (!(error instanceof HttpError)) throw error;
       // A gateway that cannot take subscriptions says why; anything else is the provider.
@@ -1070,7 +1063,6 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
       return selectPage(approval, authorize, reason, [endConnect]);
     }
     return seeAuthorize(authorize, [
-      signedCookie(request, secret, USER_COOKIE, { sub: subject }, USER_SECONDS),
       signedCookie(
         request,
         secret,
@@ -1084,17 +1076,18 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
     if (keyProvider === undefined) return selectPage(approval, authorize, "Choose a provider to add a key for.", [endConnect]);
     const apiKey = form.get("api_key")?.trim() ?? "";
     if (!apiKey) return keyPage(authorize, keyProvider, `Paste your ${keyProvider.name} API key.`);
-    const subject = session?.subject ?? `lu_${randomUUID().replaceAll("-", "")}`;
+    // A first plan makes the user, whom the cookie remembers.
+    let added;
     try {
-      await approval.addKey(subject, keyProvider.id, apiKey);
+      added = await approval.addKey(session?.subject ?? null, keyProvider.id, apiKey);
     } catch (error) {
       if (!(error instanceof HttpError) || (error.status !== 400 && error.code !== "link_not_configured")) throw error;
       return keyPage(authorize, keyProvider, error.message);
     }
-    return seeAuthorize(authorize, [signedCookie(request, secret, USER_COOKIE, { sub: subject }, USER_SECONDS), endConnect]);
+    return seeAuthorize(authorize, [userCookie(request, secret, added.subject), endConnect]);
   }
-  const connect = session === null ? null : connectFrom(request, secret);
-  if (decision === "complete" && session !== null && connect !== null) {
+  const connect = connectFrom(request, secret);
+  if (decision === "complete" && connect !== null) {
     return await finishConnect(approval, request, authorize, session, connect, form.get("authorization_response")?.trim() ?? "");
   }
   // Removing a plan or key asks once, then deletes what Dari stored for it.
@@ -1145,14 +1138,15 @@ async function finishConnect(
   approval: LinkApprovalPage,
   request: Request,
   authorize: AuthorizeRequest,
-  session: Session,
+  session: Session | null,
   connect: Connect,
   authorizationResponse: string,
 ): Promise<Response> {
   const endConnect = clearCookie(request, CONNECT_COOKIE);
-  let connected: { credentialId: string } | null;
+  let connected: LinkPlanAdded | null;
   try {
-    connected = await approval.completeConnect(session.subject, connect.session, authorizationResponse);
+    // A first plan makes the user, whom the cookie remembers.
+    connected = await approval.completeConnect(session?.subject ?? null, connect.session, authorizationResponse);
   } catch (error) {
     if (!(error instanceof HttpError) || error.status !== 400) throw error;
     // A pasted code can be pasted again; a sign-in the provider ended starts over.
@@ -1160,7 +1154,110 @@ async function finishConnect(
       ? providerPage(authorize, connect, error.message)
       : selectPage(approval, authorize, error.message, [endConnect]);
   }
-  return connected === null ? providerPage(authorize, connect) : seeAuthorize(authorize, [endConnect]);
+  return connected === null
+    ? providerPage(authorize, connect)
+    : seeAuthorize(authorize, [userCookie(request, approval.sessionSecret(), connected.subject), endConnect]);
+}
+
+/**
+ * The connections page: the apps the browser's user connected, with what each
+ * shares and used so far, its budget, and Disconnect; then the user's plans
+ * and keys, each of which they can remove.
+ */
+async function connectionsPage(approval: LinkApprovalPage, request: Request, error?: string): Promise<Response> {
+  const session = sessionFrom(request, approval.sessionSecret());
+  const title = "Connected Apps";
+  if (session === null) {
+    return page(title, `<div class="body"><h1>${title}</h1><p>No apps are connected in this browser. Apps that use Dari Link connect from their own Connect button.</p></div>`);
+  }
+  const [connections, plans] = await Promise.all([
+    approval.connections(session.subject),
+    approval.subscriptions(session.subject),
+  ]);
+  const csrf = `<input type="hidden" name="csrf" value="${session.csrf}">`;
+  const cards = connections.map((connection) => connectionCard(connection, csrf));
+  const planRows = plans.map((plan) => `<form class="option pick" method="post" action="${CONNECTIONS_PATH}">${csrf}
+<input type="hidden" name="remove_id" value="${escapeHtml(plan.id)}">${logo(plan.apiKeyProvider ?? plan.provider, planName(plan))}<span class="grow"><strong>${escapeHtml(planName(plan))}</strong><small>${escapeHtml(planLabel(plan))}</small></span><button class="nav drop" type="submit" name="decision" value="remove" aria-label="Remove">${ICONS.trash}</button></form>`);
+  return page(
+    title,
+    `<div class="body">
+<h1>${title}</h1>
+${error === undefined ? "" : `<p role="alert">${escapeHtml(error)}</p>`}
+${cards.length === 0 ? "<p>No apps are connected.</p>" : cards.join("\n")}
+${planRows.length === 0 ? "" : `<p class="label">Your Plans And Keys</p>\n${planRows.join("\n")}`}
+</div>`,
+  );
+}
+
+function connectionCard(connection: LinkConnection, csrf: string): string {
+  const tokens = connection.usage.inputTokens + connection.usage.outputTokens
+    + connection.usage.cacheReadTokens + connection.usage.cacheWriteTokens;
+  const limit = (minutes: number, label: string) => {
+    const standing = connection.budget.find((window) => window.windowMinutes === minutes);
+    return `<label class="field" for="max_${minutes}_${escapeHtml(connection.id)}">Most Tokens ${label}</label>
+<input id="max_${minutes}_${escapeHtml(connection.id)}" type="text" inputmode="numeric" name="max_${minutes}" value="${standing === undefined ? "" : standing.maxTokens}" placeholder="No Limit" autocomplete="off">
+${standing === undefined ? "" : `<p class="hint">${count(standing.usedTokens)} used${standing.resetsAt === null ? "" : `, at the limit until ${escapeHtml(new Date(standing.resetsAt).toUTCString())}`}</p>`}`;
+  };
+  return `<form class="card" id="${escapeHtml(connection.id)}" method="post" action="${CONNECTIONS_PATH}">${csrf}
+<input type="hidden" name="grant_id" value="${escapeHtml(connection.id)}">
+<strong>${escapeHtml(connection.appName)}</strong>
+<small>Connected ${escapeHtml(new Date(connection.createdAt).toDateString())} &middot; ${count(connection.usage.requests)} requests &middot; ${count(tokens)} tokens</small>
+<small>Shares ${connection.subscriptions.length === 0 ? "nothing" : connection.subscriptions.map((plan) => escapeHtml(planName(plan))).join(", ")}</small>
+${limit(300, "Per 5 Hours")}
+${limit(10080, "Per Week")}
+<div class="row"><button class="btn outline" type="submit" name="decision" value="budget">Save Limits</button><button class="btn outline" type="submit" name="decision" value="disconnect">Disconnect</button></div>
+</form>`;
+}
+
+async function connectionsSubmit(approval: LinkApprovalPage, request: Request, form: URLSearchParams): Promise<Response> {
+  if (crossSite(request)) {
+    return page("Request Refused", `<div class="body"><h1>Request Refused</h1><p>Open the connections page again.</p></div>`, { status: 403 });
+  }
+  const session = sessionFrom(request, approval.sessionSecret());
+  const back = new Response(null, { status: 303, headers: { Location: CONNECTIONS_PATH, "Cache-Control": "no-store" } });
+  if (session === null || !sameText(form.get("csrf") ?? "", session.csrf)) return back;
+  const decision = form.get("decision");
+  const grantId = form.get("grant_id") ?? "";
+  if (decision === "disconnect") {
+    await approval.disconnect(session.subject, grantId);
+    return back;
+  }
+  if (decision === "budget") {
+    const entries = [300, 10080].flatMap((minutes) => {
+      const value = (form.get(`max_${minutes}`) ?? "").replace(/[\s,_]/g, "");
+      return value === "" ? [] : [{ window_minutes: minutes, max_tokens: /^\d+$/.test(value) ? Number(value) : Number.NaN }];
+    });
+    const budget = validBudget(entries);
+    if (budget === null) return await connectionsPage(approval, request, "Each limit is a whole number of tokens; leave it empty for none.");
+    await approval.setBudget(session.subject, grantId, budget);
+    return back;
+  }
+  const removing = form.get("remove_id");
+  const plan = removing === null ? undefined : (await approval.subscriptions(session.subject)).find((candidate) => candidate.id === removing);
+  if (plan !== undefined && decision === "remove") {
+    const name = planName(plan);
+    return page(`Remove ${name}`, `<form method="post" action="${CONNECTIONS_PATH}"><div class="body">
+<span class="who">${logo(plan.apiKeyProvider ?? plan.provider, name)}</span>
+<h1>Remove ${escapeHtml(name)}</h1>
+<p>${escapeHtml(planLabel(plan))}</p>
+<p>Dari deletes ${plan.apiKeyProvider === undefined ? "the sign-in it holds for this plan" : "this key"}. Every app you shared it with stops using it.</p>
+<input type="hidden" name="csrf" value="${session.csrf}">
+<input type="hidden" name="remove_id" value="${escapeHtml(plan.id)}">
+</div><div class="foot"><button class="btn danger" type="submit" name="decision" value="remove_confirmed">Remove</button></div></form>`);
+  }
+  if (plan !== undefined && decision === "remove_confirmed") await approval.remove(session.subject, plan.id);
+  return back;
+}
+
+// What a plan or key is called: "Claude", or "OpenRouter API Key".
+function planName(subscription: LinkSubscription): string {
+  return subscription.apiKeyProvider !== undefined
+    ? `${subscription.name} API Key`
+    : KINDS[subscription.provider as SubscriptionKind]?.name ?? subscription.name;
+}
+
+function count(value: number): string {
+  return value.toLocaleString("en-US");
 }
 
 // Back to the approval page by GET, so no form is left to resubmit.
@@ -1255,11 +1352,16 @@ function signedValue(secret: string, cookie: string, value: Record<string, unkno
 }
 
 function signedCookie(request: Request, secret: string, cookie: string, value: Record<string, unknown>, seconds: number): string {
-  return `${cookie}=${signedValue(secret, cookie, value, seconds)}; Path=${AUTHORIZE_PATH}; Max-Age=${seconds}; HttpOnly; SameSite=Lax${isHttps(request) ? "; Secure" : ""}`;
+  return `${cookie}=${signedValue(secret, cookie, value, seconds)}; Path=${COOKIE_PATH}; Max-Age=${seconds}; HttpOnly; SameSite=Lax${isHttps(request) ? "; Secure" : ""}`;
+}
+
+// Who the user is, for a year from their last plan.
+function userCookie(request: Request, secret: string, subject: string): string {
+  return signedCookie(request, secret, USER_COOKIE, { sub: subject }, USER_SECONDS);
 }
 
 function clearCookie(request: Request, cookie: string): string {
-  return `${cookie}=; Path=${AUTHORIZE_PATH}; Max-Age=0; HttpOnly; SameSite=Lax${isHttps(request) ? "; Secure" : ""}`;
+  return `${cookie}=; Path=${COOKIE_PATH}; Max-Age=0; HttpOnly; SameSite=Lax${isHttps(request) ? "; Secure" : ""}`;
 }
 
 /**
@@ -1319,11 +1421,10 @@ function queryRedirect(back: { redirectUri: string; state: string | null }, para
  * The step of approval the user reached, which a popup posts to the window
  * that opened it (`{type: "dari-link-event", version: 1, event, state}`; the
  * result alone is `type: "dari-link"`), so the app can tell where the user
- * left: `connect_subscription` (connecting a plan) or `choose_plans`. A
- * platform with its own consent page may also post `sign_in`. A user who
- * denies leaves at `denied`, which the `access_denied` result says.
+ * left: `connect_subscription` (connecting a plan) or `choose_plans`. A user
+ * who denies leaves at `denied`, which the `access_denied` result says.
  */
-export type LinkStep = "sign_in" | "connect_subscription" | "choose_plans";
+export type LinkStep = "connect_subscription" | "choose_plans";
 type PageEvent = { message: Record<string, string>; origin: string };
 
 function eventFor(authorize: AuthorizeRequest, step: LinkStep): PageEvent | undefined {
@@ -1667,6 +1768,8 @@ input[type=text]:focus-visible,input[type=password]:focus-visible{outline:1px so
 .btn.outline{border-color:var(--edge)}.btn.outline:hover{border-color:rgba(237,237,237,.4);background:var(--hover)}
 .btn.ghost{height:32px;margin:4px 0 0 -8px;padding:0 10px 0 8px;font-size:13px;color:var(--muted)}.btn.ghost:hover{background:rgba(237,237,237,.06);color:var(--ink)}
 .fine{color:var(--faint);font-size:12px;margin:12px 0 0;text-align:center}
+.card{display:block;margin:0 0 12px;padding:14px 12px;border:1px solid var(--rule);border-radius:6px}.card>small{margin:2px 0 0}.card .field{margin:16px 0 8px}
+.row{display:flex;gap:8px;margin:16px 0 0}.row .btn{flex:1}
 .nav{position:absolute;top:10px;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer}
 .nav:hover{background:rgba(237,237,237,.06);color:var(--ink)}.back{left:12px}.close{right:12px}
 .done{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;margin:0 0 20px;border:1px solid rgba(142,230,189,.4);border-radius:6px;background:rgba(142,230,189,.1);color:var(--mint)}.done .icon{width:22px;height:22px}

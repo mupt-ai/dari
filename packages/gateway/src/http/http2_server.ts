@@ -75,10 +75,13 @@ async function handleRequest(
     const response = await handler(toRequest(incoming, abort.signal));
     outgoing.statusCode = response.status;
     for (const [name, value] of response.headers) {
-      if (!HTTP2_FORBIDDEN_RESPONSE_HEADERS.has(name.toLowerCase())) {
+      if (name !== "set-cookie" && !HTTP2_FORBIDDEN_RESPONSE_HEADERS.has(name)) {
         outgoing.setHeader(name, value);
       }
     }
+    // Headers yields each cookie on its own, so setting them one by one keeps only the last.
+    const cookies = response.headers.getSetCookie();
+    if (cookies.length > 0) outgoing.setHeader("set-cookie", cookies);
     if (response.body === null || incoming.method === "HEAD") {
       outgoing.end();
       return;

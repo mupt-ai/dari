@@ -29,6 +29,20 @@ test("serves streaming responses over cleartext HTTP/2", async () => {
   }
 });
 
+test("sends every Set-Cookie a response sets", async () => {
+  const headers = new Headers();
+  headers.append("Set-Cookie", "a=1; Path=/");
+  headers.append("Set-Cookie", "b=; Path=/; Max-Age=0");
+  const server = startHttp2Server(0, () => new Response(null, { status: 303, headers }));
+
+  try {
+    const response = await request(server.port, "/cookies");
+    expect(response.headers["set-cookie"]).toEqual(["a=1; Path=/", "b=; Path=/; Max-Age=0"]);
+  } finally {
+    await server.stop(true);
+  }
+});
+
 test("accepts JSON requests larger than Cloud Run's HTTP/1 limit over h2c", async () => {
   const server = startHttp2Server(0, async (request) => {
     const parsed = await parseJsonRequest<{ input: string }>(request);

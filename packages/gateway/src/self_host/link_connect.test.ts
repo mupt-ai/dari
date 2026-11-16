@@ -50,6 +50,8 @@ async function grantOf(gateway: StubGateway, accessToken: string) {
     grant_id: string;
     user: unknown;
     manage_url: string | null;
+    state: string;
+    available_at: string | null;
     plans: Array<{ id: string; state: string; available_at: string | null; usage: Array<{ utilization: number }> }>;
   };
 }
@@ -122,22 +124,16 @@ test("each plan says whether it serves the app now, and the stub forces each sta
   expect((await one("not-a-request")).status).toBe(404);
   expect((await grantOf(gateway, tokens.accessToken)).plans[0]!.usage[0]!.utilization).toBeCloseTo(0.1);
 
-  // Past the user's budget: budget_limit until the window resets.
+  // Past the user's token budget: the grant is at budget_limit until it rolls on.
   const put = await fetch(`${gateway.baseUrl}/v1/link/grants/${tokens.grantId}/budget`, {
     method: "PUT",
     headers: { authorization: "Bearer k", "content-type": "application/json" },
-    body: JSON.stringify({ budget: [{ window_minutes: 10080, max_share: 0.2 }] }),
+    body: JSON.stringify({ budget: [{ window_minutes: 300, max_tokens: 10 }] }),
   });
   expect(put.status).toBe(200);
-  gateway.setState({ weekly: 0.5 });
-  expect((await chat(gateway, tokens.accessToken)).status).toBe(200);
-  let plan = (await grantOf(gateway, tokens.accessToken)).plans[0]!;
-  for (let attempt = 0; attempt < 50 && plan.state !== "budget_limit"; attempt += 1) {
-    await Bun.sleep(20);
-    plan = (await grantOf(gateway, tokens.accessToken)).plans[0]!;
-  }
-  expect(plan.state).toBe("budget_limit");
-  expect(Date.parse(plan.available_at!)).toBeGreaterThan(Date.now());
+  const limited = await grantOf(gateway, tokens.accessToken);
+  expect(limited).toMatchObject({ state: "budget_limit", plans: [{ state: "ready" }] });
+  expect(Date.parse(limited.available_at!)).toBeGreaterThan(Date.now());
   const capped = await chat(gateway, tokens.accessToken);
   expect(capped.status).toBe(424);
   expect(((await capped.json()) as { error: { code: string } }).error.code).toBe("grant_budget_exhausted");
@@ -150,7 +146,7 @@ test("each plan says whether it serves the app now, and the stub forces each sta
   });
   await fetch(`${gateway.controlUrl}/state`, { method: "POST", body: JSON.stringify({ limited: true }) });
   expect((await chat(gateway, tokens.accessToken)).status).not.toBe(200);
-  plan = (await grantOf(gateway, tokens.accessToken)).plans[0]!;
+  const plan = (await grantOf(gateway, tokens.accessToken)).plans[0]!;
   expect(plan.state).toBe("plan_limit");
   expect(Date.parse(plan.available_at!)).toBeGreaterThan(Date.now());
   const exhausted = await chat(gateway, tokens.accessToken);

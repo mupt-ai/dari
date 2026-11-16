@@ -710,6 +710,8 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
     grantId: null,
     scope: "route",
     budget: [],
+    state: "ready",
+    availableAt: null,
     plans: [],
     models: [],
     routes: true,
@@ -724,23 +726,10 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
   expect(viaFetcher.by_tag).toMatchObject([{ value: "9", requests: 1 }]);
 });
 
-// A budget caps the share of each plan window the app may use, measured by
-// the rise in what the plan reports while the app's requests run.
-test("a grant stops at the budget the user set until the user lifts it", async () => {
-  let used = 10;
-  const weekReset = String(Math.floor(Date.now() / 1000) + 3 * 86_400);
-  const gateway = await startStubGateway({
-    plans: ["openai_codex"],
-    upstream: (call) => {
-      const reply = codexReply(call.model, {
-        "x-codex-secondary-used-percent": String(used),
-        "x-codex-secondary-reset-at": weekReset,
-        "x-codex-secondary-window-minutes": "10080",
-      });
-      used += 20;
-      return reply;
-    },
-  });
+// A budget caps the tokens the app may use per window, counted from the
+// grant's own recorded requests.
+test("a grant stops at the token budget the user set until the user lifts it", async () => {
+  const gateway = await startStubGateway({ plans: ["openai_codex"] });
   stop = gateway.stop;
   const { tokens } = await link(gateway, gateway.planIds);
   const access = tokens.access_token!;
@@ -751,39 +740,49 @@ test("a grant stops at the budget the user set until the user lifts it", async (
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
     body: JSON.stringify({ budget }),
   });
-  expect((await put(tokens.grant_id!, [{ window_minutes: 10080, max_share: 0.5 }])).status).toBe(200);
+  expect((await put(tokens.grant_id!, [{ window_minutes: 10080, max_tokens: 40 }])).status).toBe(200);
 
-  type Plan = { usage: Array<{ utilization: number }>; budget: Array<{ used_share: number; max_share: number; resets_at: string | null }> };
-  const plan = async (): Promise<Plan> =>
-    ((await (await fetch(`${gateway.baseUrl}/v1/link/grant`, { headers: { authorization: `Bearer ${access}` } })).json()) as { plans: Plan[] }).plans[0]!;
-  // Usage is recorded just after each response.
-  const settle = async (check: (current: Plan) => boolean) => {
-    for (let attempt = 0; attempt < 50 && !check(await plan()); attempt += 1) await Bun.sleep(20);
-    return await plan();
+  type Grant = {
+    state: string;
+    available_at: string | null;
+    budget: Array<{ window_minutes: number; max_tokens: number; used_tokens: number; resets_at: string | null }>;
   };
-  // The first report only sets the baseline (10%); each later one charges its rise.
-  for (const expected of [0, 0.2, 0.4]) {
+  const grant = async (): Promise<Grant> =>
+    (await (await fetch(`${gateway.baseUrl}/v1/link/grant`, { headers: { authorization: `Bearer ${access}` } })).json()) as Grant;
+  // Usage is recorded just after each response.
+  const settle = async (used: number) => {
+    for (let attempt = 0; attempt < 50 && (await grant()).budget[0]!.used_tokens !== used; attempt += 1) await Bun.sleep(20);
+    return await grant();
+  };
+  // Each reply uses 16 tokens (10 input, 4 cache read, 2 output).
+  const before = Date.now();
+  for (const used of [16, 32]) {
     expect((await chat(gateway, access)).status).toBe(200);
-    const current = await settle((candidate) => Math.abs((candidate.budget[0]?.used_share ?? 0) - expected) < 1e-9);
-    expect(current.budget[0]!.used_share).toBeCloseTo(expected);
+    expect(await settle(used)).toMatchObject({ state: "ready", budget: [{ used_tokens: used, resets_at: null }] });
   }
+  // A request in flight may go over; the next one is refused.
   expect((await chat(gateway, access)).status).toBe(200);
-  const capped = await settle((candidate) => candidate.budget[0]!.used_share >= 0.5);
-  expect(capped.budget[0]).toMatchObject({ max_share: 0.5, resets_at: new Date(Number(weekReset) * 1000).toISOString() });
-  expect(capped.usage[0]!.utilization).toBeCloseTo(0.7);
+  const capped = await settle(48);
+  expect(capped).toMatchObject({ state: "budget_limit", budget: [{ max_tokens: 40, used_tokens: 48 }] });
+  // Back once the first request rolls off the week: 32 is under the cap.
+  const back = Date.parse(capped.budget[0]!.resets_at!);
+  expect(back).toBeGreaterThanOrEqual(before + 7 * 86_400_000);
+  expect(back).toBeLessThan(Date.now() + 7 * 86_400_000);
+  expect(capped.available_at).toBe(capped.budget[0]!.resets_at);
 
   const refused = await chat(gateway, access);
   expect(refused.status).toBe(424);
   const error = await errorOf(refused);
   expect(error.code).toBe("grant_budget_exhausted");
-  expect(error.resets_at).toBe(new Date(Number(weekReset) * 1000).toISOString());
+  expect(error.resets_at).toBe(capped.budget[0]!.resets_at!);
 
   // The gateway's owner sees and changes the budget with a key.
   const grants = await (await fetch(`${gateway.baseUrl}/v1/link/grants`, { headers: { authorization: "Bearer k" } })).json() as {
     grants: Array<{ id: string; budget: unknown }>;
   };
-  expect(grants.grants[0]!.budget).toEqual([{ window_minutes: 10080, max_share: 0.5 }]);
-  expect((await put(grants.grants[0]!.id, [{ window_minutes: 10080, max_share: 1.5 }])).status).toBe(400);
+  expect(grants.grants[0]!.budget).toEqual([{ window_minutes: 10080, max_tokens: 40 }]);
+  expect((await put(grants.grants[0]!.id, [{ window_minutes: 10080, max_tokens: 0 }])).status).toBe(400);
+  expect((await put(grants.grants[0]!.id, [{ window_minutes: 60, max_tokens: 100 }])).status).toBe(400);
   expect((await put("lgr_nope", [])).status).toBe(404);
   expect((await put(grants.grants[0]!.id, [], access)).status).toBe(401);
   expect((await put(grants.grants[0]!.id, [])).status).toBe(200);

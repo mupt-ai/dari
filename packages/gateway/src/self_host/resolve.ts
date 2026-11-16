@@ -18,6 +18,7 @@ import {
   linkGrantRevoked,
   linkGrantUnavailableError,
   linkTokenExpired,
+  linkUnavailableError,
   modelNotServed,
   plansExhausted,
   plansForAnotherClient,
@@ -32,7 +33,7 @@ import {
   type RouterModelConfig,
 } from "./config.js";
 import type { ActiveLinkGrant, LinkStore } from "./link_store.js";
-import { budgetStandings, overBudgetUntil } from "../runtime/link_budget.js";
+import { overBudgetUntil } from "../runtime/link_budget.js";
 import type { RouterModelStore } from "./router_models.js";
 import {
   activeModelHolds,
@@ -100,6 +101,11 @@ export async function resolveSelfHostedRouter(
   if (grant !== null && request.routerId !== DEFAULT_ROUTER_ALIAS) {
     throw new HttpError(403, "Dari Link tokens serve only the default router.", "permission_denied");
   }
+  if (grant !== null) {
+    // A grant at its token budget serves nothing until its window rolls on.
+    const back = overBudgetUntil(deps.links.budgetStandings(grant.id));
+    if (back !== undefined) throw linkUnavailableError(budgetExhausted(back));
+  }
   const configured = deps.config.routers[request.routerId];
   if (configured === undefined) {
     throw new HttpError(404, `Router ${request.routerId} is not configured on this gateway.`, "router_not_found");
@@ -116,11 +122,7 @@ export async function resolveSelfHostedRouter(
   );
   const listed = grant === null ? routed : grantModels(grant, routed, granted, grantedKeys);
   const now = new Date();
-  // Granted plans at the grant's budget serve it nothing until their window resets.
-  const overBudget = grant === null ? new Map<string, Date | null>() : grantOverBudget(deps.links, grant, granted, now);
-  const servable = grant === null
-    ? undefined
-    : new Set([...grant.credentialIds].filter((id) => !overBudget.has(id)));
+  const servable = grant === null ? undefined : new Set(grant.credentialIds);
   const credentials = new Map<string, ProviderCredential | null>();
   const exhausted = new Set<SubscriptionProvider>();
   for (const provider of new Set(listed.map((model) => providerForModel(model.id)))) {
@@ -157,7 +159,7 @@ export async function resolveSelfHostedRouter(
   // A model at its own limit on the serving plan leaves routing until it resets.
   const linkUnavailable = grant === null
     ? {}
-    : grantUnavailable(granted, credentials, request.clientHarness, now, overBudget);
+    : grantUnavailable(granted, credentials, request.clientHarness, now);
   const models = listed.filter((model) => {
     const credential = credentials.get(providerForModel(model.id));
     if (credential == null) return false;
@@ -268,30 +270,6 @@ export async function resolveSelfHostedRouter(
 
 // The grant a live link token belongs to, or null for a token that is not
 // one. A dead token is refused with the reason.
-/** Each granted plan at the grant's budget, and when it is back (null: unknown). */
-function grantOverBudget(
-  links: LinkStore,
-  grant: Pick<ActiveLinkGrant, "id">,
-  granted: readonly SubscriptionCredential[],
-  now: Date,
-): Map<string, Date | null> {
-  const budget = links.budget(grant.id);
-  const over = new Map<string, Date | null>();
-  if (budget.length === 0) return over;
-  for (const credential of granted) {
-    const until = overBudgetUntil(budgetStandings(budget, links.budgetCharges(grant.id, credential.id, now), now));
-    if (until !== undefined) over.set(credential.id, until);
-  }
-  return over;
-}
-
-/** The plans a grant may be served by now: its own, less any at its budget. */
-export function grantServableIds(links: LinkStore, subscriptions: SubscriptionStore, grantId: string, now = new Date()): Set<string> {
-  const ids = links.credentialIds(grantId);
-  const over = grantOverBudget(links, { id: grantId }, subscriptions.withIds(ids), now);
-  return new Set([...ids].filter((id) => !over.has(id)));
-}
-
 function activeLinkGrant(links: LinkStore, token: string): ActiveLinkGrant | null {
   const auth = links.authenticate(token);
   if (auth === null) return null;
@@ -337,7 +315,6 @@ function grantUnavailable(
   credentials: ReadonlyMap<string, ProviderCredential | null>,
   clientHarness: ResolveRouterRequest["clientHarness"],
   now: Date,
-  overBudget: ReadonlyMap<string, Date | null>,
 ): Record<string, LinkUnavailable> {
   const unavailable: Record<string, LinkUnavailable> = {};
   for (const provider of new Set(granted.map((credential) => subscriptionModelProvider(credential.provider)))) {
@@ -350,21 +327,6 @@ function grantUnavailable(
     });
     if (usable.length === 0) {
       unavailable[provider] = plansForAnotherClient(plans.map((credential) => credential.provider));
-      continue;
-    }
-    if (usable.some((credential) => overBudget.has(credential.id))) {
-      // Each plan is back when its budget window or its own limit resets.
-      const back = usable.map((credential) =>
-        overBudget.has(credential.id)
-          ? overBudget.get(credential.id) ?? null
-          : credential.unavailableUntil !== null && credential.unavailableUntil > now
-            ? credential.unavailableUntil
-            : null
-      );
-      unavailable[provider] = budgetExhausted(
-        usable.map((credential) => credential.provider),
-        back.every((date) => date !== null) ? new Date(Math.min(...back.map((date) => date!.getTime()))) : null,
-      );
       continue;
     }
     const held = usable.flatMap((credential) =>

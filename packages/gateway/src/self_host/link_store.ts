@@ -27,7 +27,7 @@ import type {
   LinkUsageTotals,
 } from "../platform/platform.js";
 import { LINK_ACCESS_TOKEN_PREFIX, LINK_CHILD_TOKEN_PREFIX } from "../protocol/input/router_model.js";
-import { type BudgetCharge, type BudgetWindow, budgetCharges } from "../runtime/link_budget.js";
+import { type BudgetStanding, budgetLookbackMs, budgetStandings } from "../runtime/link_budget.js";
 
 export const LINK_ACCESS_TOKEN_TTL_MS = 60 * 60_000;
 const LINK_CODE_TTL_MS = 10 * 60_000;
@@ -176,16 +176,6 @@ export class LinkStore {
       created_at INTEGER NOT NULL,
       UNIQUE (subject, provider)
     )`);
-    // The share of each quota window of a plan a grant was charged, by the
-    // window's reset (see runtime/link_budget.ts).
-    db.run(`CREATE TABLE IF NOT EXISTS link_budget_use (
-      grant_id TEXT NOT NULL REFERENCES link_grants (id),
-      credential_id TEXT NOT NULL,
-      window_minutes INTEGER NOT NULL,
-      resets_at INTEGER NOT NULL,
-      share REAL NOT NULL,
-      PRIMARY KEY (grant_id, credential_id, window_minutes, resets_at)
-    )`);
     this.encryptStored();
   }
 
@@ -289,33 +279,18 @@ export class LinkStore {
     ).changes > 0;
   }
 
-  /**
-   * Charge a grant for the rise in a plan's windows its request reported,
-   * against what the plan reported before.
-   */
-  chargeBudget(grantId: string, credentialId: string, previous: BudgetWindow[], current: BudgetWindow[], now = new Date()): void {
-    const charges = budgetCharges(previous, current);
-    if (charges.length === 0) return;
-    this.db.transaction(() => {
-      this.db.run("DELETE FROM link_budget_use WHERE resets_at <= ?", [now.getTime()]);
-      for (const charge of charges) {
-        this.db.run(
-          `INSERT INTO link_budget_use (grant_id, credential_id, window_minutes, resets_at, share) VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT (grant_id, credential_id, window_minutes, resets_at) DO UPDATE SET share = share + excluded.share`,
-          [grantId, credentialId, charge.minutes, charge.resetsAt.getTime(), charge.share],
-        );
-      }
-    })();
-  }
-
-  /** What a grant was charged on one plan in windows that have not reset. */
-  budgetCharges(grantId: string, credentialId: string, now = new Date()): BudgetCharge[] {
-    return this.db
-      .query<{ window_minutes: number; resets_at: number; share: number }, [string, string, number]>(
-        "SELECT window_minutes, resets_at, share FROM link_budget_use WHERE grant_id = ? AND credential_id = ? AND resets_at > ?",
+  /** Each of a grant's budget windows as it stands now (see runtime/link_budget.ts). */
+  budgetStandings(grantId: string, now = new Date()): BudgetStanding[] {
+    const budget = this.budget(grantId);
+    if (budget.length === 0) return [];
+    const uses = this.db
+      .query<{ received_at: number; tokens: number }, [string, number]>(
+        `SELECT received_at, input_tokens + output_tokens + cache_read_tokens + cache_write_tokens AS tokens
+         FROM link_usage WHERE grant_id = ? AND received_at > ?`,
       )
-      .all(grantId, credentialId, now.getTime())
-      .map((row) => ({ minutes: row.window_minutes, resetsAt: new Date(row.resets_at), share: row.share }));
+      .all(grantId, now.getTime() - budgetLookbackMs(budget))
+      .map((row) => ({ at: new Date(row.received_at), tokens: row.tokens }));
+    return budgetStandings(budget, uses, now);
   }
 
   /** Record what one of a grant's requests used; a repeated request id is ignored. */
@@ -800,6 +775,8 @@ function parseIds(value: string): string[] {
   return JSON.parse(value) as string[];
 }
 
+// An entry without maxTokens (a share-of-plan limit from before token caps) is no limit.
 function parseBudget(value: string | null): LinkBudget[] {
-  return value === null ? [] : JSON.parse(value) as LinkBudget[];
+  const entries = value === null ? [] : JSON.parse(value) as Array<Partial<LinkBudget>>;
+  return entries.filter((entry): entry is LinkBudget => typeof entry.maxTokens === "number");
 }

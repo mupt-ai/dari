@@ -26,8 +26,9 @@
  * <controlUrl>/state`): `limited: true` makes every provider call a usage-limit
  * refusal, so the plans go `unavailable_until` and requests get 424
  * `subscription_exhausted`; `five_hour` and `weekly` (0 to 1) are the plan
- * usage each default reply reports, which fills `plans[].usage` and, against a
- * grant's budget, leads to 424 `grant_budget_exhausted`.
+ * usage each default reply reports, which fills `plans[].usage`. A grant's
+ * token budget, once its replies' tokens reach it, leads to 424
+ * `grant_budget_exhausted`.
  *
  * API keys: `keys: ["anthropic", "openai", "openrouter"]` gives the plans'
  * user an API key for each (`stub-key-<provider>`, ids in `gateway.keyIds`),

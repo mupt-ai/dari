@@ -952,7 +952,6 @@ function noteSubscriptionUsage(
       userId,
       credentialId,
       usage: reported,
-      ...(execution.subscriptionLinkGrantId ? { linkGrantId: execution.subscriptionLinkGrantId } : {}),
     }))
     .catch((error: unknown) => {
       console.error("subscription usage record failed", error);

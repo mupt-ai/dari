@@ -23,8 +23,8 @@
    - GET  /v1/link/grants        the user's grants
    - DELETE /v1/link/grants/{id} the user revokes a grant and its tokens
    - PUT  /v1/link/grants/{id}/budget  the user sets or removes the grant's
-                                 budget: the most of each quota window of a
-                                 granted plan the app may use
+                                 budget: the most tokens the app may use per
+                                 five hours and per week
 
    A confidential client authenticates at the token and revocation endpoints
    with HTTP Basic (`client_id:client_secret`); a public one sends `client_id`
@@ -55,6 +55,8 @@ import type {
   LinkKeyProvider,
   LinkUsageTotals,
   LinkPlatform,
+  LinkBudget,
+  LinkBudgetStanding,
   LinkSubscription,
   LinkTokens,
 } from "../platform/platform.js";
@@ -62,7 +64,7 @@ import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
 import { explicitModelId, explicitModelSlug } from "../protocol/input/router_model.js";
 import { CANONICAL_MODELS, canonicalModelName } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
-import { budgetBody, validBudget, type LinkBudget } from "../runtime/link_budget.js";
+import { budgetBody, validBudget } from "../runtime/link_budget.js";
 import { catalogModelFor } from "../runtime/link_grant_access.js";
 import { requestTags } from "../runtime/request_tags.js";
 import type { ClientHarness, ResolvedRouter, SubscriptionKind } from "../types.js";
@@ -204,7 +206,7 @@ export async function handleLinkRequest(request: Request, platform: GatewayPlatf
       if (budget === null) {
         throw new HttpError(
           400,
-          "budget must be a list of {window_minutes, max_share} with distinct positive whole window_minutes and max_share in (0, 1]; [] removes it.",
+          "budget must be a list of {window_minutes, max_tokens} with distinct window_minutes of 300 or 10080 and max_tokens a positive whole number; [] removes it.",
           "invalid_request_error",
           "budget",
         );
@@ -741,7 +743,15 @@ async function grantBody(platform: GatewayPlatform, accessToken: string, detail:
     app_name: detail.appName,
     created_at: detail.createdAt,
     scope: LINK_SCOPE,
-    budget: budgetBody(detail.budget),
+    // Each budget window: the tokens the grant used in it and its cap.
+    budget: detail.budget.map((standing) => ({
+      window_minutes: standing.windowMinutes,
+      max_tokens: standing.maxTokens,
+      used_tokens: standing.usedTokens,
+      resets_at: standing.resetsAt,
+    })),
+    // `budget_limit` while a window is at its cap, until `available_at`.
+    ...grantState(detail.budget),
     // The Dari account that approved the grant, when accounts have one.
     user: detail.user,
     // Where the user manages this grant; null without a signed-in app.
@@ -770,13 +780,6 @@ async function grantBody(platform: GatewayPlatform, accessToken: string, detail:
           utilization: window.utilization,
           resets_at: window.resetsAt,
         })),
-        // How much of each budget window this grant used on this plan.
-        budget: (subscription.budget ?? []).map((standing) => ({
-          window_minutes: standing.windowMinutes,
-          max_share: standing.maxShare,
-          used_share: Math.round(standing.usedShare * 10_000) / 10_000,
-          resets_at: standing.resetsAt,
-        })),
         models: models(served.get(client))
           .filter((model) => providerForModel(model) === (keyFor ?? subscriptionModelProvider(kind)))
           .map(namedModel),
@@ -793,28 +796,34 @@ function manageUrl(connectedAppsUrl: string, grantId: string): string {
   return url.toString();
 }
 
+/** The latest of some times, or null for none. */
+function latest(times: readonly string[]): string | null {
+  return times.reduce<string | null>((last, time) => last === null || Date.parse(time) > Date.parse(last) ? time : last, null);
+}
+
 /**
  * Whether a granted plan serves the app now. `plan_limit`: the plan is at its
- * own usage limit; `budget_limit`: the grant used its share of a window. Each
- * says when it is available again (`available_at`, null when ready or not
- * known); a plan at both is `plan_limit`, available when both have passed.
+ * own usage limit, available again at `available_at` (null when ready or not
+ * known).
  */
 function planState(subscription: LinkSubscription, now: number): {
-  state: "ready" | "plan_limit" | "budget_limit";
+  state: "ready" | "plan_limit";
   available_at: string | null;
 } {
-  const later = (times: Array<string | null>) =>
-    times.reduce<string | null>((latest, time) => time !== null && (latest === null || Date.parse(time) > Date.parse(latest)) ? time : latest, null);
   const planTimes = [
     ...(subscription.unavailableUntil !== null && Date.parse(subscription.unavailableUntil) > now ? [subscription.unavailableUntil] : []),
     ...subscription.usage.filter((window) => window.utilization >= 1 && Date.parse(window.resetsAt) > now).map((window) => window.resetsAt),
   ];
-  const budgetTimes = (subscription.budget ?? [])
-    .filter((standing) => standing.usedShare >= standing.maxShare && (standing.resetsAt === null || Date.parse(standing.resetsAt) > now))
-    .map((standing) => standing.resetsAt);
-  if (planTimes.length > 0) return { state: "plan_limit", available_at: later([...planTimes, ...budgetTimes]) };
-  if (budgetTimes.length > 0) return { state: "budget_limit", available_at: later(budgetTimes) };
-  return { state: "ready", available_at: null };
+  return planTimes.length > 0 ? { state: "plan_limit", available_at: latest(planTimes) } : { state: "ready", available_at: null };
+}
+
+/** Whether the grant is within its budget: `budget_limit` until every window at its cap rolls on. */
+function grantState(budget: readonly LinkBudgetStanding[]): {
+  state: "ready" | "budget_limit";
+  available_at: string | null;
+} {
+  const times = budget.flatMap((standing) => standing.resetsAt === null ? [] : [standing.resetsAt]);
+  return times.length > 0 ? { state: "budget_limit", available_at: latest(times) } : { state: "ready", available_at: null };
 }
 
 // A model as a request names it, with its catalog display name.

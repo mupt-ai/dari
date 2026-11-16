@@ -8,14 +8,13 @@ import { providerForModel } from "@mupt-ai/dari-router/policy-engine";
 
 import { CANONICAL_MODELS } from "../models/canonical.js";
 import { LINK_KEY_GATEWAYS, gatewayFor } from "../models/gateways.js";
-import type { GatewayPlatform, LinkBudget, LinkKeyProvider, LinkPlatform, LinkSubscription } from "../platform/platform.js";
+import type { GatewayPlatform, LinkKeyProvider, LinkPlatform, LinkSubscription } from "../platform/platform.js";
 import { checkProviderKey } from "../providers/key_check.js";
-import { budgetStandings } from "../runtime/link_budget.js";
 import { linkCompleteThrough } from "../runtime/link_in_flight.js";
 import type { LinkApiKey } from "./link_store.js";
 import type { PrefixStore } from "./prefix_store.js";
 import type { SessionPinStore } from "./session_pin_store.js";
-import { gatewayKeyIndex, grantServableIds, resolveSelfHostedRouter, type SelfHostedResolverDeps } from "./resolve.js";
+import { gatewayKeyIndex, resolveSelfHostedRouter, type SelfHostedResolverDeps } from "./resolve.js";
 import {
   CODEX_APPROVAL_PENDING,
   META_APPROVAL_PENDING,
@@ -58,20 +57,13 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
       deps.sessionPins.write(write);
     },
     recordSubscriptionUsage: async (report) => {
-      // A grant is charged the rise since the plan's previous report.
-      const previous = report.linkGrantId === undefined
-        ? []
-        : deps.subscriptions.get(report.credentialId)?.usage?.windows ?? [];
       deps.subscriptions.recordUsage(report.credentialId, report.usage);
-      if (report.linkGrantId !== undefined) {
-        deps.links.chargeBudget(report.linkGrantId, report.credentialId, previous, report.usage.windows);
-      }
     },
     async nextSubscription(request) {
       const plan = subscriptionOAuthProviderFor(request.provider, "subscription");
       const only = request.linkGrantId === undefined
         ? undefined
-        : grantServableIds(deps.links, deps.subscriptions, request.linkGrantId);
+        : deps.links.credentialIds(request.linkGrantId);
       const next = plan === null
         ? null
         : deps.subscriptions.selectCredential(plan, request.conversationId, new Date(), only);
@@ -88,12 +80,12 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
       }
       const another = deps.subscriptions.markUnavailable(credentialId, limit.resetsAt, limit.reason);
       if (linkGrantId === undefined) return another;
-      // A grant's retry may use only its own subscriptions within its budget.
+      // A grant's retry may use only its own subscriptions.
       const provider = deps.subscriptions.get(credentialId)?.provider;
       return provider !== undefined && deps.subscriptions.activeCredential(
         provider,
         new Date(),
-        grantServableIds(deps.links, deps.subscriptions, linkGrantId),
+        deps.links.credentialIds(linkGrantId),
       ) !== null;
     },
     async recordUsage() {
@@ -186,19 +178,10 @@ function selfHostedLink(
   // DARI_LINK_SESSION_SECRET; without it a process signs with a secret of its
   // own, and a restart forgets who connected which plans.
   const sessionSecret = deps.env.DARI_LINK_SESSION_SECRET?.trim() || randomBytes(32).toString("base64url");
-  const granted = (grantId: string, credentialIds: ReadonlySet<string>, budget: LinkBudget[]) => {
-    const now = new Date();
-    return [
-      ...deps.subscriptions.withIds(credentialIds).map((credential) => ({
-        ...linkSubscription(credential),
-        budget: budgetStandings(budget, deps.links.budgetCharges(grantId, credential.id, now), now).map((standing) => ({
-          ...standing,
-          resetsAt: standing.resetsAt?.toISOString() ?? null,
-        })),
-      })),
-      ...deps.links.keysWithIds(credentialIds).map(linkKey),
-    ];
-  };
+  const granted = (credentialIds: ReadonlySet<string>) => [
+    ...deps.subscriptions.withIds(credentialIds).map(linkSubscription),
+    ...deps.links.keysWithIds(credentialIds).map(linkKey),
+  ];
   // The live grant a grant's own access token names; a child token cannot
   // read its grant or its usage.
   const parentGrantId = (accessToken: string): string => {
@@ -330,9 +313,13 @@ function selfHostedLink(
     async grant(accessToken) {
       const grantId = parentGrantId(accessToken);
       const grant = deps.links.grants().find((candidate) => candidate.id === grantId)!;
-      const { credentialIds, ...rest } = grant;
+      const { credentialIds, budget: _, ...rest } = grant;
+      const budget = deps.links.budgetStandings(grant.id).map((standing) => ({
+        ...standing,
+        resetsAt: standing.resetsAt?.toISOString() ?? null,
+      }));
       // The approval page knows its users only as opaque subjects.
-      return { ...rest, subscriptions: granted(grant.id, new Set(credentialIds), grant.budget), user: null };
+      return { ...rest, budget, subscriptions: granted(new Set(credentialIds)), user: null };
     },
     async usage({ accessToken, ...query }) {
       const grantId = parentGrantId(accessToken);

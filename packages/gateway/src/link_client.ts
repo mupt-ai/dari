@@ -67,16 +67,16 @@ export type LinkPlan = {
   unavailable_until: string | null;
   // Quota windows the plan last reported, shortest first; empty when unknown.
   usage: Array<{ window_minutes: number; utilization: number; resets_at: string }>;
-  // Each of the grant's budget windows on this plan: how much of it the app used.
-  budget: Array<{ window_minutes: number; max_share: number; used_share: number; resets_at: string | null }>;
   // Why the plan does or does not serve the app now, and when it will again.
-  state: "ready" | "plan_limit" | "budget_limit";
+  state: "ready" | "plan_limit";
   available_at: string | null;
   // The models the plan serves its clients now: the name a request uses, and the display name.
   models: LinkModel[];
 };
 
 export type LinkModel = { id: string; name: string };
+
+export type LinkBudgetWindow = { window_minutes: number; max_tokens: number; used_tokens: number; resets_at: string | null };
 
 export type LinkTokenSet = {
   accessToken: string;
@@ -85,8 +85,13 @@ export type LinkTokenSet = {
   expiresAt: number;
   grantId: string | null;
   scope: string;
-  // The most of each quota window of a granted plan this app may use; empty for no limit.
-  budget: Array<{ window_minutes: number; max_share: number }>;
+  // The most tokens this app may use per window (300: five hours, 10080: a
+  // week), across all its plans and API keys, and what it used in each
+  // window; `resets_at` is set only at the cap. Empty for no limit.
+  budget: LinkBudgetWindow[];
+  // `budget_limit` while a budget window is at its cap, until `availableAt`.
+  state: "ready" | "budget_limit";
+  availableAt: string | null;
   plans: LinkPlan[];
   // The models a plain API client can name now.
   models: LinkModel[];
@@ -722,7 +727,9 @@ function tokenSet(payload: Record<string, unknown>): LinkTokenSet {
     expiresAt: Date.now() + Number(payload.expires_in) * 1000,
     grantId: typeof payload.grant_id === "string" ? payload.grant_id : null,
     scope: typeof payload.scope === "string" ? payload.scope : "route",
-    budget: Array.isArray(payload.budget) ? payload.budget as LinkTokenSet["budget"] : [],
+    budget: Array.isArray(payload.budget) ? payload.budget as LinkBudgetWindow[] : [],
+    state: payload.state === "budget_limit" ? "budget_limit" : "ready",
+    availableAt: typeof payload.available_at === "string" ? payload.available_at : null,
     plans: Array.isArray(payload.plans) ? payload.plans as LinkPlan[] : [],
     models: Array.isArray(payload.models) ? payload.models as LinkModel[] : [],
     routes: payload.routes === true,

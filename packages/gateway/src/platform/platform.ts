@@ -254,18 +254,18 @@ export type LinkConnect = {
 };
 
 /**
- * The most of each quota window of a granted plan the grant's app may use, as
- * a share of the window; one budget applies to each granted plan on its own.
- * See runtime/link_budget.ts for how use is measured.
+ * The most tokens a grant's app may use in a rolling window, across all of
+ * the grant's plans and API keys. See runtime/link_budget.ts for how tokens
+ * are counted.
  */
-export type LinkBudget = { windowMinutes: number; maxShare: number };
+export type LinkBudget = { windowMinutes: number; maxTokens: number };
 
-/** A budget window as it stands for one granted plan. */
+/** A budget window as it stands for a grant. */
 export type LinkBudgetStanding = {
   windowMinutes: number;
-  maxShare: number;
-  usedShare: number;
-  // When the last window the grant was charged in resets; null before any charge.
+  maxTokens: number;
+  usedTokens: number;
+  // At the cap: when enough of the window rolls off to be under it; else null.
   resetsAt: string | null;
 };
 
@@ -307,8 +307,6 @@ export type LinkSubscription = {
   unavailableUntil: string | null;
   // Quota windows the plan last reported, shortest first; empty when unknown.
   usage: LinkUsageWindow[];
-  // In a grant's detail: each of the grant's budget windows for this plan.
-  budget?: LinkBudgetStanding[];
 };
 
 export type LinkApproval = {
@@ -400,7 +398,8 @@ export type LinkUsage = LinkUsageTotals & {
   completeThrough: string | null;
 };
 
-export type LinkGrantDetail = Omit<LinkGrant, "credentialIds"> & {
+export type LinkGrantDetail = Omit<LinkGrant, "credentialIds" | "budget"> & {
+  budget: LinkBudgetStanding[];
   subscriptions: LinkSubscription[];
   // The account that approved the grant; null where accounts have no
   // identity, as on a self-hosted gateway.
@@ -493,9 +492,6 @@ export type SubscriptionUsageReport = {
   userId: string;
   credentialId: string;
   usage: SubscriptionUsage;
-  // Set when a Dari Link grant's request reported it: the grant is charged
-  // the rise since the plan's previous report against its budget.
-  linkGrantId?: string;
 };
 
 export type RequestRecord = {

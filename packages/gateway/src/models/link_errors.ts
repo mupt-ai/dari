@@ -12,9 +12,9 @@
    - `subscription_exhausted`: the plans that can serve this client are at
      their usage limits; `resets_at` (and Retry-After) says when the first one
      is back, when that is known.
-   - `grant_budget_exhausted`: the plans that can serve this client are at
-     the budget the user set for this grant (a share of a quota window);
-     `resets_at` says when the first is back, when known.
+   - `grant_budget_exhausted`: the grant used the most tokens the user
+     allowed it in a window (per five hours or per week); `resets_at` (and
+     Retry-After) says when enough of the window rolls off to serve again.
    - `subscription_client_mismatch`: the granted plans serve only another
      client (a Claude Code plan serves only Claude Code itself); the user must
      grant a plan that serves any app, such as a ChatGPT plan.
@@ -82,16 +82,12 @@ export function plansExhausted(plans: readonly SubscriptionKind[], resetsAt: Dat
   };
 }
 
-/**
- * The granted plans for a provider that can serve are out for now, and at
- * least one is at the grant's budget rather than its own usage limit.
- */
-export function budgetExhausted(plans: readonly SubscriptionKind[], resetsAt: Date | null): LinkUnavailable {
-  const until = resetsAt === null ? "" : ` The first is back at ${resetsAt.toISOString()}.`;
+/** The grant used the most tokens the user allowed it in a window. */
+export function budgetExhausted(resetsAt: Date): LinkUnavailable {
   return {
     code: "grant_budget_exhausted",
-    message: `The ${names(plans)} subscriptions this Dari Link grant may use are at the share of their quota the user allowed this app.${until}`,
-    resets_at: resetsAt?.toISOString() ?? null,
+    message: `This Dari Link grant used the most tokens the user allowed this app. It is back at ${resetsAt.toISOString()}.`,
+    resets_at: resetsAt.toISOString(),
   };
 }
 
@@ -110,8 +106,7 @@ export function plansForAnotherClient(plans: readonly SubscriptionKind[]): LinkU
  */
 export function linkGrantUnavailableError(unavailable: Record<string, LinkUnavailable>): HttpError {
   const entries = Object.values(unavailable);
-  const cause = entries.find((entry) => entry.code === "grant_budget_exhausted")
-    ?? entries.find((entry) => entry.code === "subscription_exhausted")
+  const cause = entries.find((entry) => entry.code === "subscription_exhausted")
     ?? entries.find((entry) => entry.code === "subscription_client_mismatch");
   if (cause !== undefined) return linkUnavailableError(cause);
   return linkGrantError(

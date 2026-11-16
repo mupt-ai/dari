@@ -46,7 +46,7 @@ test("a gateway without Dari Link answers 404", async () => {
 test("http redirect URIs are allowed only on loopback and the hosts the gateway lists", async () => {
   const registered: string[][] = [];
   const link = {
-    approval: { consentUrl: "https://app.example/link/authorize", connectedAppsUrl: "https://app.example/credentials?section=connected-apps" },
+    approval: { consentUrl: "https://app.example/link/authorize", connectedAppsUrl: "https://app.example/connected-apps" },
     httpRedirectHosts: ["*.example.ts.net", "dev.local"],
     registerApp: async ({ name, redirectUris }: { name: string; redirectUris: string[] }) => {
       registered.push(redirectUris);
@@ -75,7 +75,7 @@ test("http redirect URIs are allowed only on loopback and the hosts the gateway 
   );
   expect(await metadata.json()).toMatchObject({
     web_message_origin: "https://app.example",
-    connected_apps_uri: "https://app.example/credentials?section=connected-apps",
+    connected_apps_uri: "https://app.example/connected-apps",
     callback_script: "http://gateway.test/v1/link/callback.js",
   });
 });

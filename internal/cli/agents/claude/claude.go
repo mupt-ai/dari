@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,7 +18,87 @@ import (
 	"github.com/mupt-ai/dari/internal/cli/agents"
 )
 
-const customHeadersEnv = "ANTHROPIC_CUSTOM_HEADERS"
+const (
+	customHeadersEnv = "ANTHROPIC_CUSTOM_HEADERS"
+	subagentModelEnv = "CLAUDE_CODE_SUBAGENT_MODEL"
+	// autoModeModelEnv is the model auto mode's safety classifier asks for;
+	// without it the classifier follows the sonnet alias.
+	autoModeModelEnv = "CLAUDE_CODE_AUTO_MODE_MODEL"
+)
+
+// aliasEnvironment maps each model alias Claude Code accepts (in /model, an
+// Agent tool call, or an agent definition) to the variable that resolves it.
+var aliasEnvironment = map[string]string{
+	"opus":   "ANTHROPIC_DEFAULT_OPUS_MODEL",
+	"sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+	"fable":  "ANTHROPIC_DEFAULT_FABLE_MODEL",
+	"haiku":  "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+}
+
+// aliasModel is the model an alias names: the router's first model of that
+// Claude family, and whether the router has one. Without one it still names
+// the family, so requests for it fail with "not enabled on this router"
+// instead of quietly running on another model.
+func aliasModel(models agents.Models, alias string) (string, bool) {
+	prefix := "anthropic/claude-" + alias + "-"
+	for _, id := range append(slices.Clone(models.Enabled), models.Unavailable...) {
+		if strings.HasPrefix(id, prefix) {
+			return agents.ExplicitModelPrefix + id, true
+		}
+	}
+	return agents.ExplicitModelPrefix + "anthropic/claude-" + alias, false
+}
+
+// routesSubagents reports whether subagents are pinned to Dari Routing. Without
+// it Claude Code runs a subagent that names no model on the session's current
+// model, following each /model switch.
+func routesSubagents(models agents.Models) bool {
+	return models.Stable() == agents.RoutingModel
+}
+
+// StartModel is the model a launch starts on: the user's Dari pick, kept even
+// while the router cannot serve it (its requests fail until they pick another
+// with /model, rather than quietly running on a different model), else the
+// launch's default.
+func StartModel(models agents.Models) string {
+	if strings.HasPrefix(models.Saved, "dari/") {
+		return models.Saved
+	}
+	return models.Default()
+}
+
+// Warnings name the model choices this router cannot serve: the saved pick,
+// and the aliases whose Claude family it does not enable. hosted says a saved
+// Dari Routing pick fails without the Autorouting plan; a gateway serves it
+// either way.
+func Warnings(models agents.Models, hosted bool) []string {
+	var warnings []string
+	if saved := models.Saved; strings.HasPrefix(saved, "dari/") && !slices.Contains(models.Menu(), saved) {
+		reason := "it is not enabled on this router"
+		switch {
+		case saved == agents.RoutingModel:
+			reason = "it needs the Autorouting plan; run `dari accounts` to get it"
+			if !hosted {
+				reason = ""
+			}
+		case slices.Contains(models.Unavailable, strings.TrimPrefix(saved, agents.ExplicitModelPrefix)):
+			reason = "no connected account or API key serves it yet"
+		}
+		if reason != "" {
+			warnings = append(warnings, fmt.Sprintf("Your saved model %s is not available: %s. Its requests fail until you pick another with /model.", saved, reason))
+		}
+	}
+	var missing []string
+	for _, alias := range []string{"opus", "sonnet", "fable", "haiku"} {
+		if _, ok := aliasModel(models, alias); !ok {
+			missing = append(missing, alias)
+		}
+	}
+	if len(missing) > 0 {
+		warnings = append(warnings, fmt.Sprintf("Not enabled on this router: %s. Claude Code requests for them (such as a subagent's model) fail.", strings.Join(missing, ", ")))
+	}
+	return warnings
+}
 
 // routingEnvironment points Claude Code at the router at baseURL: what a
 // launch sets for its session, and what setup writes into Claude Code's
@@ -36,22 +117,25 @@ func routingEnvironment(key, baseURL, headers string, claudeAI bool, models agen
 	if claudeAI {
 		authToken, headerKey = "", key
 	}
-	return map[string]string{
+	env := map[string]string{
 		"ANTHROPIC_BASE_URL":               baseURL,
 		"ANTHROPIC_AUTH_TOKEN":             authToken,
 		"ANTHROPIC_API_KEY":                "",
 		customHeadersEnv:                   customHeaders(headers, headerKey),
 		"CLAUDE_CODE_GATEWAY_HINT_HEADERS": "1",
 		"CLAUDE_CODE_MAX_CONTEXT_TOKENS":   strconv.Itoa(contextWindow(models)),
-		// Subagents and aliases resolve to the stable model, not the /model
-		// pick: these pins are fixed for the session and written to settings,
-		// so a pick they followed would go stale the moment the user switched.
-		// Haiku stays native: Dari serves background work on its cheapest model.
-		"CLAUDE_CODE_SUBAGENT_MODEL":     models.Stable(),
-		"ANTHROPIC_DEFAULT_OPUS_MODEL":   models.Stable(),
-		"ANTHROPIC_DEFAULT_SONNET_MODEL": models.Stable(),
-		"ANTHROPIC_DEFAULT_FABLE_MODEL":  models.Stable(),
+		// The classifier's requests are background work, which Dari serves on
+		// the cheapest model for dari/routing, with or without the plan.
+		autoModeModelEnv: agents.RoutingModel,
 	}
+	// Each alias names its own model, never a stand-in, so `opus` is Opus.
+	for alias, name := range aliasEnvironment {
+		env[name], _ = aliasModel(models, alias)
+	}
+	if routesSubagents(models) {
+		env[subagentModelEnv] = agents.RoutingModel
+	}
+	return env
 }
 
 // contextWindow is the window Claude Code compacts against: the router's for
@@ -112,18 +196,23 @@ func SignedInToClaudeAI(executable string) bool {
 	return json.Unmarshal(output, &status) == nil && status.AuthMethod == "claude.ai"
 }
 
-// Configure points Claude Code at the router at baseURL, starts it on the
-// launch's default model and, unless the user passed their own --settings,
+// Configure points Claude Code at the router at baseURL, starts it on
+// StartModel and, unless the user passed their own --settings,
 // adds Dari's status line and lists the router's models in /model.
 func Configure(command *agents.Command, key, baseURL string, models agents.Models) error {
 	headers := agents.EnvironmentValue(command.Env, customHeadersEnv)
-	command.Env = agents.WithEnvironment(command.Env, routingEnvironment(key, baseURL, headers, SignedInToClaudeAI(command.Path), models))
+	env := routingEnvironment(key, baseURL, headers, SignedInToClaudeAI(command.Path), models)
+	command.Env = agents.WithEnvironment(command.Env, env)
+	if _, ok := env[subagentModelEnv]; !ok {
+		// Not one inherited from a parent session's pin either.
+		command.Env = agents.WithoutEnvironment(command.Env, subagentModelEnv)
+	}
 	if !agents.ArgsContainFlag(command.Args, "--settings") {
 		if err := injectSettings(command, models); err != nil {
 			return err
 		}
 	}
-	command.Args = agents.InsertBeforeDoubleDash(command.Args, []string{"--model", models.Default()})
+	command.Args = agents.InsertBeforeDoubleDash(command.Args, []string{"--model", StartModel(models)})
 	return nil
 }
 

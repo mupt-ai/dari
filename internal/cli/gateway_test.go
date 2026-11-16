@@ -479,6 +479,49 @@ func TestGatewayWithoutRoutingStartsOnFirstModel(t *testing.T) {
 	}
 }
 
+// Claude Code keeps a saved pick the router no longer serves instead of
+// quietly starting on another model, and the launch says what will fail.
+func TestClaudeLaunchKeepsAnUnavailablePickAndWarns(t *testing.T) {
+	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/model/anthropic/claude-sonnet-5-5"},{"slug":"dari/model/anthropic/claude-opus-5-5"}]}`))
+	})))
+	defer gw.Close()
+
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gw.URL)
+	saved := "dari/model/anthropic/claude-fable-5-2"
+	settings := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settings, []byte(`{"model":"`+saved+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := fakeAgentExecutable(t, "claude")
+
+	var stderr strings.Builder
+	code := runAgentLaunch(context.Background(), agentLaunch{name: "claude", args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
+	if code != 0 {
+		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	}
+	for _, want := range []string{
+		"Starting on " + saved + ".",
+		"Your saved model " + saved + " is not available: it is not enabled on this router.",
+		"Not enabled on this router: fable, haiku.",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr = %q, want %q", stderr.String(), want)
+		}
+	}
+	env, args := readLaunchRecord(t, record)
+	if !slices.Contains(args, saved) {
+		t.Errorf("Claude args = %q, want the saved pick", args)
+	}
+	if env["ANTHROPIC_DEFAULT_OPUS_MODEL"] != "dari/model/anthropic/claude-opus-5-5" || env["CLAUDE_CODE_SUBAGENT_MODEL"] != "" {
+		t.Errorf("Claude env = %v", env)
+	}
+}
+
 // The launcher names its agent when it lists models, so the gateway lists the
 // models it serves that agent: its own list, and a Claude Code or Muse Code
 // plan's models only for that agent. A list for no agent names none.

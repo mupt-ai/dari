@@ -568,13 +568,15 @@ func reportGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, m
 		if gw.local {
 			hint += ", or turn on auto-routing with `dari gateway auto-routing <dari-api-key>`"
 		}
-		agentPrintln(stderr, fmt.Sprintf("Starting on %s. %s.", models.Default(), hint))
+		agentPrintln(stderr, fmt.Sprintf("Starting on %s. %s.", startModel(agent, models), hint))
 	}
 	if !gw.local {
+		reportAgentModels(agent, models, false, stderr)
 		return models
 	}
 	lists, err := fetchGatewayModelLists(ctx, gw)
 	if err != nil {
+		reportAgentModels(agent, models, false, stderr)
 		return models
 	}
 	for _, model := range lists.offered(agent) {
@@ -585,5 +587,6 @@ func reportGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, m
 	if len(models.Unavailable) > 0 {
 		agentPrintln(stderr, fmt.Sprintf("Not available until their provider has an account or API key: %s. Connect one with `dari accounts`.", strings.Join(models.Unavailable, ", ")))
 	}
+	reportAgentModels(agent, models, false, stderr)
 	return models
 }

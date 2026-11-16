@@ -60,7 +60,7 @@ func CLISetup(settingsPath, executable, baseURL, key string, models agents.Model
 		}
 		settings[key] = value
 	}
-	set(modelKey, models.Default())
+	set(modelKey, StartModel(models))
 	set(modelPickerKey, map[string]any{"options": pickerOptions(models), "replaceBuiltInOptions": true})
 	// A status line the user set before Dari is theirs to keep.
 	if _, owned := replaced[statusLineKey]; owned || settings[statusLineKey] == nil {
@@ -79,11 +79,21 @@ func CLISetup(settingsPath, executable, baseURL, key string, models agents.Model
 		env = map[string]any{}
 	}
 	headers, _ := env[customHeadersEnv].(string)
-	for name, value := range routingEnvironment(key, baseURL, headers, SignedInToClaudeAI(executable), models) {
+	routing := routingEnvironment(key, baseURL, headers, SignedInToClaudeAI(executable), models)
+	for name, value := range routing {
 		if _, ok := replacedEnv[name]; !ok {
 			replacedEnv[name] = previous(env, name)
 		}
 		env[name] = value
+	}
+	// Dari owns the subagent model: without routing, an earlier launch's pin
+	// goes, so subagents follow the session's model. Removal restores the
+	// user's own from before setup.
+	if _, ok := routing[subagentModelEnv]; !ok {
+		if _, ok := replacedEnv[subagentModelEnv]; !ok {
+			replacedEnv[subagentModelEnv] = previous(env, subagentModelEnv)
+		}
+		delete(env, subagentModelEnv)
 	}
 	settings["env"] = env
 

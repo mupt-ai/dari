@@ -264,9 +264,29 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 	// Without the Autorouting plan the launch starts on the router's first
 	// model; the Accounts page is where the plan is bought.
 	if !models.Routing && len(models.Enabled) > 0 {
-		agentPrintln(stderr, fmt.Sprintf("Starting on %s. Switch models with /model, or run `dari accounts` to get auto-routing.", models.Default()))
+		agentPrintln(stderr, fmt.Sprintf("Starting on %s. Switch models with /model, or run `dari accounts` to get auto-routing.", startModel(launch.name, models)))
 	}
+	reportAgentModels(launch.name, models, true, stderr)
 	return access.key, baseURL, models, nil
+}
+
+// startModel is the model a launch of agent starts on. Claude Code keeps the
+// user's pick even while the router cannot serve it.
+func startModel(agent string, models agents.Models) string {
+	if agent == "claude" {
+		return claude.StartModel(models)
+	}
+	return models.Default()
+}
+
+// reportAgentModels warns about model choices the router cannot serve.
+func reportAgentModels(agent string, models agents.Models, hosted bool, stderr io.Writer) {
+	if agent != "claude" {
+		return
+	}
+	for _, warning := range claude.Warnings(models, hosted) {
+		agentPrintln(stderr, warning)
+	}
 }
 
 func agentExecutable(name string) (string, error) {

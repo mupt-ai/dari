@@ -1,5 +1,6 @@
 import type { BedrockOptions } from "@mupt-ai/pi-ai/api/bedrock-converse-stream";
 import { isReasoningEffort, isRecord, type ReasoningEffort } from "@mupt-ai/dari-router/policy-engine";
+import { isBackgroundRequest } from "../interaction/types.js";
 import type { InteractionRequest, InteractionResponseFormat, InteractionToolChoice } from "../interaction/types.js";
 import { requiredCapabilitiesFor } from "../interaction/capabilities.js";
 import { toolWireName, toolsByWireName } from "../interaction/tool_identity.js";
@@ -127,6 +128,9 @@ export function buildOptions(
   const webSearch = anthropicWebSearchFor(request, model);
   if (webSearch !== undefined) {
     patches.push((payload) => payloadWithWebSearchTool(payload, webSearch));
+    // A background search is one request whose results are read once. Like
+    // Claude Code against Anthropic directly, send it without prompt caching.
+    if (isBackgroundRequest(request)) options.cacheRetention = "none";
   }
 
   // Pi keeps only the content it models, so native compaction output reaches

@@ -413,20 +413,29 @@ func subscriptionName(subscription subscriptionCredential) string {
 const usageLimitReached = "Limit reached"
 
 // subscriptionDetails is one line each for how much of each quota window is
-// used, each model at its own limit, and the plan's renewal, when the
-// provider reports them. A window at its limit says so; the others still
-// show their headroom.
+// used, as the API names and shows it, each model at its own limit, and the
+// plan's renewal, when the provider reports them. A window at its limit says
+// so; the others still show their headroom.
 func subscriptionDetails(subscription subscriptionCredential) []string {
 	details := []string{}
-	for _, window := range subscriptionUsageWindows(subscription, time.Now()) {
-		resets, _ := time.Parse(time.RFC3339Nano, window.ResetsAt)
-		usage := fmt.Sprintf("%.0f%% used", window.Utilization*100)
-		if window.Utilization >= 1 {
-			usage = usageLimitReached
+	if subscription.Usage != nil {
+		for _, window := range subscription.Usage.Windows {
+			resets, err := time.Parse(time.RFC3339Nano, window.ResetsAt)
+			if err != nil || !resets.After(time.Now()) {
+				continue
+			}
+			usage := fmt.Sprintf("%.0f%% used", window.Utilization*100)
+			if window.Utilization >= 1 {
+				usage = usageLimitReached
+			}
+			details = append(details, window.Label+" · "+usage+" · Resets "+usageResetTime(resets))
 		}
-		details = append(details, usageWindowLabel(window.Minutes)+" · "+usage+" · Resets "+usageResetTime(resets))
 	}
 	for _, hold := range activeModelHolds(subscription, time.Now()) {
+		// A full Fable window already says its models are at their limit.
+		if fableWindowFull(subscription) && strings.HasPrefix(hold.Model, "anthropic/claude-fable-") {
+			continue
+		}
 		resets, _ := time.Parse(time.RFC3339Nano, hold.UnavailableUntil)
 		details = append(details, cmp.Or(hold.DisplayName, hold.Model)+" · "+usageLimitReached+" · Resets "+usageResetTime(resets))
 	}
@@ -436,86 +445,12 @@ func subscriptionDetails(subscription subscriptionCredential) []string {
 	return details
 }
 
-const (
-	fiveHourMinutes = 5 * 60
-	weekMinutes     = 7 * 24 * 60
-	monthMinutes    = 30 * 24 * 60
-)
-
-// subscriptionUsageWindows is every window that has not reset, shortest
-// first. A held subscription's hold ends when the window that ran out
-// resets, so that window shows full. Usage reported without per-window
-// detail, and holds without a matching window, are named by how far off
-// their reset is: only a weekly or monthly window resets more than five
-// hours out, and only OpenCode Go's monthly one more than a week.
-func subscriptionUsageWindows(subscription subscriptionCredential, now time.Time) []subscriptionUsageWindow {
-	inferred := func(resets time.Time) int {
-		switch left := resets.Sub(now); {
-		case left > weekMinutes*time.Minute:
-			return monthMinutes
-		case left > fiveHourMinutes*time.Minute:
-			return weekMinutes
-		default:
-			return fiveHourMinutes
-		}
-	}
-	running := func(resetsAt string) (time.Time, bool) {
-		resets, err := time.Parse(time.RFC3339Nano, resetsAt)
-		return resets, err == nil && resets.After(now)
-	}
-	windows := []subscriptionUsageWindow{}
-	if usage := subscription.Usage; usage != nil {
-		if len(usage.Windows) == 0 {
-			if resets, ok := running(usage.ResetsAt); ok {
-				windows = append(windows, subscriptionUsageWindow{Minutes: inferred(resets), Utilization: usage.Utilization, ResetsAt: usage.ResetsAt})
-			}
-		}
-		for _, window := range usage.Windows {
-			if _, ok := running(window.ResetsAt); ok {
-				windows = append(windows, window)
-			}
-		}
-	}
-	if subscription.UnavailableUntil == nil {
-		return windows
-	}
-	held, ok := running(*subscription.UnavailableUntil)
-	if !ok {
-		return windows
-	}
-	minutes := inferred(held)
-	closest := 15 * time.Minute
-	for _, window := range windows {
-		resets, _ := time.Parse(time.RFC3339Nano, window.ResetsAt)
-		if gap := resets.Sub(held).Abs(); gap < closest {
-			closest, minutes = gap, window.Minutes
-		}
-	}
-	limited := []subscriptionUsageWindow{}
-	for _, window := range windows {
-		if window.Minutes != minutes {
-			limited = append(limited, window)
-		}
-	}
-	limited = append(limited, subscriptionUsageWindow{Minutes: minutes, Utilization: 1, ResetsAt: *subscription.UnavailableUntil})
-	slices.SortFunc(limited, func(a, b subscriptionUsageWindow) int { return a.Minutes - b.Minutes })
-	return limited
-}
-
-// usageWindowLabel names a quota window by its length: 5h, Weekly, Monthly, 2d.
-func usageWindowLabel(minutes int) string {
-	switch {
-	case minutes == weekMinutes:
-		return "Weekly"
-	case minutes == monthMinutes:
-		return "Monthly"
-	case minutes%(24*60) == 0:
-		return fmt.Sprintf("%dd", minutes/(24*60))
-	case minutes%60 == 0:
-		return fmt.Sprintf("%dh", minutes/60)
-	default:
-		return fmt.Sprintf("%dm", minutes)
-	}
+// fableWindowFull reports whether the subscription's own Fable window is at
+// its limit.
+func fableWindowFull(subscription subscriptionCredential) bool {
+	return subscription.Usage != nil && slices.ContainsFunc(subscription.Usage.Windows, func(window subscriptionUsageWindow) bool {
+		return window.ModelFamily == "fable" && window.Utilization >= 1
+	})
 }
 
 // usageResetTime is the clock time a window resets, with its date when it is

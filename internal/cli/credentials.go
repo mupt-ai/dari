@@ -314,6 +314,8 @@ type subscriptionModelHold struct {
 }
 
 type subscriptionUsageWindow struct {
+	// Label is what to call the window: "5 Hour", "Weekly", "Claude Fable Weekly".
+	Label       string  `json:"label"`
 	ModelFamily string  `json:"model_family,omitempty"`
 	Minutes     int     `json:"minutes"`
 	Utilization float64 `json:"utilization"`

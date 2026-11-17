@@ -14,6 +14,7 @@ import {
   type SubscriptionProvider,
 } from "./oauth.js";
 import { canonicalModelName } from "../../models/canonical.js";
+import type { SubscriptionUsageWindow } from "../../providers/subscription_limits.js";
 import {
   activeModelHolds,
   currentUsage,
@@ -174,13 +175,60 @@ function summary(store: SubscriptionStore, credential: SubscriptionCredential, n
   return credentialBody(credential, store.activeCredential(credential.provider, now)?.id === credential.id, now);
 }
 
-/** The fields the CLI reads from a credential, never its tokens. */
+const FIVE_HOURS = 5 * 60;
+const ONE_WEEK = 7 * 24 * 60;
+const ONE_MONTH = 30 * 24 * 60;
+
+// A model family's own window is named for the family's catalog models.
+const MODEL_FAMILY_NAMES = { fable: "Claude Fable" } as const;
+
+/** What to call a window: 5 Hour, Weekly, Monthly, Claude Fable Weekly. */
+function usageWindowLabel(window: SubscriptionUsageWindow): string {
+  const minutes = window.minutes;
+  const length = minutes === ONE_WEEK ? "Weekly"
+    : minutes === ONE_MONTH ? "Monthly"
+    : minutes % (24 * 60) === 0 ? `${minutes / (24 * 60)} Day`
+    : minutes % 60 === 0 ? `${minutes / 60} Hour`
+    : `${minutes} Minute`;
+  return window.modelFamily === undefined ? length : `${MODEL_FAMILY_NAMES[window.modelFamily]} ${length}`;
+}
+
+/**
+ * The usage to show, as the hosted API shows it: every running window, a
+ * held plan's window full. A hold ends when the window that ran out resets,
+ * so the shared window resetting with it shows full. Usage reported without
+ * per-window detail, and holds without a matching window, are named by how
+ * far off their reset is: only a weekly or monthly window resets more than
+ * five hours out, and only OpenCode Go's monthly one more than a week.
+ */
 function usageBody(credential: SubscriptionCredential, now: Date) {
+  const inferred = (resetsAt: Date) => {
+    const left = resetsAt.getTime() - now.getTime();
+    if (left > ONE_WEEK * 60_000) return ONE_MONTH;
+    return left > FIVE_HOURS * 60_000 ? ONE_WEEK : FIVE_HOURS;
+  };
   const usage = currentUsage(credential, now);
-  return usage === null ? null : {
-    utilization: usage.utilization,
-    resets_at: usage.resetsAt.toISOString(),
-    windows: usage.windows.map((window) => ({
+  let windows: SubscriptionUsageWindow[] = usage === null ? []
+    : usage.windows.length > 0 ? usage.windows
+    : [{ minutes: inferred(usage.resetsAt), utilization: usage.utilization, resetsAt: usage.resetsAt }];
+  if (isHeld(credential, now)) {
+    const held = credential.unavailableUntil!;
+    const gap = (window: SubscriptionUsageWindow) => Math.abs(window.resetsAt.getTime() - held.getTime());
+    // The hold is the plan's; it never fills a model family's window.
+    const closest = windows.filter((window) => window.modelFamily === undefined)
+      .reduce<SubscriptionUsageWindow | null>((best, window) => best === null || gap(window) < gap(best) ? window : best, null);
+    const minutes = closest !== null && gap(closest) < 15 * 60_000 ? closest.minutes : inferred(held);
+    windows = [
+      ...windows.filter((window) => window.modelFamily !== undefined || window.minutes !== minutes),
+      { minutes, utilization: 1, resetsAt: held },
+    ].sort((a, b) => a.minutes - b.minutes || (a.modelFamily ?? "").localeCompare(b.modelFamily ?? ""));
+  }
+  if (windows.length === 0) return null;
+  return {
+    utilization: usage?.utilization ?? 1,
+    resets_at: (usage?.resetsAt ?? windows[0]!.resetsAt).toISOString(),
+    windows: windows.map((window) => ({
+      label: usageWindowLabel(window),
       ...(window.modelFamily === undefined ? {} : { model_family: window.modelFamily }),
       minutes: window.minutes,
       utilization: window.utilization,
@@ -212,8 +260,8 @@ function credentialBody(credential: SubscriptionCredential, active: boolean, now
       reason: hold.reason,
     })),
     subscription_active: active,
-    // The share of its tightest window the plan last reported used, while
-    // that window has not reset; null when it reports none.
+    // The share of its tightest window the plan last reported used, and
+    // every window as shown; null when it reports none and is not held.
     usage: usageBody(credential, now),
     // Spending banked limit resets is hosted-only.
     auto_redeem_resets: false,

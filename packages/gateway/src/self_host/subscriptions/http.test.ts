@@ -192,6 +192,30 @@ describe("managing", () => {
     ]);
   });
 
+  test("usage names every window and shows a held plan's window full", async () => {
+    const g = gateway([claudeToken("one@example.com")]);
+    await connectClaude(g);
+    const id = g.store.list()[0]!.id;
+    const fiveHours = new Date("2026-10-20T14:00:00Z");
+    const week = new Date("2026-10-24T12:00:00Z");
+    g.store.recordUsage(id, {
+      utilization: 0.4,
+      resetsAt: fiveHours,
+      windows: [
+        { minutes: 300, utilization: 0.4, resetsAt: fiveHours },
+        { minutes: 10080, utilization: 0.01, resetsAt: week },
+        { modelFamily: "fable", minutes: 10080, utilization: 0.02, resetsAt: new Date("2026-10-23T12:00:00Z") },
+      ],
+    }, now);
+    const windows = async () => (await g.call("GET", ""))!.body.credentials[0].usage.windows
+      .map((window: any) => [window.label, window.utilization]);
+    expect(await windows()).toEqual([["5 Hour", 0.4], ["Weekly", 0.01], ["Claude Fable Weekly", 0.02]]);
+
+    // The plan's hold fills its weekly window, never the Fable one.
+    g.store.markUnavailable(id, week, "usage_limit", now);
+    expect(await windows()).toEqual([["5 Hour", 0.4], ["Weekly", 1], ["Claude Fable Weekly", 0.02]]);
+  });
+
   test("rename, mark-available, and disconnect", async () => {
     const g = gateway([claudeToken("one@example.com")]);
     await connectClaude(g);

@@ -276,14 +276,14 @@ func TestAgentAccountLinesListSubscriptionsInRoutingOrderThenKeys(t *testing.T) 
 	lines := agentAccountLines(personalSubscriptions([]subscriptionCredential{
 		{Name: "CLAUDE_2", OAuthProvider: claudeSubscription.id, CredentialScope: "user", CreatedAt: "2026-02", Label: &label},
 		{Name: "CODEX", OAuthProvider: codexSubscription.id, CredentialScope: "user", CreatedAt: "2026-01", SubscriptionActive: true, SafeMetadata: map[string]string{"account_email": "me@example.test", "plan": "Plus"}},
-		{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, CredentialScope: "user", CreatedAt: "2026-01", Usage: &subscriptionUsage{Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339)}},
+		{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, CredentialScope: "user", CreatedAt: "2026-01", Usage: &subscriptionUsage{Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339), Windows: []subscriptionUsageWindow{{Label: "5 Hour", Minutes: 300, Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339)}}}},
 		{Name: "TEAM", OAuthProvider: codexSubscription.id, CredentialScope: "organization"},
 		{Name: "MUSE", OAuthProvider: museSubscription.id, CredentialScope: "user", CreatedAt: "2026-03"},
 	}), []string{"Vercel AI Gateway"}, true)
 	got := stripANSI(strings.Join(lines, "\n"))
 	want := "\n  Subscriptions\n" +
 		"  • Claude Code  CLAUDE\n" +
-		"    › 5h · 40% used · Resets " + usageResetTime(resets) + "\n" +
+		"    › 5 Hour · 40% used · Resets " + usageResetTime(resets) + "\n" +
 		"  • Claude Code  Work\n" +
 		"  • Muse Code  MUSE\n" +
 		"  • ChatGPT  me@example.test  Plus\n" +
@@ -344,67 +344,6 @@ func TestSubscriptionDetailsShowPlanAndRenewal(t *testing.T) {
 	}
 }
 
-func TestSubscriptionDetailsNameUsageReportedWithoutWindows(t *testing.T) {
-	resets := time.Now().Add(2 * time.Hour)
-	got := subscriptionDetails(subscriptionCredential{Usage: &subscriptionUsage{Utilization: 0.62, ResetsAt: resets.Format(time.RFC3339)}})
-	if want := []string{"5h · 62% used · Resets " + usageResetTime(resets)}; !slices.Equal(got, want) {
-		t.Fatalf("details = %q, want %q", got, want)
-	}
-	expired := subscriptionDetails(subscriptionCredential{Usage: &subscriptionUsage{Utilization: 1, ResetsAt: time.Now().Add(-time.Minute).Format(time.RFC3339)}})
-	if len(expired) != 0 {
-		t.Fatalf("expired usage details = %q", expired)
-	}
-}
-
-func TestSubscriptionDetailsShowEveryUsageWindow(t *testing.T) {
-	fiveHours := time.Now().Add(2 * time.Hour)
-	week := time.Now().Add(96 * time.Hour)
-	usage := &subscriptionUsage{
-		Utilization: 0.99,
-		ResetsAt:    fiveHours.Format(time.RFC3339),
-		Windows: []subscriptionUsageWindow{
-			{Minutes: 300, Utilization: 0.99, ResetsAt: fiveHours.Format(time.RFC3339)},
-			{Minutes: 10080, Utilization: 0.2, ResetsAt: week.Format(time.RFC3339)},
-		},
-	}
-	got := subscriptionDetails(subscriptionCredential{Usage: usage})
-	want := []string{"5h · 99% used · Resets " + usageResetTime(fiveHours), "Weekly · 20% used · Resets " + usageResetTime(week)}
-	if !slices.Equal(got, want) {
-		t.Fatalf("details = %q, want %q", got, want)
-	}
-	// Held until the five hour reset: that window is at its limit, and the
-	// weekly window still shows its headroom.
-	held := fiveHours.Format(time.RFC3339)
-	got = subscriptionDetails(subscriptionCredential{Usage: usage, UnavailableUntil: &held})
-	want = []string{"5h · Limit reached · Resets " + usageResetTime(fiveHours), "Weekly · 20% used · Resets " + usageResetTime(week)}
-	if !slices.Equal(got, want) {
-		t.Fatalf("held details = %q, want %q", got, want)
-	}
-}
-
-func TestSubscriptionDetailsShowOpenCodeGoMonthlyWindow(t *testing.T) {
-	rolling := time.Now().Add(time.Hour)
-	week := time.Now().Add(48 * time.Hour)
-	month := time.Now().Add(20 * 24 * time.Hour)
-	got := subscriptionDetails(subscriptionCredential{OAuthProvider: "opencode_go", Usage: &subscriptionUsage{
-		Utilization: 1,
-		ResetsAt:    month.Format(time.RFC3339),
-		Windows: []subscriptionUsageWindow{
-			{Minutes: 300, Utilization: 0.05, ResetsAt: rolling.Format(time.RFC3339)},
-			{Minutes: 10080, Utilization: 0.4, ResetsAt: week.Format(time.RFC3339)},
-			{Minutes: 43200, Utilization: 1, ResetsAt: month.Format(time.RFC3339)},
-		},
-	}})
-	want := []string{
-		"5h · 5% used · Resets " + usageResetTime(rolling),
-		"Weekly · 40% used · Resets " + usageResetTime(week),
-		"Monthly · Limit reached · Resets " + usageResetTime(month),
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("details = %q, want %q", got, want)
-	}
-}
-
 func TestSubscriptionDetailsShowEachModelAtItsLimit(t *testing.T) {
 	resets := time.Now().Add(72 * time.Hour)
 	got := subscriptionDetails(subscriptionCredential{ModelHolds: []subscriptionModelHold{
@@ -422,23 +361,32 @@ func TestSubscriptionDetailsShowEachModelAtItsLimit(t *testing.T) {
 	}
 }
 
-func TestSubscriptionDetailsNameAHoldWithoutUsage(t *testing.T) {
-	soon := time.Now().Add(3 * time.Hour).Format(time.RFC3339)
-	later := time.Now().Add(50 * time.Hour).Format(time.RFC3339)
-	nextMonth := time.Now().Add(20 * 24 * time.Hour).Format(time.RFC3339)
-	cases := []struct {
-		provider, until, want string
-	}{
-		{"openai_codex", soon, "5h"},
-		{"openai_codex", later, "Weekly"},
-		{"meta_muse", later, "Weekly"},
-		// Only OpenCode Go's monthly window resets more than a week out.
-		{"opencode_go", nextMonth, "Monthly"},
+func TestSubscriptionDetailsShowEachWindowAsTheAPINamesIt(t *testing.T) {
+	fiveHours := time.Now().Add(2 * time.Hour)
+	week := time.Now().Add(96 * time.Hour)
+	fableWeek := time.Now().Add(72 * time.Hour)
+	usage := &subscriptionUsage{Windows: []subscriptionUsageWindow{
+		{Label: "5 Hour", Minutes: 300, Utilization: 1, ResetsAt: fiveHours.Format(time.RFC3339)},
+		{Label: "Weekly", Minutes: 10080, Utilization: 0.01, ResetsAt: week.Format(time.RFC3339)},
+		{Label: "Claude Fable Weekly", ModelFamily: "fable", Minutes: 10080, Utilization: 0.02, ResetsAt: fableWeek.Format(time.RFC3339)},
+		// A window that reset since the listing is gone.
+		{Label: "Monthly", Minutes: 43200, Utilization: 0.5, ResetsAt: time.Now().Add(-time.Minute).Format(time.RFC3339)},
+	}}
+	got := subscriptionDetails(subscriptionCredential{Usage: usage})
+	want := []string{
+		"5 Hour · Limit reached · Resets " + usageResetTime(fiveHours),
+		"Weekly · 1% used · Resets " + usageResetTime(week),
+		"Claude Fable Weekly · 2% used · Resets " + usageResetTime(fableWeek),
 	}
-	for _, c := range cases {
-		got := subscriptionDetails(subscriptionCredential{OAuthProvider: c.provider, UnavailableUntil: &c.until})
-		if len(got) != 1 || !strings.HasPrefix(got[0], c.want+" · Limit reached · Resets ") {
-			t.Fatalf("%s held until %s: details = %q", c.provider, c.until, got)
-		}
+	if !slices.Equal(got, want) {
+		t.Fatalf("details = %q, want %q", got, want)
+	}
+	// A full Fable window already names the Fable hold.
+	usage.Windows[2].Utilization = 1
+	got = subscriptionDetails(subscriptionCredential{Usage: usage, ModelHolds: []subscriptionModelHold{
+		{Model: "anthropic/claude-fable-5", DisplayName: "Claude Fable 5", UnavailableUntil: fableWeek.Format(time.RFC3339)},
+	}})
+	if want := "Claude Fable Weekly · Limit reached · Resets " + usageResetTime(fableWeek); len(got) != 3 || got[2] != want {
+		t.Fatalf("full Fable details = %q, want last %q", got, want)
 	}
 }

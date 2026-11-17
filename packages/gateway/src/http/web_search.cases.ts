@@ -38,7 +38,7 @@ const sse = (model: string) => [
   ["message_stop", { type: "message_stop" }],
 ].map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join("");
 
-const upstreamBodies: Array<{ model: string; tools?: unknown[] }> = [];
+const upstreamBodies: Array<{ model: string; system?: unknown; tools?: unknown[] }> = [];
 let upstream: ReturnType<typeof Bun.serve>;
 let handler: (request: Request) => Promise<Response>;
 let router: ResolvedRouter;
@@ -90,8 +90,10 @@ test("a background web search runs on the cheapest Claude model and returns its 
 
   expect(upstreamBodies).toHaveLength(1);
   expect(upstreamBodies[0]!.model).toBe("claude-haiku-4-5");
-  // The tool reaches Anthropic as the client defined it, plus Pi's cache marker.
-  expect(upstreamBodies[0]!.tools).toEqual([{ ...WEB_SEARCH_TOOL, cache_control: { type: "ephemeral" } }]);
+  // The tool reaches Anthropic as the client defined it. Nothing is cached:
+  // the results are read once, and Claude Code sends its search uncached too.
+  expect(upstreamBodies[0]!.tools).toEqual([WEB_SEARCH_TOOL]);
+  expect(JSON.stringify(upstreamBodies[0])).not.toContain("cache_control");
 
   const blocks = events.filter((event) => event.type === "content_block_start").map((event) => event.content_block);
   expect(blocks.map((block) => block.type)).toEqual(["server_tool_use", "text", "text", "web_search_tool_result"]);
@@ -119,6 +121,8 @@ test("a web search outside background work keeps the model it names", async () =
   expect(response.status).toBe(200);
   await response.text();
   expect(upstreamBodies[0]!.model).toBe("claude-opus-4-8");
+  // A conversation that searches keeps prompt caching for its later turns.
+  expect(upstreamBodies[0]!.tools).toContainEqual({ ...WEB_SEARCH_TOOL, cache_control: { type: "ephemeral" } });
 });
 
 test("a router without a Claude model says web search needs one", async () => {

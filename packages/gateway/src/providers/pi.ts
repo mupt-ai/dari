@@ -53,6 +53,7 @@ import {
   messageWithWebSearchResults,
   webSearchResultsTap,
 } from "./anthropic_web_search.js";
+import { chargesWebSearch, eventsWithWebSearchFee, messageWithWebSearchFee, webSearchCountTap } from "./web_search_fee.js";
 import {
   eventsWithProviderReportedCost,
   messageWithProviderReportedCost,
@@ -161,6 +162,9 @@ export async function completeInteractionModel(args: {
   const webSearch = anthropicWebSearchFor(args.request, model)
     ? webSearchResultsTap(safeguards?.fetch ?? costTap?.fetch ?? args.fetch)
     : undefined;
+  const searchCount = chargesWebSearch(args.request)
+    ? webSearchCountTap(webSearch?.fetch ?? safeguards?.fetch ?? costTap?.fetch ?? args.fetch)
+    : undefined;
   const options = buildOptions(
     args.request,
     args.auth ?? args.apiKey,
@@ -171,22 +175,26 @@ export async function completeInteractionModel(args: {
     args.selectedReasoningEffort,
     args.timeoutMs,
     args.signal,
-    webSearch?.fetch ?? safeguards?.fetch ?? costTap?.fetch ?? args.fetch,
+    searchCount?.fetch ?? webSearch?.fetch ?? safeguards?.fetch ?? costTap?.fetch ?? args.fetch,
   );
   const usageContext = subscriptionUsageContext(args.model, model, source);
   const message = options.emitProviderEvents === true
     ? await completeProviderEventStream(pi.streamSimple(model, context, options))
     : await pi.completeSimple(model, context, options);
   return {
-    message: messageWithProviderReportedCost(
-      messageWithSubscriptionCacheWrites(
-        messageWithWebSearchResults(
-          messageWithSafeguardResults(message, safeguards?.results()),
-          webSearch?.results() ?? [],
+    // The search fee goes on last, over whatever cost the steps before set.
+    message: messageWithWebSearchFee(
+      messageWithProviderReportedCost(
+        messageWithSubscriptionCacheWrites(
+          messageWithWebSearchResults(
+            messageWithSafeguardResults(message, safeguards?.results()),
+            webSearch?.results() ?? [],
+          ),
+          usageContext
         ),
-        usageContext
+        costTap?.cost(),
       ),
-      costTap?.cost(),
+      searchCount?.searches() ?? 0,
     ),
     source,
   };
@@ -266,6 +274,9 @@ export async function streamInteractionModel(args: {
   const webSearch = anthropicWebSearchFor(args.request, model)
     ? webSearchResultsTap(safeguards?.fetch ?? costTap?.fetch ?? args.fetch)
     : undefined;
+  const searchCount = chargesWebSearch(args.request)
+    ? webSearchCountTap(webSearch?.fetch ?? safeguards?.fetch ?? costTap?.fetch ?? args.fetch)
+    : undefined;
   const events = pi.streamSimple(
     model,
     buildContext(args.request, source),
@@ -279,7 +290,7 @@ export async function streamInteractionModel(args: {
       args.selectedReasoningEffort,
       undefined,
       args.signal,
-      webSearch?.fetch ?? safeguards?.fetch ?? costTap?.fetch ?? args.fetch,
+      searchCount?.fetch ?? webSearch?.fetch ?? safeguards?.fetch ?? costTap?.fetch ?? args.fetch,
     )
   );
   const withSafeguardResults = safeguards ? eventsWithSafeguardResults(events, safeguards) : events;
@@ -290,8 +301,9 @@ export async function streamInteractionModel(args: {
     withWebSearchResults,
     subscriptionUsageContext(args.model, model, source)
   );
+  const withReportedCost = costTap ? eventsWithProviderReportedCost(withCacheWrites, costTap) : withCacheWrites;
   return {
-    events: costTap ? eventsWithProviderReportedCost(withCacheWrites, costTap) : withCacheWrites,
+    events: searchCount ? eventsWithWebSearchFee(withReportedCost, searchCount) : withReportedCost,
     source,
   };
 }

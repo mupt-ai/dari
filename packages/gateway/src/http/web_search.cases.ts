@@ -65,6 +65,7 @@ const responsesSse = (model: string) => {
 };
 
 const upstreamBodies: Array<{ model: string; system?: unknown; tools?: unknown[] }> = [];
+const records: Array<Record<string, any>> = [];
 let upstream: ReturnType<typeof Bun.serve>;
 let handler: (request: Request) => Promise<Response>;
 let router: ResolvedRouter;
@@ -96,7 +97,7 @@ beforeAll(() => {
         apiKey: "upstream-key",
         baseUrl: `http://127.0.0.1:${upstream.port}${provider === "openai" ? "/v1" : ""}`,
       }),
-      recordRequest: () => {},
+      recordRequest: (record) => { records.push(record as unknown as Record<string, any>); },
     }),
     selectorBackend: selector,
   });
@@ -108,6 +109,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   upstreamBodies.length = 0;
+  records.length = 0;
   router = resolvedRouter([GPT, OPUS, HAIKU]);
 });
 
@@ -206,6 +208,36 @@ test("a routed search that is not marked as one still needs the Autorouting plan
     expect(response.status).toBe(402);
   }
   expect(upstreamBodies).toHaveLength(0);
+});
+
+// The provider's per-search fee is billed on top of tokens: the attempt's
+// total is its token costs plus $0.01 a search.
+async function searchFee(): Promise<number> {
+  for (let tries = 0; records.length === 0 && tries < 100; tries++) await Bun.sleep(5);
+  const [attempt] = records.at(-1)!.row.billing_provider_attempts as Array<Record<string, string | null>>;
+  const parts = ["provider_input_cost_usd", "provider_cache_read_cost_usd", "provider_cache_write_cost_usd", "provider_output_cost_usd"]
+    .reduce((sum, field) => sum + Number(attempt![field]), 0);
+  return Math.round((Number(attempt!.provider_cost_usd) - parts) * 1e6) / 1e6;
+}
+
+test("each web search the provider ran is billed at its per-search fee", async () => {
+  // Claude Code's search, streamed: Anthropic reports one search.
+  await (await search({ model: `dari/model/${OPUS}`, requestClass: "auxiliary" })).text();
+  expect(await searchFee()).toBe(0.01);
+  // Pi's search on OpenAI: one completed web_search_call.
+  records.length = 0;
+  router = resolvedRouter([GPT, TERRA, LUNA]);
+  await (await piSearch("responses", PI_SEARCH)).json();
+  expect(await searchFee()).toBe(0.01);
+  // A request without a search tool pays no fee.
+  records.length = 0;
+  router = resolvedRouter([GPT, OPUS, HAIKU]);
+  await (await handler(new Request("http://gateway.test/v1/messages", {
+    method: "POST",
+    headers: { "x-api-key": "gw-key", "content-type": "application/json" },
+    body: JSON.stringify({ model: `dari/model/${HAIKU}`, max_tokens: 64, messages: [{ role: "user", content: "hi" }] }),
+  }))).json();
+  expect(await searchFee()).toBe(0);
 });
 
 async function piSearch(endpoint: "messages" | "responses", headers: Record<string, string>): Promise<Response> {

@@ -199,7 +199,9 @@ export function conversationPromptGrowth(
   return Math.max(0, (last - first) / (ordered.length - 1));
 }
 
-function newestConversationHit(
+// The row of a conversation written last: the one carrying its latest
+// serving decision and lease.
+export function newestConversationHit(
   hits: RouterPrefixHit[] | undefined,
   conversationId: string | undefined,
 ): PrefixHit | undefined {

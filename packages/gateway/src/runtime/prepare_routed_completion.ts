@@ -1,4 +1,8 @@
-import type { CandidatePruningAudit } from "@mupt-ai/dari-router/policy-engine";
+import {
+  newestConversationHit,
+  type CandidatePruningAudit,
+  type RouterPrefixHit,
+} from "@mupt-ai/dari-router/policy-engine";
 
 import { interactionConversationPrefix } from "../context/interaction_fingerprint.js";
 import { clampRequestedEffort } from "../context/routing_context.js";
@@ -13,7 +17,12 @@ import { isBackgroundRequest, type InteractionRequest } from "../interaction/typ
 import { executionProviderForModel } from "../models/execution_provider.js";
 import { codexModelConfig, subscriptionServes } from "../models/subscriptions.js";
 import { explicitModelId } from "../protocol/input/router_model.js";
-import { gatewayPlatform, type RequestTags, type SessionPin } from "../platform/platform.js";
+import {
+  gatewayPlatform,
+  type RequestTags,
+  type ResolveRouterRequest,
+  type SessionPin,
+} from "../platform/platform.js";
 import { resolveRouter } from "../strategies/routing.js";
 import { RequestReporter, type ReportedCandidatePruning } from "../telemetry/report.js";
 import { RoutingBillingFinalization } from "../telemetry/billing_finalization.js";
@@ -29,6 +38,7 @@ import {
   scopedHarnessConversationId,
   scopedHarnessSessionId,
   type HarnessConversationIdentity,
+  type HarnessConversationScope,
 } from "./harness_identity/index.js";
 
 export type PreparedRoutedCompletion = {
@@ -50,6 +60,9 @@ export type PreparedRoutedCompletion = {
   // The router's prompt for this request's role, appended to the system
   // prompt sent to the provider. Routing and prefix matching never see it.
   rolePrompt?: string;
+  // For routed background work: the latest row of the conversation of the
+  // agent it works for, naming the model that agent is on.
+  agentRow?: RouterPrefixHit;
   reporter: RoutedRuntimeReporter;
 };
 
@@ -143,6 +156,20 @@ export async function prepareRoutedCompletion(args: {
     }
     credentials = conversationCredentials;
   }
+  // Claude Code runs compaction, side questions and its other forked work on
+  // the model of the agent they serve. On routing, that is the model the
+  // agent's conversation is on, read from its latest row.
+  const agentRow = background
+    && args.harnessConversationIdentity !== undefined
+    && credentials.strict !== true
+    && explicitModelId(args.interaction.model) === null
+    ? await agentConversationRow({
+        resolveRequest: { routerId: args.routerId, apiKey: args.apiKey, clientHarness: args.clientHarness },
+        identity: args.harnessConversationIdentity,
+        interaction: args.interaction,
+        scope: harnessScope,
+      })
+    : undefined;
   const roleModel = withRoleModel(credentials, args.interaction);
   const prompt = rolePrompt(credentials, args.interaction);
   const strictAccess = strictProviderAccess(credentials, roleModel.interaction);
@@ -241,8 +268,39 @@ export async function prepareRoutedCompletion(args: {
     ...(sessionPin === undefined ? {} : { sessionPin }),
     ...(roleModel.role === undefined ? {} : { role: roleModel.role }),
     ...(prompt === undefined ? {} : { rolePrompt: prompt }),
+    ...(agentRow === undefined ? {} : { agentRow }),
     reporter,
   };
+}
+
+/* The latest row of the conversation a background request works for. Forked
+   work carries that agent's transcript, so it names the same conversation
+   under the agent's own request class. An agent with an id is usually a
+   subagent, which Claude Code may have run as a workflow agent, but may be a
+   main agent (an Agent Teams teammate). Other background work
+   (a web search, a safety check) carries its own transcript and finds none. */
+async function agentConversationRow(args: {
+  resolveRequest: Pick<ResolveRouterRequest, "routerId" | "apiKey" | "clientHarness">;
+  identity: HarnessConversationIdentity;
+  interaction: InteractionRequest;
+  scope: HarnessConversationScope;
+}): Promise<RouterPrefixHit | undefined> {
+  const namedAgent = (args.identity.qualifiers?.length ?? 0) > 0
+    || (args.identity.kind === "codex_thread" && args.identity.parentThreadId !== undefined);
+  const prefix = interactionConversationPrefix(args.interaction);
+  for (const requestClass of namedAgent ? ["subagent", "workflow", "main"] : ["main"]) {
+    const conversationId = scopedHarnessConversationId({
+      identity: args.identity,
+      sourceProtocol: args.interaction.sourceProtocol,
+      scope: args.scope,
+      conversationPrefix: JSON.stringify([requestClass, prefix]),
+    });
+    // Read-only: none of this resolve's credentials serve the request.
+    const resolved = await resolveRouter({ ...args.resolveRequest, conversationId, provisional: true });
+    const row = newestConversationHit(resolved.prefix_hits, conversationId)?.entry;
+    if (row !== undefined) return row;
+  }
+  return undefined;
 }
 
 // Ask the platform for each enabled model's credential up front, so provider

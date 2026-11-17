@@ -850,3 +850,20 @@ test("serves OpenCode Go models with Pi's registered compat and OpenCode's clien
     "x-opencode-session": "stable-conversation",
   });
 });
+
+test("Haiku from 4.5 on keeps client-deferred tools deferred, on Anthropic's own API only", () => {
+  const haiku = (provider: string, nativeId: string) => buildModel(pi, "anthropic/claude-haiku-5-5", null, {
+    provider,
+    native_model_id: nativeId,
+    api: "anthropic-messages",
+    base_url: "https://api.example.test",
+    supported_thinking_levels: ["off", "high"],
+    default_thinking_level: "off",
+    cost: { input: 1, output: 5, cached_input: 0.1, cache_write: 1.25 },
+  }).compat as Record<string, unknown>;
+  for (const id of ["claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-haiku-5-5"]) {
+    expect(haiku("anthropic", id).supportsToolReferences).toBe(true);
+  }
+  expect(haiku("anthropic", "claude-haiku-3-5").supportsToolReferences).toBeUndefined();
+  expect(haiku("fireworks", "claude-haiku-5-5").supportsToolReferences).toBeUndefined();
+});

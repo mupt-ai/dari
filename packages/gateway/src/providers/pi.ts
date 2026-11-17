@@ -400,7 +400,7 @@ export function buildModel(
     throw new HttpError(502, `No base URL is configured for provider ${provider}.`, "provider_configuration_error");
   }
   const contextWindow = contextWindowForModel(modelId, registered, config) ?? 128000;
-  const compat = gatewayRuntimeCompat(api, runtimeCompat(provider, registered, modelId), nativeId);
+  const compat = gatewayRuntimeCompat(api, runtimeCompat(provider, registered, modelId), provider, nativeId);
   return {
     ...(registered ?? {}),
     ...(compat !== undefined ? { compat } : {}),
@@ -496,7 +496,7 @@ function contextWindowForModel(
 // keeps tools at the request level until that native tool-change path is validated.
 const RESPONSES_APIS: ReadonlySet<string> = new Set(["openai-responses", "azure-openai-responses", "openai-codex-responses"]);
 
-function gatewayRuntimeCompat(api: unknown, compat: unknown, modelId: string): unknown {
+function gatewayRuntimeCompat(api: unknown, compat: unknown, provider: string, modelId: string): unknown {
   // Pi 1.5 enables server-side message threads whenever sessionId is set.
   // Gateway sessions serve affinity, not permission to retain a conversation
   // remotely; keep full-history requests, including on ZDR routes.
@@ -506,10 +506,13 @@ function gatewayRuntimeCompat(api: unknown, compat: unknown, modelId: string): u
       ...base,
       supportsMessageThreads: false,
       // Pi defers tools (`defer_loading`, loaded by `tool_reference`) only on
-      // Opus, Sonnet and Fable, but Haiku from 4.5 on and Mythos take them too
-      // (mupt-ai/pi#65), and a tool Claude Code loads mid-session must stay
-      // deferred: an ordinary tool changes the cached prefix.
-      ...(base.supportsToolReferences === undefined && takesDeferredTools(modelId) ? { supportsToolReferences: true } : {}),
+      // Opus, Sonnet and Fable. Anthropic's API takes them on Haiku from 4.5
+      // on too, as Claude Code itself sends them (mupt-ai/pi#65), and a tool
+      // Claude Code loads mid-session must stay deferred: an ordinary tool
+      // changes the cached prefix.
+      ...(base.supportsToolReferences === undefined && provider === "anthropic" && isHaiku45OrLater(modelId)
+        ? { supportsToolReferences: true }
+        : {}),
     };
   }
   if (typeof api !== "string" || !RESPONSES_APIS.has(api)) return compat;
@@ -517,9 +520,7 @@ function gatewayRuntimeCompat(api: unknown, compat: unknown, modelId: string): u
   return { ...compat, supportsMidConvoSystemMessages: false };
 }
 
-// https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#model-compatibility
-function takesDeferredTools(modelId: string): boolean {
-  if (modelId.startsWith("claude-mythos-")) return true;
+function isHaiku45OrLater(modelId: string): boolean {
   const version = /^claude-haiku-(\d+)(?:[-.](\d)(?:[-.]|$)|[-.]|$)/.exec(modelId);
   if (version === null) return false;
   const major = Number(version[1]);

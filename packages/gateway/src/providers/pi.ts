@@ -506,10 +506,10 @@ function gatewayRuntimeCompat(api: unknown, compat: unknown, modelId: string): u
       ...base,
       supportsMessageThreads: false,
       // Pi defers tools (`defer_loading`, loaded by `tool_reference`) only on
-      // the Claude models it lists, which leave out Haiku 5 and later. Those
-      // take deferred tools too, and a tool Claude Code loads mid-session must
-      // stay deferred: an ordinary tool changes the cached prefix.
-      ...(base.supportsToolReferences === undefined && isClaudeHaiku5OrLater(modelId) ? { supportsToolReferences: true } : {}),
+      // Opus, Sonnet and Fable, but Haiku from 4.5 on and Mythos take them too
+      // (mupt-ai/pi#65), and a tool Claude Code loads mid-session must stay
+      // deferred: an ordinary tool changes the cached prefix.
+      ...(base.supportsToolReferences === undefined && takesDeferredTools(modelId) ? { supportsToolReferences: true } : {}),
     };
   }
   if (typeof api !== "string" || !RESPONSES_APIS.has(api)) return compat;
@@ -517,9 +517,13 @@ function gatewayRuntimeCompat(api: unknown, compat: unknown, modelId: string): u
   return { ...compat, supportsMidConvoSystemMessages: false };
 }
 
-function isClaudeHaiku5OrLater(modelId: string): boolean {
-  const major = /^claude-haiku-(\d+)(?:[-.]|$)/.exec(modelId)?.[1];
-  return major !== undefined && Number(major) >= 5;
+// https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool#model-compatibility
+function takesDeferredTools(modelId: string): boolean {
+  if (modelId.startsWith("claude-mythos-")) return true;
+  const version = /^claude-haiku-(\d+)(?:[-.](\d)(?:[-.]|$)|[-.]|$)/.exec(modelId);
+  if (version === null) return false;
+  const major = Number(version[1]);
+  return major > 4 || (major === 4 && Number(version[2] ?? 0) >= 5);
 }
 
 function modelPricingFromConfig(config: ResolvedRouterModelConfig | undefined): ModelPricing | null {

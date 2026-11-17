@@ -13,6 +13,7 @@ import { claudeCodeRequestContext } from "./claude_code/request_context.js";
 import { claimedClientHarness } from "./client_harness.js";
 import {
   claudeCodeConversationIdentity,
+  piRequestContext,
 } from "../runtime/harness_identity/index.js";
 import { parseJsonRequest } from "./json.js";
 import { anthropicWebSearchTool } from "../interaction/capabilities.js";
@@ -43,11 +44,15 @@ export async function handleAnthropicMessages(
     const isClaudeCode = isClaudeCodeRequest(request.headers);
     const anthropicSafeguards = safeguardsFrom(rawPayload, request.headers);
     const anthropicContextManagement = contextManagementFrom(rawPayload, request.headers);
-    const agentContext = isClaudeCode ? claudeCodeRequestContext(request.headers) : undefined;
+    // Pi's turns arrive as chat completions; the Dari extension's web search
+    // tool sends its search here, marked as Pi's.
+    const piContext = isClaudeCode ? undefined : piRequestContext(request.headers);
+    const agentContext = isClaudeCode ? claudeCodeRequestContext(request.headers) : piContext;
     // Claude Code runs a web search as a background request that names one of
-    // the session's models. Like its other background work, Dari serves it on
-    // the cheapest model that can: a Claude model on Anthropic's API. A Dari
-    // Link token keeps the model it names.
+    // the session's models, and Pi's search tool as one that asks for routing.
+    // Like other background work, Dari serves it on the cheapest model that
+    // can: a Claude model on Anthropic's API. A Dari Link token keeps the
+    // model it names.
     const backgroundWebSearch = agentContext !== undefined
       && isBackgroundRequest({ ...interaction, agentContext })
       && anthropicWebSearchTool(interaction) !== undefined
@@ -69,7 +74,7 @@ export async function handleAnthropicMessages(
             ? { requestPurpose: "tool_continuation" as const } : {}),
           claudeCodeUserAgent: request.headers.get("user-agent")!.trim(),
         }
-      : forwarded;
+      : { ...forwarded, ...(agentContext === undefined ? {} : { agentContext }) };
     return await handleRoutedCompletion({
       request,
       routerId,
@@ -79,7 +84,9 @@ export async function handleAnthropicMessages(
       streamBody: anthropicMessagesSseStream,
       errorResponse: anthropicErrorResponse,
       selectorBackend,
-      clientHarness: isClaudeCode ? "claude_code" : claimedClientHarness(request.headers),
+      clientHarness: isClaudeCode ? "claude_code"
+        : piContext !== undefined ? "pi"
+        : claimedClientHarness(request.headers),
       harnessConversationIdentity: isClaudeCode
         ? claudeCodeConversationIdentity(
             request.headers,

@@ -15,6 +15,7 @@ import {
   codexRequestPurpose,
   codexRequestContext,
   museCodeConversationIdentity,
+  piRequestContext,
 } from "../runtime/harness_identity/index.js";
 
 export async function handleResponses(
@@ -27,7 +28,11 @@ export async function handleResponses(
     const rawPayload = await parseJsonRequest<Record<string, unknown>>(request);
     const interaction = openAIResponsesToInteraction({ ...rawPayload, model: linkTokenModel(apiKey, rawPayload.model) });
     const requestPurpose = codexRequestPurpose(request.headers, rawPayload);
-    const agentContext = codexRequestContext(request.headers, rawPayload);
+    const codexContext = codexRequestContext(request.headers, rawPayload);
+    // Pi's turns arrive as chat completions; the Dari extension's web search
+    // tool sends an OpenAI hosted search here, marked as Pi's.
+    const piContext = codexContext === undefined ? piRequestContext(request.headers) : undefined;
+    const agentContext = codexContext ?? piContext;
     const museClientId = museCodeClientId(request.headers);
     const payload = {
       ...interaction,
@@ -59,7 +64,8 @@ export async function handleResponses(
       selectorBackend,
       clientHarness: museClientId !== undefined ? "muse_code"
         // Codex describes every request in its turn metadata.
-        : agentContext !== undefined ? "codex"
+        : codexContext !== undefined ? "codex"
+        : piContext !== undefined ? "pi"
         : claimedClientHarness(request.headers),
       harnessConversationIdentity,
     });

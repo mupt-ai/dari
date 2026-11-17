@@ -85,7 +85,7 @@ func runAgentSetup(ctx context.Context, launch agentLaunch, stdin io.Reader, std
 			return err
 		}
 	}
-	agentStep(stderr, fmt.Sprintf("%s now routes through Dari, starting on %s; %s", capitalized(app.name), models.Default(), app.applies))
+	agentStep(stderr, fmt.Sprintf("%s now routes through Dari, starting on %s; %s", capitalized(app.name), startModel(launch.name, models), app.applies))
 	agentStep(stderr, fmt.Sprintf("Run `dari %s %s` again after changing the router's models, or `dari %s %s` to undo", launch.name, agentSetupFlag, launch.name, agentRemoveSetupFlag))
 	return nil
 }

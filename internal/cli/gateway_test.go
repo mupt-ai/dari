@@ -623,6 +623,39 @@ func TestClaudeSetupRoundTripRestoresSettings(t *testing.T) {
 	}
 }
 
+// Setup keeps a saved pick the router no longer serves, and its confirmation
+// names that pick, not a model the settings do not hold.
+func TestClaudeSetupNamesTheKeptPick(t *testing.T) {
+	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/model/anthropic/claude-sonnet-5-5"}]}`))
+	})))
+	defer gw.Close()
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gw.URL)
+	saved := "dari/model/anthropic/claude-fable-5-2"
+	settingsPath := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(settingsPath, []byte(`{"model":"`+saved+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr strings.Builder
+	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setup: true}, strings.NewReader(""), &stderr); err != nil {
+		t.Fatalf("setup: %v, %s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "starting on "+saved+";") || strings.Contains(stderr.String(), "starting on dari/model/anthropic/claude-sonnet-5-5") {
+		t.Fatalf("stderr = %q, want the kept pick named", stderr.String())
+	}
+	raw, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"model": "`+saved+`"`) && !strings.Contains(string(raw), `"model":"`+saved+`"`) {
+		t.Fatalf("settings = %s, want the kept pick", raw)
+	}
+}
+
 func TestGatewayActivityIsHostedOnly(t *testing.T) {
 	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Errorf("unexpected gateway request %s %s", r.Method, r.URL.Path)

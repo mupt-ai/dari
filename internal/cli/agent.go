@@ -159,7 +159,7 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		agentStep(stderr, fmt.Sprintf("%s routes through Dari, starting on %s; `dari %s %s` undoes it", agentApps[launch.name].name, models.Default(), launch.name, agentRemoveSetupFlag))
+		agentStep(stderr, fmt.Sprintf("%s routes through Dari, starting on %s; `dari %s %s` undoes it", agentApps[launch.name].name, startModel(launch.name, models), launch.name, agentRemoveSetupFlag))
 	}
 
 	command, err := buildAgentCommand(path, launch, key, baseURL, models)

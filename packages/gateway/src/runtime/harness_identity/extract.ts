@@ -39,7 +39,12 @@ export function piRequestContext(headers: Headers): AgentRequestContext | undefi
   }
   const kind = headers.get("x-pi-request-kind")?.trim();
   return {
-    requestClass: kind === "turn" ? "main" : kind === "compaction" ? "compaction" : "unknown",
+    requestClass: kind === "turn" ? "main"
+      : kind === "compaction" ? "compaction"
+      // The Dari extension's web search tool: one request beside the turn,
+      // served as background work like Claude Code's own search.
+      : kind === "search" ? "auxiliary"
+      : "unknown",
   };
 }
 

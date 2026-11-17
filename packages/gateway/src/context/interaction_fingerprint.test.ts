@@ -186,6 +186,22 @@ test("IR-native heads include specialized tool semantics", () => {
   );
 });
 
+test("tools a system message adds are part of the prefix identity", () => {
+  const session = (tool: string, leading: boolean) => {
+    const added = { role: "system", content: [{ type: "tool_addition", tool: { type: "tool_definition", definition: { name: tool, input_schema: { type: "object", properties: {} } } } }] };
+    const user = { role: "user", content: "List the issues." };
+    return anthropicMessagesToInteraction({ model: "dari/routing", max_tokens: 4096, messages: leading ? [added, user] : [user, added, { role: "user", content: "Now the open ones." }] });
+  };
+  // Added before the conversation, the tools join the cache head.
+  expect(interactionPrefixChain("rtr_1", session("mcp__linear__list_issues", true), OPENAI)).not.toEqual(
+    interactionPrefixChain("rtr_1", session("mcp__github__list_issues", true), OPENAI),
+  );
+  // Added later, they sit in the chain where they were added.
+  expect(interactionPrefixChain("rtr_1", session("mcp__linear__list_issues", false), OPENAI)).not.toEqual(
+    interactionPrefixChain("rtr_1", session("mcp__github__list_issues", false), OPENAI),
+  );
+});
+
 test("option fingerprints use canonical Interaction controls", () => {
   const base = request();
   base.toolChoice = { kind: "function", namespace: "files", name: "read" };

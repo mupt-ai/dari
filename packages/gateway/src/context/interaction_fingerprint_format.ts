@@ -5,6 +5,7 @@ import { stableStringify } from "@mupt-ai/dari-router/policy-engine";
 import type {
   InteractionContent,
   InteractionRequest,
+  InteractionTool,
 } from "../interaction/types.js";
 
 // Bump when canonical fingerprint semantics change so persisted hashes from
@@ -49,13 +50,15 @@ export type InteractionFingerprintStep = {
   itemId?: string;
   phase?: "commentary" | "final_answer";
   reasoning?: ReasoningFingerprint[];
+  // Tools a system message adds, which change the provider prompt as content does.
+  toolsAdded?: InteractionTool[];
 };
 
 export function interactionFingerprintHeadHash(
   routerId: string,
   request: InteractionRequest,
 ): string {
-  const systemItems: Array<{ actor: "system" | "developer"; content: FingerprintContent }> = [];
+  const systemItems: Array<{ actor: "system" | "developer"; content: FingerprintContent; toolsAdded?: InteractionTool[] }> = [];
   for (const item of request.items) {
     if (
       item.type !== "message"
@@ -66,6 +69,7 @@ export function interactionFingerprintHeadHash(
     systemItems.push({
       actor: item.role,
       content: systemFingerprintContent(item.content, item.contentShape),
+      ...(item.toolsAdded?.length ? { toolsAdded: item.toolsAdded } : {}),
     });
   }
   return sha256(stableStringify({
@@ -122,6 +126,7 @@ export function canonicalInteractionFingerprintStep(
     ...(step.itemId ? { itemId: step.itemId } : {}),
     ...(step.phase ? { phase: step.phase } : {}),
     ...(step.reasoning ? { reasoning: step.reasoning } : {}),
+    ...(step.toolsAdded?.length ? { toolsAdded: step.toolsAdded } : {}),
   });
 }
 

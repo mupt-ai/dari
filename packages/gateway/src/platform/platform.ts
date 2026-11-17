@@ -240,10 +240,15 @@ export type LinkApprovalPage = {
  * The platform's own sign-in. The page sends the user to `url()` with `state`
  * and `next`; the platform signs them in and returns them to
  * `/v1/link/session` with the same `next` and a ticket for that state.
+ * Signing out sends the user to `signOutUrl()` with `next`; the platform ends
+ * its own sign-in and returns them to `next`, so the next sign-in can be
+ * another account.
  */
 export type LinkSignIn = {
   /** Throws HttpError(503, `link_not_configured`) when the platform has none. */
   url(): string;
+  /** Throws HttpError(503, `link_not_configured`) when the platform has none. */
+  signOutUrl(): string;
   /** Who a ticket signed in, for which state, and when (epoch ms); null for no ticket. */
   redeem(ticket: string): Promise<{ subject: string; state: string; issuedAt: number } | null>;
 };

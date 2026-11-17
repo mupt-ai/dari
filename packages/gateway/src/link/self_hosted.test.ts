@@ -278,7 +278,7 @@ test("Claude Code plans serve only Claude Code, and the page and errors say so",
   const running = { ...params, client: "claude_code codex", purpose_claude_code: "Runs <your> agents" };
   const offered = await pageFor(running);
   expect(offered).toContain(`value="${claude}" checked`);
-  expect(offered).toContain("Notes App says: Runs &lt;your&gt; agents");
+  expect(offered).toContain('title="Runs &lt;your&gt; agents"');
   // `plans` limits the page to the kinds the app asked to connect.
   const onlyCodex = await pageFor({ ...running, plans: "openai_codex" });
   expect(onlyCodex).toContain(`value="${codex}"`);

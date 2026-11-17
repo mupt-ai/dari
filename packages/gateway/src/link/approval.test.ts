@@ -141,12 +141,13 @@ test("a new user connects plans by signing in to their providers, then allows th
   const owners = new Set(browser.subscriptions.withIds(new Set(ids)).map((plan) => plan.owner));
   expect(owners.size).toBe(1);
   expect([...owners][0]).toStartWith("lu_");
-  // The user can delete what Dari holds: it asks once, needs their form token,
-  // and a grant left with nothing is revoked.
-  expect(await (await browser.submit({ remove: ids[0]! })).text()).toContain("Remove Claude");
-  await browser.submit({ decision: "remove", remove_id: ids[0]!, csrf: "forged" });
+  // The user deletes what Dari holds on the connections page, which the
+  // approval page links to: it needs their form token, and a grant left with
+  // nothing is revoked.
+  expect(choose).toContain('href="/v1/link/connections"');
+  await browser.manage({ decision: "remove_confirmed", remove_id: ids[0]!, csrf: "forged" });
   expect(browser.subscriptions.withIds(new Set(ids))).toHaveLength(2);
-  await browser.submit({ decision: "remove", remove_id: ids[0]!, csrf });
+  await browser.manage({ decision: "remove_confirmed", remove_id: ids[0]!, csrf });
   expect(browser.subscriptions.withIds(new Set(ids)).map((plan) => plan.id)).toEqual([ids[1]!]);
   expect(browser.links.grants(null)).toEqual([]);
 
@@ -249,7 +250,11 @@ test("the connections page sets a grant's budget, disconnects it, and removes pl
 // the plans it already has are there to share, in any browser.
 test("a user who signs in with their account finds the plans it has", async () => {
   const tickets = new Map<string, { subject: string; state: string; issuedAt: number }>();
-  const browser = gateway([], { url: () => "https://app.test/link/sign-in", redeem: async (ticket) => tickets.get(ticket) ?? null });
+  const browser = gateway([], {
+    url: () => "https://app.test/link/sign-in",
+    signOutUrl: () => "https://app.test/link/sign-out",
+    redeem: async (ticket) => tickets.get(ticket) ?? null,
+  });
   browser.links.addKey("usr_me", "openrouter", "sk-or-mine");
 
   // Nothing happens before they sign in: every step goes to the sign-in.
@@ -284,8 +289,14 @@ test("a user who signs in with their account finds the plans it has", async () =
   expect(choose).toContain("Share With Notes App");
   expect(choose).toContain("Key ending mine");
 
-  // They can sign out, from the approval page or the connections page.
-  expect((await browser.submit({ decision: "sign_out" })).status).toBe(303);
+  // They can sign out, from the approval page or the connections page. The
+  // platform ends its own sign-in too, then returns them to the page, so they
+  // can sign in as another account.
+  const signedOut = await browser.submit({ decision: "sign_out" });
+  expect(signedOut.status).toBe(303);
+  const out = new URL(signedOut.headers.get("location")!);
+  expect(`${out.origin}${out.pathname}`).toBe("https://app.test/link/sign-out");
+  expect(out.searchParams.get("next")).toStartWith("/v1/link/authorize?");
   expect(browser.cookies.has("dari_link_user")).toBe(false);
   expect(await browser.page()).toContain("Notes App Uses Dari To Connect Your AI Subscriptions");
   // The ticket that signed them in does not sign them back in.
@@ -297,7 +308,9 @@ test("a user who signs in with their account finds the plans it has", async () =
   expect(connections).toContain('value="sign_out"');
   const csrf = /name="csrf" value="([^"]+)"/.exec(connections)![1]!;
   browser.cookies.set("dari_link_connect", "a-sign-in-under-way");
-  expect((await browser.manage({ decision: "sign_out", csrf })).status).toBe(303);
+  const managedOut = await browser.manage({ decision: "sign_out", csrf });
+  expect(managedOut.status).toBe(303);
+  expect(managedOut.headers.get("location")).toBe(`https://app.test/link/sign-out?${new URLSearchParams({ next: "/v1/link/connections" })}`);
   expect(browser.cookies.has("dari_link_user")).toBe(false);
   expect(browser.cookies.has("dari_link_connect")).toBe(false);
 
@@ -309,7 +322,7 @@ test("a user who signs in with their account finds the plans it has", async () =
 });
 
 test("a browser Link remembered before it had accounts signs in", async () => {
-  const signIn: LinkSignIn = { url: () => "https://app.test/link/sign-in", redeem: async () => null };
+  const signIn: LinkSignIn = { url: () => "https://app.test/link/sign-in", signOutUrl: () => "https://app.test/link/sign-out", redeem: async () => null };
   const browser = gateway([jsonResponse({ data: [] }), jsonResponse({ device_auth_id: "dev_1", user_code: "ABCD-1234" })]);
   await browser.page();
   expect((await browser.submit({ decision: "add_key", key_provider: "openrouter", api_key: "sk-or-before" })).status).toBe(303);

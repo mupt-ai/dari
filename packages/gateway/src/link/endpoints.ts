@@ -62,6 +62,7 @@ import type {
   LinkGrantDetail,
   LinkKeyProvider,
   LinkUsageTotals,
+  LinkUsageWindow,
   LinkPlatform,
   LinkSignIn,
   LinkBudget,
@@ -1099,7 +1100,7 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
   }
   const decision = kind !== null ? "connect" : form.get("decision");
   if (decision === "deny") return redirect(back, { error: "access_denied" }, [endConnect]);
-  if (decision === "sign_out") return seeAuthorize(authorize, signOutCookies(request));
+  if (decision === "sign_out") return signOut(request, approval, `${AUTHORIZE_PATH}?${authorizeQuery(authorize)}`);
   if (decision === "select") return selectPage(approval, authorize, undefined, [endConnect]);
   if (decision === "connect") {
     if (!connectKinds(approval, authorize).includes(kind as SubscriptionKind)) {
@@ -1141,14 +1142,6 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
   const connect = connectFrom(request, secret);
   if (decision === "complete" && connect !== null) {
     return await finishConnect(approval, request, authorize, session, connect, form.get("authorization_response")?.trim() ?? "");
-  }
-  // Removing a plan or key asks once, then deletes what Dari stored for it.
-  const removing = form.get("remove") ?? form.get("remove_id");
-  if (removing !== null && session !== null) {
-    const subscription = (await approval.subscriptions(session.subject)).find((candidate) => candidate.id === removing);
-    if (subscription !== undefined && decision !== "remove") return removePage(authorize, session, subscription);
-    if (subscription !== undefined && sameText(form.get("csrf") ?? "", session.csrf)) await approval.remove(session.subject, removing);
-    return seeAuthorize(authorize, [endConnect]);
   }
   // Anything else goes back to where the user stands.
   if (decision !== "approve" || session === null) return seeAuthorize(authorize, [endConnect]);
@@ -1276,11 +1269,7 @@ async function connectionsSubmit(approval: LinkApprovalPage, request: Request, f
   const back = new Response(null, { status: 303, headers: { Location: CONNECTIONS_PATH, "Cache-Control": "no-store" } });
   if (session === null || !sameText(form.get("csrf") ?? "", session.csrf)) return back;
   const decision = form.get("decision");
-  if (decision === "sign_out") {
-    const headers = new Headers({ Location: CONNECTIONS_PATH, "Cache-Control": "no-store" });
-    for (const cookie of signOutCookies(request)) headers.append("Set-Cookie", cookie);
-    return new Response(null, { status: 303, headers });
-  }
+  if (decision === "sign_out") return signOut(request, approval, CONNECTIONS_PATH);
   const grantId = form.get("grant_id") ?? "";
   if (decision === "disconnect") {
     await approval.disconnect(session.subject, grantId);
@@ -1465,9 +1454,20 @@ function userCookie(request: Request, approval: LinkApprovalPage, subject: strin
     : signedCookie(request, approval.sessionSecret(), USER_COOKIE, { sub: subject, account: true }, ACCOUNT_SECONDS);
 }
 
-// Signing out leaves nothing of the user's: not who they are, nor a provider sign-in under way.
-function signOutCookies(request: Request): string[] {
-  return [clearCookie(request, USER_COOKIE), clearCookie(request, CONNECT_COOKIE)];
+// Signing out leaves nothing of the user's: not who they are, nor a provider
+// sign-in under way. A platform with accounts ends its own sign-in too, then
+// returns the user to `next`, so the next sign-in can be another account.
+function signOut(request: Request, approval: LinkApprovalPage, next: string): Response {
+  let location = next;
+  if (approval.signIn !== undefined) {
+    const url = new URL(approval.signIn.signOutUrl());
+    url.searchParams.set("next", next);
+    location = url.toString();
+  }
+  const headers = new Headers({ Location: location, "Cache-Control": "no-store" });
+  headers.append("Set-Cookie", clearCookie(request, USER_COOKIE));
+  headers.append("Set-Cookie", clearCookie(request, CONNECT_COOKIE));
+  return new Response(null, { status: 303, headers });
 }
 
 function clearCookie(request: Request, cookie: string): string {
@@ -1671,53 +1671,39 @@ function choosePage(
     body: `<h1>${current === null ? `Share With ${app}` : `Update Plans For ${app}`}</h1>
 <input type="hidden" name="csrf" value="${session.csrf}">
 ${plans.map((plan) => planOption(authorize, plan, ticked.has(plan.id))).join("\n")}
-<button class="btn ghost" type="submit" name="decision" value="select" formnovalidate>${ICONS.plus}Connect Another</button>
-${session.account ? SIGN_OUT : ""}`,
+<div class="actions"><button class="btn ghost" type="submit" name="decision" value="select" formnovalidate>${ICONS.plus}Connect Another</button><span><a class="btn ghost" href="${CONNECTIONS_PATH}" target="_blank" rel="noopener">Manage</a>${session.account ? SIGN_OUT : ""}</span></div>`,
     footer: `<button class="btn primary" type="submit" name="decision" value="approve">${current === null ? "Allow" : "Save"}</button>
 <p class="fine">${app} keeps access until you or it disconnect. Its requests fail while a plan is at its usage limit.</p>`,
   });
 }
 
-// What the user is about to delete, and the one button that deletes it.
-function removePage(authorize: AuthorizeRequest, session: Session, subscription: LinkSubscription): Response {
-  const key = subscription.apiKeyProvider;
-  const name = key === undefined ? KINDS[subscription.provider as SubscriptionKind]?.name ?? subscription.name : subscription.name;
-  return pane(authorize, {
-    title: `Remove ${name}`,
-    step: "choose_plans",
-    back: "home",
-    body: `<span class="who">${logo(key ?? subscription.provider, name)}</span>
-<h1>Remove ${escapeHtml(name)}${key === undefined ? "" : " API Key"}</h1>
-<p>${escapeHtml(planLabel(subscription))}</p>
-<p>Dari deletes ${key === undefined ? "the sign-in it holds for this plan" : "this key"}. Every app you shared it with stops using it.</p>
-<input type="hidden" name="csrf" value="${session.csrf}">
-<input type="hidden" name="remove_id" value="${escapeHtml(subscription.id)}">`,
-    footer: `<button class="btn danger" type="submit" name="decision" value="remove">Remove</button>`,
-  });
-}
-
 function planOption(authorize: AuthorizeRequest, subscription: LinkSubscription, ticked: boolean): string {
-  const box = `<input type="checkbox" name="credential_id" value="${escapeHtml(subscription.id)}"${ticked ? " checked" : ""}><button class="nav drop" type="submit" name="remove" value="${escapeHtml(subscription.id)}" formnovalidate aria-label="Remove">${ICONS.trash}</button>`;
+  const box = `<input type="checkbox" name="credential_id" value="${escapeHtml(subscription.id)}"${ticked ? " checked" : ""}>`;
   if (subscription.apiKeyProvider !== undefined) {
     return `<label class="option pick">${logo(subscription.apiKeyProvider, subscription.name)}<span class="grow"><strong>${escapeHtml(subscription.name)}</strong><small>API key &middot; ${escapeHtml(planLabel(subscription))}</small></span>${box}</label>`;
   }
   const kind = subscription.provider as SubscriptionKind;
   const only = subscriptionClient(kind);
+  // What the app says it does with the plan, on hover.
   const purpose = authorize.purposes[only === "claude_code" || only === "muse_code" ? only : "any_app"];
-  const binding = subscription.usage.filter((window) => window.modelFamily === undefined).reduce<LinkSubscription["usage"][number] | null>(
-    (most, window) => most === null || window.utilization > most.utilization ? window : most,
-    null,
-  );
-  const notes = [
-    planLabel(subscription),
-    ...(subscription.unavailableUntil
-      ? [`At its usage limit until ${new Date(subscription.unavailableUntil).toUTCString()}`]
-      : binding !== null
-        ? [`${Math.round(binding.utilization * 100)}% of its quota used`]
-        : []),
-    ...(purpose ? [`${authorize.app.name} says: ${purpose.replace(/[.\s]+$/, "")}`] : []),
-  ];
-  return `<label class="option pick">${logo(kind, KINDS[kind].name)}<span class="grow"><strong>${KINDS[kind].name}</strong><small>${notes.map(escapeHtml).join(" &middot; ")}</small></span>${box}</label>`;
+  return `<label class="option pick"${purpose === undefined ? "" : ` title="${escapeHtml(purpose)}"`}>${logo(kind, KINDS[kind].name)}<span class="grow"><strong>${KINDS[kind].name}</strong>${meter(subscription, planLabel(subscription))}</span>${box}</label>`;
+}
+
+// The plan's account, and how much of its quota it used as the dashboard
+// shows it: a bar for its fullest shared window that has not reset, red at
+// the limit.
+function meter(subscription: LinkSubscription, account: string): string {
+  const now = Date.now();
+  const held = subscription.unavailableUntil !== null && Date.parse(subscription.unavailableUntil) > now ? subscription.unavailableUntil : null;
+  const fullest = subscription.usage
+    .filter((window) => window.modelFamily === undefined && Date.parse(window.resetsAt) > now)
+    .reduce<LinkUsageWindow | null>((most, window) => most === null || window.utilization > most.utilization ? window : most, null);
+  const shown = held !== null
+    ? { percent: 100, until: held }
+    : fullest === null ? null : { percent: Math.min(100, Math.round(fullest.utilization * 100)), until: fullest.resetsAt };
+  if (shown === null) return `<small>${escapeHtml(account)}</small>`;
+  const full = shown.percent >= 100;
+  return `<span class="meter${full ? " full" : ""}" title="${full ? "Until" : "Resets"} ${escapeHtml(new Date(shown.until).toUTCString())}"><small>${escapeHtml(account)}</small><span class="pct">${full ? "Limit Reached" : `${shown.percent}%`}</span><span class="bar" role="meter" aria-label="Quota Used" aria-valuenow="${shown.percent}" aria-valuemin="0" aria-valuemax="100"><span style="width:${Math.max(shown.percent, 1)}%"></span></span></span>`;
 }
 
 // A provider's mark, or without one the first letter of its name.
@@ -1859,9 +1845,9 @@ small{display:block;color:var(--faint);font-size:12px;line-height:1.4;overflow-w
 .option strong{display:block;font-size:14px;line-height:1.35}
 .option.slim{flex-direction:row;align-items:center;gap:10px;padding:10px 12px}.slim .logo{width:16px;height:16px}.slim strong{font-size:13px}
 .option.pick{flex-direction:row;align-items:center;margin:0 0 8px;padding:12px}.grow{flex:1;min-width:0}
-input[type=checkbox]{appearance:none;-webkit-appearance:none;flex:none;display:grid;place-content:center;width:16px;height:16px;margin:0;border:1px solid rgba(237,237,237,.3);border-radius:4px;background:transparent;cursor:pointer}
+input[type=checkbox]{appearance:none;-webkit-appearance:none;flex:none;display:grid;place-content:center;width:20px;height:20px;margin:0 0 0 4px;border:1.5px solid rgba(237,237,237,.25);border-radius:50%;background:transparent;cursor:pointer;transition:background-color .15s,border-color .15s}
 input[type=checkbox]:checked{border-color:var(--ink);background:var(--ink)}
-input[type=checkbox]:checked::after{content:"";width:8px;height:4px;margin-top:-2px;border:solid var(--page);border-width:0 0 2px 2px;transform:rotate(-45deg)}
+input[type=checkbox]:checked::after{content:"";width:9px;height:5px;margin-top:-2px;border:solid var(--card);border-width:0 0 2px 2px;transform:rotate(-45deg)}
 .who{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;margin:0 0 16px;border:1px solid var(--rule);border-radius:6px;background:var(--page)}
 .step{display:flex;gap:12px;margin:0 0 20px}.step>div{flex:1;min-width:0}.step p,.step label{display:block;color:var(--muted);margin:0 0 10px}
 .n{flex:none;display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:4px;background:rgba(237,237,237,.07);color:var(--muted);font-size:12px}
@@ -1880,6 +1866,10 @@ input[type=text]:focus-visible,input[type=password]:focus-visible{outline:1px so
 .nav.drop{position:static;flex:none;width:28px;height:28px;margin:0 -4px 0 0;color:var(--faint)}
 .btn.outline{border-color:var(--edge)}.btn.outline:hover{border-color:rgba(237,237,237,.4);background:var(--hover)}
 .btn.ghost{height:32px;margin:4px 0 0 -8px;padding:0 10px 0 8px;font-size:13px;color:var(--muted)}.btn.ghost:hover{background:rgba(237,237,237,.06);color:var(--ink)}
+.meter{display:flex;flex-wrap:wrap;align-items:baseline;gap:0 8px}.meter small{flex:1;min-width:0}
+.pct{flex:none;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}.full .pct{color:#e5484d}
+.bar{flex:0 0 100%;height:4px;margin:8px 0 2px;border-radius:999px;background:rgba(237,237,237,.08);overflow:hidden}.bar>span{display:block;height:100%;border-radius:999px;background:var(--mint)}.full .bar>span{background:#d64548}
+.actions{display:flex;justify-content:space-between;margin:4px -8px 0}.actions .btn.ghost{margin:0}.actions span{display:flex}
 .fine{color:var(--faint);font-size:12px;margin:12px 0 0;text-align:center}
 .card{display:block;margin:0 0 12px;padding:14px 12px;border:1px solid var(--rule);border-radius:6px}.card>small{margin:2px 0 0}.card .field{margin:16px 0 8px}
 .row{display:flex;gap:8px;margin:16px 0 0}.row .btn{flex:1}

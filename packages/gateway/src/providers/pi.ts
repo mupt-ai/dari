@@ -400,7 +400,7 @@ export function buildModel(
     throw new HttpError(502, `No base URL is configured for provider ${provider}.`, "provider_configuration_error");
   }
   const contextWindow = contextWindowForModel(modelId, registered, config) ?? 128000;
-  const compat = gatewayRuntimeCompat(api, runtimeCompat(provider, registered, modelId));
+  const compat = gatewayRuntimeCompat(api, runtimeCompat(provider, registered, modelId), nativeId);
   return {
     ...(registered ?? {}),
     ...(compat !== undefined ? { compat } : {}),
@@ -496,16 +496,30 @@ function contextWindowForModel(
 // keeps tools at the request level until that native tool-change path is validated.
 const RESPONSES_APIS: ReadonlySet<string> = new Set(["openai-responses", "azure-openai-responses", "openai-codex-responses"]);
 
-function gatewayRuntimeCompat(api: unknown, compat: unknown): unknown {
+function gatewayRuntimeCompat(api: unknown, compat: unknown, modelId: string): unknown {
   // Pi 1.5 enables server-side message threads whenever sessionId is set.
   // Gateway sessions serve affinity, not permission to retain a conversation
   // remotely; keep full-history requests, including on ZDR routes.
   if (api === "anthropic-messages") {
-    return { ...(isRecord(compat) ? compat : {}), supportsMessageThreads: false };
+    const base = isRecord(compat) ? compat : {};
+    return {
+      ...base,
+      supportsMessageThreads: false,
+      // Pi defers tools (`defer_loading`, loaded by `tool_reference`) only on
+      // the Claude models it lists, which leave out Haiku 5 and later. Those
+      // take deferred tools too, and a tool Claude Code loads mid-session must
+      // stay deferred: an ordinary tool changes the cached prefix.
+      ...(base.supportsToolReferences === undefined && isClaudeHaiku5OrLater(modelId) ? { supportsToolReferences: true } : {}),
+    };
   }
   if (typeof api !== "string" || !RESPONSES_APIS.has(api)) return compat;
   if (!isRecord(compat) || compat.supportsMidConvoSystemMessages !== true) return compat;
   return { ...compat, supportsMidConvoSystemMessages: false };
+}
+
+function isClaudeHaiku5OrLater(modelId: string): boolean {
+  const major = /^claude-haiku-(\d+)(?:[-.]|$)/.exec(modelId)?.[1];
+  return major !== undefined && Number(major) >= 5;
 }
 
 function modelPricingFromConfig(config: ResolvedRouterModelConfig | undefined): ModelPricing | null {

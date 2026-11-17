@@ -76,6 +76,9 @@ export type InteractionMessage = {
   contentShape: "string" | "parts" | "null" | "absent";
   phase?: "commentary" | "final_answer";
   source?: ProviderIdentity;
+  // On a system message: tools that become available from this point on,
+  // which Claude Code adds with `tool_addition` blocks.
+  toolsAdded?: InteractionTool[];
 };
 
 export type InteractionReasoning = {

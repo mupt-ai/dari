@@ -115,10 +115,18 @@ function appendAnthropicMessage(
   }
 
   let buffered: InteractionContent[] = [];
+  let toolsAdded: InteractionTool[] = [];
   const flushMessage = () => {
-    if (buffered.length === 0) return;
-    items.push({ type: "message", role, content: buffered, contentShape: "parts" });
+    if (buffered.length === 0 && toolsAdded.length === 0) return;
+    items.push({
+      type: "message",
+      role,
+      content: buffered,
+      contentShape: "parts",
+      ...(toolsAdded.length === 0 ? {} : { toolsAdded }),
+    });
     buffered = [];
+    toolsAdded = [];
   };
   let pendingServerToolUse: { callId: string; name: string; input: Record<string, unknown> } | null = null;
 
@@ -259,6 +267,15 @@ function appendAnthropicMessage(
         isError: optionalBoolean(rawBlock.is_error, `${param}.is_error`),
         ...(uniqueLoadedTools.length > 0 ? { loadedTools: uniqueLoadedTools } : {}),
       });
+      continue;
+    }
+    if (type === "tool_addition") {
+      if (role !== "system") throw invalidRequest("tool_addition blocks require the system role.", param);
+      const tool = isRecord(rawBlock.tool) ? rawBlock.tool : undefined;
+      if (tool?.type !== "tool_definition") {
+        throw invalidRequest(`${param}.tool must be a tool_definition.`, `${param}.tool`);
+      }
+      toolsAdded.push(anthropicTool(tool.definition, `${param}.tool.definition`));
       continue;
     }
     throw new HttpError(400, `Anthropic content block type '${type}' is not supported.`, "unsupported_content_block", param);
@@ -430,45 +447,47 @@ function anthropicSystem(value: unknown): string | undefined {
 function anthropicTools(value: unknown): InteractionTool[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw invalidRequest("tools must be an array.", "tools");
-  return value.map((rawTool, index) => {
-    if (!isRecord(rawTool)) throw invalidRequest(`tools[${index}] must be an object.`, `tools.${index}`);
-    const type = rawTool.type;
-    if (type !== undefined && type !== "custom") {
-      if (typeof type === "string" && isServerToolType(type)) {
-        if (type === "bash_20250124" || type === "text_editor_20250124") {
-          return {
-            kind: "client_tool",
-            name: requiredString(rawTool.name, `tools.${index}.name`),
-            type,
-            description: optionalString(rawTool.description, `tools.${index}.description`),
-          } satisfies ClientTool;
-        }
+  return value.map((rawTool, index) => anthropicTool(rawTool, `tools.${index}`));
+}
+
+function anthropicTool(rawTool: unknown, param: string): InteractionTool {
+  if (!isRecord(rawTool)) throw invalidRequest(`${param} must be an object.`, param);
+  const type = rawTool.type;
+  if (type !== undefined && type !== "custom") {
+    if (typeof type === "string" && isServerToolType(type)) {
+      if (type === "bash_20250124" || type === "text_editor_20250124") {
         return {
-          kind: "server_tool" as const,
-          name: requiredString(rawTool.name, `tools.${index}.name`),
+          kind: "client_tool",
+          name: requiredString(rawTool.name, `${param}.name`),
           type,
-          description: optionalString(rawTool.description, `tools.${index}.description`),
-          ...(isAnthropicWebSearchToolType(type) ? { definition: rawTool } : {}),
-        };
+          description: optionalString(rawTool.description, `${param}.description`),
+        } satisfies ClientTool;
       }
-      throw new HttpError(
-        400,
-        `Anthropic tool type '${String(type)}' is not supported by this router.`,
-        "unsupported_tool",
-        `tools.${index}.type`
-      );
+      return {
+        kind: "server_tool" as const,
+        name: requiredString(rawTool.name, `${param}.name`),
+        type,
+        description: optionalString(rawTool.description, `${param}.description`),
+        ...(isAnthropicWebSearchToolType(type) ? { definition: rawTool } : {}),
+      };
     }
-    const schema = rawTool.input_schema;
-    if (!isRecord(schema)) throw invalidRequest(`tools[${index}].input_schema must be an object.`, `tools.${index}.input_schema`);
-    return {
-      kind: "function" as const,
-      name: requiredString(rawTool.name, `tools.${index}.name`),
-      description: optionalString(rawTool.description, `tools.${index}.description`),
-      parameters: schema,
-      strict: optionalBoolean(rawTool.strict, `tools.${index}.strict`),
-      deferLoading: optionalBoolean(rawTool.defer_loading, `tools.${index}.defer_loading`),
-    };
-  });
+    throw new HttpError(
+      400,
+      `Anthropic tool type '${String(type)}' is not supported by this router.`,
+      "unsupported_tool",
+      `${param}.type`
+    );
+  }
+  const schema = rawTool.input_schema;
+  if (!isRecord(schema)) throw invalidRequest(`${param}.input_schema must be an object.`, `${param}.input_schema`);
+  return {
+    kind: "function" as const,
+    name: requiredString(rawTool.name, `${param}.name`),
+    description: optionalString(rawTool.description, `${param}.description`),
+    parameters: schema,
+    strict: optionalBoolean(rawTool.strict, `${param}.strict`),
+    deferLoading: optionalBoolean(rawTool.defer_loading, `${param}.defer_loading`),
+  };
 }
 
 function anthropicToolChoice(value: unknown): InteractionToolChoice | undefined {

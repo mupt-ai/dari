@@ -25,9 +25,8 @@ func TestSetupRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := agents.Models{Enabled: []string{"a/one", "a/two"}}
-	first, err := Setup(dir, "https://routing.test", "dak_1", models)
-	if err != nil || !first {
-		t.Fatalf("first setup = %v, %v", first, err)
+	if err := Setup(dir, "https://routing.test", "dak_1", models); err != nil {
+		t.Fatalf("first setup: %v", err)
 	}
 	config, _ := readJSON(filepath.Join(dir, "opencode.json"))
 	provider := config["provider"].(map[string]any)["dari"].(map[string]any)
@@ -38,8 +37,8 @@ func TestSetupRoundTrip(t *testing.T) {
 	if provider["options"].(map[string]any)["apiKey"] != "dak_1" || provider["env"] != nil {
 		t.Fatalf("provider = %v", provider)
 	}
-	if first, err := Setup(dir, "http://127.0.0.1:7340", "dgw", models); err != nil || first {
-		t.Fatalf("second setup = %v, %v", first, err)
+	if err := Setup(dir, "http://127.0.0.1:7340", "dgw", models); err != nil {
+		t.Fatalf("second setup: %v", err)
 	}
 
 	removed, err := RemoveSetup(dir)
@@ -56,7 +55,7 @@ func TestSetupRoundTrip(t *testing.T) {
 func TestRemoveSetupDeletesTheConfigItCreated(t *testing.T) {
 	cacheHome(t)
 	dir := t.TempDir()
-	if _, err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Routing: true}); err != nil {
+	if err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RemoveSetup(dir); err != nil {
@@ -75,7 +74,7 @@ func TestSetupRefusesAConfigWithComments(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "opencode.json"), []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Routing: true}); err == nil || !strings.Contains(err.Error(), "not plain JSON") {
+	if err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Routing: true}); err == nil || !strings.Contains(err.Error(), "not plain JSON") {
 		t.Fatalf("setup error = %v", err)
 	}
 	if body, _ := os.ReadFile(filepath.Join(dir, "opencode.json")); string(body) != original {
@@ -119,7 +118,7 @@ func TestSetupAddsToTheUsersOwnEntries(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "opencode.json"), []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Routing: true}); err != nil {
+	if err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
 	config, _ := readJSON(filepath.Join(dir, "opencode.json"))
@@ -131,7 +130,7 @@ func TestSetupAddsToTheUsersOwnEntries(t *testing.T) {
 		t.Fatalf("config = %v", config)
 	}
 	// A second launch adds nothing twice.
-	if _, err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Routing: true}); err != nil {
+	if err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
 	config, _ = readJSON(filepath.Join(dir, "opencode.json"))
@@ -170,14 +169,14 @@ func TestSetupLeavesModelToTheUsersPick(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := agents.Models{Enabled: []string{"a/one", "a/two"}}
-	if _, err := Setup(dir, "https://routing.test", "dak_1", models); err != nil {
+	if err := Setup(dir, "https://routing.test", "dak_1", models); err != nil {
 		t.Fatal(err)
 	}
 	if config, _ := readJSON(filepath.Join(dir, "opencode.json")); config["model"] != "dari/model/a/one" {
 		t.Fatalf("model before a pick = %v", config["model"])
 	}
 	models.Saved = "dari/model/a/two"
-	if _, err := Setup(dir, "https://routing.test", "dak_1", models); err != nil {
+	if err := Setup(dir, "https://routing.test", "dak_1", models); err != nil {
 		t.Fatal(err)
 	}
 	if config, _ := readJSON(filepath.Join(dir, "opencode.json")); config["model"] != nil {

@@ -157,7 +157,7 @@ func TestCLISetupThroughAPlanLapse(t *testing.T) {
 	setup := func(models agents.Models) (string, any) {
 		t.Helper()
 		models.Saved = SavedModel(path)
-		if _, err := CLISetup(path, "", "https://routing.dari.dev", "dak", models); err != nil {
+		if err := CLISetup(path, "", "https://routing.dari.dev", "dak", models); err != nil {
 			t.Fatal(err)
 		}
 		settings, _ := readJSON(path)

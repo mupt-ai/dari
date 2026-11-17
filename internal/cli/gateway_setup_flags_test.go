@@ -115,7 +115,7 @@ func TestGatewayModeSwitchMovesSetUpAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pi.Setup(dir, "https://routing.dari.dev", "hosted-key", agents.Models{Enabled: []string{"openai/gpt-4.1-mini"}}); err != nil {
+	if err := pi.Setup(dir, "https://routing.dari.dev", "hosted-key", agents.Models{Enabled: []string{"openai/gpt-4.1-mini"}}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -139,14 +139,15 @@ func TestGatewayModeSwitchToHostedWithoutSignInLeavesAgents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pi.Setup(dir, "http://gateway.test:8080", "team-key", agents.Models{Enabled: []string{"openai/gpt-4.1-mini"}}); err != nil {
+	if err := pi.Setup(dir, "http://gateway.test:8080", "team-key", agents.Models{Enabled: []string{"openai/gpt-4.1-mini"}}); err != nil {
 		t.Fatal(err)
 	}
 	var stderr strings.Builder
 	if err := setGatewayModeFromFlags(context.Background(), "hosted", "", "", "", strings.NewReader(""), &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stderr.String(), "after you sign in") {
+	// Launches never move a setup, so the hint names the switch to run again.
+	if !strings.Contains(stderr.String(), "Set up agents (pi) still route the old way") || !strings.Contains(stderr.String(), "`dari gateway setup --mode hosted` again") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }

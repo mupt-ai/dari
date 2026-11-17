@@ -26,9 +26,8 @@ func TestCLISetupRoundTrip(t *testing.T) {
 	writeSettings(t, path, `{"model":"opus","theme":"dark","env":{"ANTHROPIC_API_KEY":"sk-user","OTHER":"1"}}`)
 	models := agents.Models{Enabled: []string{"anthropic/claude-sonnet-5-5", "anthropic/claude-opus-5-5"}}
 
-	first, err := CLISetup(path, "", "https://routing.dari.dev", "dak_1", models)
-	if err != nil || !first {
-		t.Fatalf("first setup = %v, %v", first, err)
+	if err := CLISetup(path, "", "https://routing.dari.dev", "dak_1", models); err != nil {
+		t.Fatalf("first setup: %v", err)
 	}
 	settings, _ := readJSON(path)
 	env := settings["env"].(map[string]any)
@@ -43,9 +42,8 @@ func TestCLISetupRoundTrip(t *testing.T) {
 	// The next launch (say, after switching to a local gateway) refreshes the
 	// values but keeps the record of the user's originals.
 	models.Saved = "dari/model/anthropic/claude-opus-5-5"
-	first, err = CLISetup(path, "", "http://127.0.0.1:7340", "dgw_local", models)
-	if err != nil || first {
-		t.Fatalf("second setup = %v, %v", first, err)
+	if err := CLISetup(path, "", "http://127.0.0.1:7340", "dgw_local", models); err != nil {
+		t.Fatalf("second setup: %v", err)
 	}
 	settings, _ = readJSON(path)
 	if settings["model"] != "dari/model/anthropic/claude-opus-5-5" || settings["env"].(map[string]any)["ANTHROPIC_AUTH_TOKEN"] != "dgw_local" {
@@ -73,7 +71,7 @@ func TestCLISetupRoundTrip(t *testing.T) {
 func TestCLISetupKeepsTheUsersStatusLine(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	writeSettings(t, path, `{"statusLine":{"type":"command","command":"my-status"}}`)
-	if _, err := CLISetup(path, "", "https://routing.dari.dev", "dak_1", agents.Models{Routing: true}); err != nil {
+	if err := CLISetup(path, "", "https://routing.dari.dev", "dak_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
 	settings, _ := readJSON(path)
@@ -87,7 +85,7 @@ func TestCLISetupKeepsTheUsersStatusLine(t *testing.T) {
 func TestRemoveCLISetupDropsADariModel(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	writeSettings(t, path, `{"model":"dari/model/anthropic/claude-opus-5-5"}`)
-	if _, err := CLISetup(path, "", "https://routing.dari.dev", "dak_1", agents.Models{Routing: true}); err != nil {
+	if err := CLISetup(path, "", "https://routing.dari.dev", "dak_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RemoveCLISetup(path); err != nil {
@@ -131,7 +129,7 @@ func TestCLISetupKeepsTheClaudeAILogin(t *testing.T) {
 	writeSettings(t, path, `{"env":{"ANTHROPIC_CUSTOM_HEADERS":"X-Team: core\nAuthorization: Bearer theirs"}}`)
 	models := agents.Models{Routing: true}
 
-	if _, err := CLISetup(path, fakeClaude(t, "claude.ai"), "https://routing.dari.dev", "dak_1", models); err != nil {
+	if err := CLISetup(path, fakeClaude(t, "claude.ai"), "https://routing.dari.dev", "dak_1", models); err != nil {
 		t.Fatal(err)
 	}
 	settings, _ := readJSON(path)
@@ -141,7 +139,7 @@ func TestCLISetupKeepsTheClaudeAILogin(t *testing.T) {
 		t.Fatalf("env with a claude.ai login = %v", env)
 	}
 
-	if _, err := CLISetup(path, fakeClaude(t, "oauth_token"), "https://routing.dari.dev", "dak_2", models); err != nil {
+	if err := CLISetup(path, fakeClaude(t, "oauth_token"), "https://routing.dari.dev", "dak_2", models); err != nil {
 		t.Fatal(err)
 	}
 	settings, _ = readJSON(path)

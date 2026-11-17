@@ -68,37 +68,35 @@ var replacedSettings = []string{"model", "small_model", "enabled_providers"}
 // routes through Dari as `dari opencode` does: the router as the only enabled
 // provider, with its key and models, the status plugin, and the model to
 // start on. It adds to the user's providers, plugins, and agents rather than
-// replacing them. It runs on every launch; each setting it replaces is
-// recorded the first time. It reports whether this was the first setup.
+// replacing them. Each setting it replaces is recorded the first time.
 //
 // Once the user has picked a Dari model in OpenCode (models.Saved), setup
 // sets no `model`: OpenCode's config `model` outranks its own recent models,
 // so leaving it out lets the user's latest pick win when run directly.
-func Setup(configDir, baseURL, key string, models agents.Models) (bool, error) {
+func Setup(configDir, baseURL, key string, models agents.Models) error {
 	pluginDirectory, err := writeOpenCodeStatusPlugin()
 	if err != nil {
-		return false, err
+		return err
 	}
 	executable, err := agents.StatusExecutable()
 	if err != nil {
-		return false, err
+		return err
 	}
 	// `opencode` run directly has no launcher environment to name it.
 	if err := os.WriteFile(filepath.Join(filepath.Dir(pluginDirectory), "status-executable"), []byte(executable), 0o600); err != nil {
-		return false, fmt.Errorf("write OpenCode status: %w", err)
+		return fmt.Errorf("write OpenCode status: %w", err)
 	}
 
 	configPath := filepath.Join(configDir, "opencode.json")
 	config, err := readJSON(configPath)
 	if err != nil {
-		return false, err
+		return err
 	}
 	setupPath := filepath.Join(configDir, setupFile)
 	record, err := readJSON(setupPath)
 	if err != nil {
-		return false, err
+		return err
 	}
-	first := len(record) == 0
 	replaced := section(record, "settings")
 	agentModels := section(record, "agent_models")
 	settings := openCodeSettings(baseURL, pluginDirectory, key, models)
@@ -135,13 +133,13 @@ func Setup(configDir, baseURL, key string, models agents.Models) (bool, error) {
 	}
 
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
-		return false, fmt.Errorf("create OpenCode config directory: %w", err)
+		return fmt.Errorf("create OpenCode config directory: %w", err)
 	}
 	// The record first: config written without it could not be undone.
 	if err := writeJSON(setupPath, map[string]any{"settings": replaced, "agent_models": agentModels, "plugin": pluginDirectory}); err != nil {
-		return false, err
+		return err
 	}
-	return first, writeJSON(configPath, config)
+	return writeJSON(configPath, config)
 }
 
 // RemoveSetup takes Dari back out of opencode.json, restoring what Setup

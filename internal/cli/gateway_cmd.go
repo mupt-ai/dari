@@ -4,10 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/signal"
 	"slices"
 	"strings"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -22,8 +20,8 @@ func init() {
 			Short: "Choose a routing mode and manage the local gateway",
 			Long: "Choose Hosted, Fully local, or Self-hosted routing with `dari gateway setup`.\n\n" +
 				"`status` and `setup` work in every mode, and `models` with a local or self-hosted\n" +
-				"gateway. The other commands manage only the Fully local gateway; they do not install,\n" +
-				"start, or inspect a self-hosted gateway.\n" +
+				"gateway. `start` and `stop` manage only the Fully local gateway. Launches start it on\n" +
+				"their own; start it yourself for agents run directly after `--setup-cli`.\n" +
 				"Hosted routing is managed by Dari. Use `dari accounts` for accounts and keys\n" +
 				"supported by the selected mode. Activity and team analytics require Hosted mode.",
 		}
@@ -69,86 +67,6 @@ func init() {
 					return err
 				},
 			},
-			&cobra.Command{
-				Use:   "restart",
-				Short: "Restart the local gateway, picking up provider keys from this shell",
-				Args:  cobra.NoArgs,
-				RunE: func(cmd *cobra.Command, _ []string) error {
-					gw, err := localGateway()
-					if err != nil {
-						return err
-					}
-					if err := gateway.Restart(cmd.Context(), gw.settings, cliVersion); err != nil {
-						return err
-					}
-					return gw.ensure(cmd.Context(), cmd.ErrOrStderr())
-				},
-			},
-			&cobra.Command{
-				Use:   "serve",
-				Short: "Run the local gateway in the foreground",
-				Args:  cobra.NoArgs,
-				RunE: func(cmd *cobra.Command, _ []string) error {
-					gw, err := localGateway()
-					if err != nil {
-						return err
-					}
-					if gateway.Healthy(cmd.Context()) {
-						return errors.New("the local gateway is already running; stop it with `dari gateway stop`")
-					}
-					if err := gateway.EnsureInstalled(cmd.Context(), cliVersion, func(line string) { agentStep(cmd.ErrOrStderr(), line) }); err != nil {
-						return err
-					}
-					process, err := gateway.Command(gw.settings, cmd.OutOrStdout())
-					if err != nil {
-						return err
-					}
-					signal.Ignore(os.Interrupt, syscall.SIGTERM)
-					defer signal.Reset(os.Interrupt, syscall.SIGTERM)
-					if err := gateway.MarkRunning(); err != nil {
-						return err
-					}
-					defer gateway.ClearRunning()
-					return process.Run()
-				},
-			},
-			&cobra.Command{
-				Use:   "install",
-				Short: "Install or update the local gateway",
-				Args:  cobra.NoArgs,
-				RunE: func(cmd *cobra.Command, _ []string) error {
-					version, err := gateway.Install(cmd.Context(), cliVersion)
-					if err != nil {
-						return err
-					}
-					fmt.Fprintf(cmd.ErrOrStderr(), "Dari Gateway %s installed\n", version)
-					if gw, err := currentGateway(); err == nil && gw != nil && gw.local {
-						return gateway.Restart(cmd.Context(), gw.settings, cliVersion)
-					}
-					return nil
-				},
-			},
-			&cobra.Command{
-				Use:   "logs",
-				Short: "Print the local gateway's log",
-				Args:  cobra.NoArgs,
-				RunE: func(cmd *cobra.Command, _ []string) error {
-					path, err := gateway.LogPath()
-					if err != nil {
-						return err
-					}
-					raw, err := os.ReadFile(path)
-					if errors.Is(err, os.ErrNotExist) {
-						return errors.New("the local gateway has not logged anything yet")
-					}
-					if err != nil {
-						return err
-					}
-					_, err = cmd.OutOrStdout().Write(raw)
-					return err
-				},
-			},
-			newGatewayAutoRoutingCmd(),
 			newGatewayModelsCmd(),
 		)
 		for _, sub := range cmd.Commands() {
@@ -199,7 +117,7 @@ func newGatewayStatusCmd() *cobra.Command {
 				if gateway.Healthy(cmd.Context()) {
 					running = "running"
 				}
-				autorouting := "off (add a Dari API key with `dari gateway auto-routing`)"
+				autorouting := "off (add a Dari API key with `dari accounts auto-routing`)"
 				if gw.settings.AutoRoutingKey != "" {
 					autorouting = "on"
 				}
@@ -213,6 +131,9 @@ func newGatewayStatusCmd() *cobra.Command {
 				}
 				fmt.Fprintf(out, "Auto-routing: %s\n", autorouting)
 				fmt.Fprintf(out, "Data:         %s\n", dir)
+				if log, err := gateway.LogPath(); err == nil {
+					fmt.Fprintf(out, "Log:          %s\n", log)
+				}
 			default:
 				source := "saved settings"
 				if os.Getenv(gatewayURLEnv) != "" {
@@ -225,30 +146,6 @@ func newGatewayStatusCmd() *cobra.Command {
 				fmt.Fprintf(out, "Configured via: %s\n", source)
 			}
 			return nil
-		},
-	}
-}
-
-func newGatewayAutoRoutingCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "auto-routing <dari-api-key|off>",
-		Short: "Route the local gateway with Dari's routing policy, using your Dari API key",
-		Long: "Auto-routing picks the model for each request with Dari's routing policy. The local gateway calls it with a Dari API key.\n" +
-			"A self-hosted gateway's operator sets DARI_AUTO_ROUTING_API_KEY on the server instead; hosted Dari includes it with the Autorouting plan.",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			gw, err := localGateway()
-			if err != nil {
-				return err
-			}
-			gw.settings.AutoRoutingKey = strings.TrimSpace(args[0])
-			if strings.EqualFold(gw.settings.AutoRoutingKey, "off") {
-				gw.settings.AutoRoutingKey = ""
-			}
-			if err := gateway.Save(gw.settings); err != nil {
-				return err
-			}
-			return gateway.Restart(cmd.Context(), gw.settings, cliVersion)
 		},
 	}
 }

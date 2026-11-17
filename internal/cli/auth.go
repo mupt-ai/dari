@@ -12,8 +12,9 @@ import (
 func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, gf *globalFlags) {
 		auth := &cobra.Command{
-			Use:   "auth",
-			Short: "Manage browser sign-in for hosted Dari",
+			Use:     "auth",
+			Short:   "Manage browser sign-in for hosted Dari",
+			GroupID: hostedGroup,
 		}
 		auth.AddCommand(
 			newAuthLoginCmd(gf),

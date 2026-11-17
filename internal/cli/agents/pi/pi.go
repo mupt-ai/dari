@@ -36,7 +36,7 @@ func Configure(command *agents.Command, baseURL string, models agents.Models) er
 	command.Env = agents.WithEnvironment(command.Env, status)
 	args := []string{"--provider", "dari"}
 	// Pi loads the provider extension Setup installed on its own. A launch
-	// without it (setup skipped or failed, or an older copy) brings its own.
+	// without it (not set up, or an older copy) brings its own.
 	if !installed() {
 		extensionPath, err := agents.WriteCacheFile("pi/provider.ts", extension)
 		if err != nil {

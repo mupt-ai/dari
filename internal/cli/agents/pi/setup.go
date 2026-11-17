@@ -52,25 +52,23 @@ func SavedModel(dir string) string {
 // Setup makes Dari Pi's default provider, so `pi` itself routes through Dari
 // as `dari pi` does: it installs the provider extension, saves the router,
 // key, and models for it, and sets Pi's default model (the launch's, which
-// keeps the user's last /model pick) and model scope. It runs on every
-// launch; each setting it replaces is recorded the first time. It reports
-// whether this was the first setup.
-func Setup(dir, baseURL, key string, models agents.Models) (bool, error) {
+// keeps the user's last /model pick) and model scope. Each setting it
+// replaces is recorded the first time.
+func Setup(dir, baseURL, key string, models agents.Models) error {
 	executable, err := agents.StatusExecutable()
 	if err != nil {
-		return false, err
+		return err
 	}
 	settingsPath := filepath.Join(dir, "settings.json")
 	settings, err := readJSON(settingsPath)
 	if err != nil {
-		return false, err
+		return err
 	}
 	setupPath := filepath.Join(dir, setupFile)
 	replaced, err := readJSON(setupPath)
 	if err != nil {
-		return false, err
+		return err
 	}
-	first := len(replaced) == 0
 	values := map[string]any{
 		"defaultProvider": "dari",
 		"defaultModel":    models.Default(),
@@ -87,14 +85,14 @@ func Setup(dir, baseURL, key string, models agents.Models) (bool, error) {
 		settings[key] = values[key]
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "extensions"), 0o700); err != nil {
-		return false, fmt.Errorf("create Pi extensions directory: %w", err)
+		return fmt.Errorf("create Pi extensions directory: %w", err)
 	}
 	// The record first: files written without it could not be undone.
 	if err := writeJSON(setupPath, replaced); err != nil {
-		return false, err
+		return err
 	}
 	if err := os.WriteFile(filepath.Join(dir, "extensions", extensionFile), []byte(extension), 0o600); err != nil {
-		return false, fmt.Errorf("write Pi provider: %w", err)
+		return fmt.Errorf("write Pi provider: %w", err)
 	}
 	if err := writeJSON(filepath.Join(dir, configFile), map[string]any{
 		"baseUrl":          baseURL,
@@ -102,9 +100,9 @@ func Setup(dir, baseURL, key string, models agents.Models) (bool, error) {
 		"models":           models.Menu(),
 		"statusExecutable": executable,
 	}); err != nil {
-		return false, err
+		return err
 	}
-	return first, writeJSON(settingsPath, settings)
+	return writeJSON(settingsPath, settings)
 }
 
 // RemoveSetup restores the settings Setup replaced, removes its files, and

@@ -185,16 +185,15 @@ func TestGatewayLaunchesMakeNoHostedCalls(t *testing.T) {
 			if env["ANTHROPIC_BASE_URL"] != gateway.URL || env["ANTHROPIC_AUTH_TOKEN"] != gatewayTestKey {
 				t.Errorf("Claude env = %q, %q", env["ANTHROPIC_BASE_URL"], env["ANTHROPIC_AUTH_TOKEN"])
 			}
-			// `claude` run directly routes the same way.
-			raw, err := os.ReadFile(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json"))
-			if err != nil || !strings.Contains(string(raw), `"ANTHROPIC_BASE_URL": "`+gateway.URL+`"`) {
-				t.Errorf("Claude settings = %s, %v", raw, err)
-			}
 		}},
 		{"codex", []string{"GET /v1/models", "GET /v1/models"}, func(t *testing.T, _ map[string]string, args []string) {
 			want := `model_providers.dari.base_url="` + gateway.URL + `/v1"`
 			if !slices.Contains(args, want) {
 				t.Errorf("Codex args missing %s: %q", want, args)
+			}
+			// The launch hands Codex the router's catalog itself.
+			if !slices.ContainsFunc(args, func(arg string) bool { return strings.HasPrefix(arg, "model_catalog_json=") }) {
+				t.Errorf("Codex args missing the model catalog: %q", args)
 			}
 		}},
 		{"opencode", []string{"GET /v1/models"}, func(t *testing.T, env map[string]string, _ []string) {
@@ -216,10 +215,15 @@ func TestGatewayLaunchesMakeNoHostedCalls(t *testing.T) {
 
 			var stderr strings.Builder
 			code := runAgentLaunch(context.Background(), agentLaunch{name: tc.agent, args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
-			// The only output is the first launch saying the agent itself now
-			// routes through Dari too.
-			if out := strings.TrimSpace(stderr.String()); code != 0 || (out != "" && !strings.Contains(out, "itself now routes through Dari")) {
+			if code != 0 {
 				t.Fatalf("exit %d, stderr %q", code, stderr.String())
+			}
+			// A launch routes only its own session: the agent's own config,
+			// which `--setup` writes, stays untouched.
+			for _, dir := range []string{".claude", ".codex", ".config", ".pi"} {
+				if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), dir)); !os.IsNotExist(err) {
+					t.Errorf("launch wrote ~/%s: %v", dir, err)
+				}
 			}
 			env, args := readLaunchRecord(t, record)
 			if env[agents.RoutingAPIKeyEnv] != gatewayTestKey {
@@ -268,7 +272,7 @@ func TestGatewaySubscriptionCommandsUseGatewayKey(t *testing.T) {
 		cmd := newRootCmd("dev")
 		cmd.SetIn(strings.NewReader(stdin))
 		cmd.SetErr(&strings.Builder{})
-		cmd.SetArgs(append([]string{"credentials", "subscription"}, args...))
+		cmd.SetArgs(append([]string{"accounts", "subscription"}, args...))
 		return captureStdout(t, cmd.Execute)
 	}
 	for _, tc := range []struct {
@@ -329,7 +333,7 @@ func TestGatewayProviderCredentialsNameGatewayEnvironment(t *testing.T) {
 	setGatewayEnv(t, gateway.URL)
 
 	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{"credentials", "provider", "add", "anthropic", "Anthropic", "--value-stdin"})
+	cmd.SetArgs([]string{"accounts", "provider", "add", "anthropic", "Anthropic", "--value-stdin"})
 	cmd.SetIn(strings.NewReader("sk-test\n"))
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
@@ -353,9 +357,11 @@ func TestGatewayModelsListTheGatewaysRouter(t *testing.T) {
 	}
 }
 
-// Hermes runs every session in a shared gateway, so a launch writes Dari into
-// Hermes's own config before starting it, and forwards its arguments as is.
-func TestGatewayHermesLaunchWritesSetupBeforeStarting(t *testing.T) {
+// Hermes runs every session in a shared gateway that reads its own config, so
+// a launch routes through Dari only once --setup-cli has written it: before
+// that the launch is refused, and after it the launch starts Hermes with its
+// arguments as they are, leaving the config alone.
+func TestHermesLaunchNeedsSetup(t *testing.T) {
 	gateway := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(gatewayCatalog))
 	})))
@@ -371,18 +377,24 @@ func TestGatewayHermesLaunchWritesSetupBeforeStarting(t *testing.T) {
 	script := filepath.Join(dir, "hermes")
 	body := `#!/bin/sh
 if [ "$1 $2" = "config path" ]; then echo "` + config + `"; exit 0; fi
-[ -f "` + config + `" ] && echo configured > "` + record + `"
 for arg in "$@"; do printf 'ARG %s\n' "$arg" >> "` + record + `"; done
 `
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("DARI_HERMES_PATH", script)
+	launch := agentLaunch{name: "hermes", args: []string{"chat", "-q", "hello"}}
 
 	var stderr strings.Builder
-	code := runAgentLaunch(context.Background(), agentLaunch{name: "hermes", args: []string{"chat", "-q", "hello"}}, strings.NewReader(""), io.Discard, &stderr)
-	if code != 0 {
-		t.Fatalf("exit %d, stderr %q", code, stderr.String())
+	if code := runAgentLaunch(context.Background(), launch, strings.NewReader(""), io.Discard, &stderr); code != 1 || !strings.Contains(stderr.String(), "run `dari hermes --setup-cli` first") {
+		t.Fatalf("launch before setup: exit %d, stderr %q", code, stderr.String())
+	}
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Fatalf("Hermes started before setup: %v", err)
+	}
+
+	if err := runAgentSetup(context.Background(), agentLaunch{name: "hermes", setupCLI: true}, strings.NewReader(""), &stderr); err != nil {
+		t.Fatalf("setup: %v, %s", err, stderr.String())
 	}
 	data, err := os.ReadFile(config)
 	if err != nil {
@@ -393,15 +405,20 @@ for arg in "$@"; do printf 'ARG %s\n' "$arg" >> "` + record + `"; done
 			t.Errorf("Hermes config missing %q:\n%s", want, data)
 		}
 	}
+
+	stderr.Reset()
+	if code := runAgentLaunch(context.Background(), launch, strings.NewReader(""), io.Discard, &stderr); code != 0 {
+		t.Fatalf("launch after setup: exit %d, stderr %q", code, stderr.String())
+	}
 	launched, err := os.ReadFile(record)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := "configured\nARG chat\nARG -q\nARG hello\n"; string(launched) != want {
+	if want := "ARG chat\nARG -q\nARG hello\n"; string(launched) != want {
 		t.Fatalf("launch = %q, want %q", launched, want)
 	}
-	if !strings.Contains(stderr.String(), "`dari hermes --remove-setup` undoes it") {
-		t.Errorf("launch does not say it set Hermes up: %q", stderr.String())
+	if after, err := os.ReadFile(config); err != nil || string(after) != string(data) {
+		t.Fatalf("launch changed Hermes's config: %v", err)
 	}
 }
 
@@ -542,31 +559,39 @@ func TestRouterModelsNamesTheAgent(t *testing.T) {
 	}
 }
 
-// Codex reads the router's model catalog only from the config setup writes,
-// so a Codex launch whose setup fails does not start Codex without it.
-func TestCodexLaunchStopsWhenSetupFails(t *testing.T) {
+// A launch leaves the agent's own config as the user has it; only --setup
+// writes Dari there.
+func TestLaunchLeavesAgentConfigAlone(t *testing.T) {
 	launchTestGateway(t)
-	record := fakeAgentExecutable(t, "codex")
-	home := filepath.Join(os.Getenv("HOME"), ".codex")
-	if err := os.MkdirAll(home, 0o700); err != nil {
+	record := fakeAgentExecutable(t, "claude")
+	settings := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(settings), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("[model_providers.dari]\nname = \"mine\"\n"), 0o600); err != nil {
+	original := `{"model":"opus","env":{"OTHER":"1"}}`
+	if err := os.WriteFile(settings, []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	var stderr strings.Builder
-	code := runAgentLaunch(context.Background(), agentLaunch{name: "codex", args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
-	if code != 1 || !strings.Contains(stderr.String(), "already defines [model_providers.dari]") {
+	code := runAgentLaunch(context.Background(), agentLaunch{name: "claude", args: []string{"hello"}}, strings.NewReader(""), io.Discard, &stderr)
+	if code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, stderr.String())
 	}
-	if _, err := os.Stat(record); !os.IsNotExist(err) {
-		t.Fatalf("Codex started without its catalog: %v", err)
+	if _, err := os.Stat(record); err != nil {
+		t.Fatalf("Claude Code did not start: %v", err)
+	}
+	raw, err := os.ReadFile(settings)
+	if err != nil || string(raw) != original {
+		t.Fatalf("settings after launch = %s, %v", raw, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(settings), "dari-setup.json")); !os.IsNotExist(err) {
+		t.Fatalf("launch recorded a setup: %v", err)
 	}
 }
 
-// `dari claude --setup` sets up the Claude app before Claude Code: the app
-// refuses a router without Claude models, and then nothing is written.
+// `dari claude --setup-cli --setup-desktop` sets up the Claude app first: the
+// app refuses a router without Claude models, and then nothing is written.
 func TestClaudeSetupWritesNothingWhenTheAppRefuses(t *testing.T) {
 	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/model/openai/gpt-6.1-sol"}]}`))
@@ -576,7 +601,7 @@ func TestClaudeSetupWritesNothingWhenTheAppRefuses(t *testing.T) {
 	setGatewayEnv(t, gw.URL)
 
 	var stderr strings.Builder
-	err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setup: true}, strings.NewReader(""), &stderr)
+	err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setupCLI: true, setupDesktop: true}, strings.NewReader(""), &stderr)
 	if err == nil || !strings.Contains(err.Error(), "only lists Claude models") {
 		t.Fatalf("setup error = %v", err)
 	}
@@ -585,8 +610,55 @@ func TestClaudeSetupWritesNothingWhenTheAppRefuses(t *testing.T) {
 	}
 }
 
-// `dari claude --setup` then `--remove-setup` leaves Claude Code's settings
-// as they were, including the hint-header variable both setups set.
+// `dari claude --setup-cli` sets up only Claude Code, so a router without
+// Claude models, which the Claude app would refuse, still works, and the app is
+// left as it was. Agents without a desktop app refuse --setup-desktop.
+func TestClaudeSetupWithoutDesktopLeavesTheApp(t *testing.T) {
+	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/model/openai/gpt-6.1-sol"}]}`))
+	})))
+	defer gw.Close()
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gw.URL)
+
+	var stderr strings.Builder
+	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setupCLI: true}, strings.NewReader(""), &stderr); err != nil {
+		t.Fatalf("setup: %v, %s", err, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")); err != nil {
+		t.Fatalf("Claude Code settings were not written: %v", err)
+	}
+	if claudeAppSetUp() {
+		t.Fatal("--setup-cli set up the Claude app")
+	}
+	err := runAgentSetup(context.Background(), agentLaunch{name: "pi", setupDesktop: true}, strings.NewReader(""), &stderr)
+	if err == nil || !strings.Contains(err.Error(), "Pi has no desktop app") {
+		t.Fatalf("pi --setup-desktop error = %v", err)
+	}
+}
+
+// `dari claude --setup-desktop` sets up only the Claude app: Claude Code run
+// directly keeps its own routing.
+func TestClaudeDesktopSetupLeavesClaudeCode(t *testing.T) {
+	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/model/anthropic/claude-sonnet-5-5"}]}`))
+	})))
+	defer gw.Close()
+	hostedAPIMustNotBeCalled(t)
+	setGatewayEnv(t, gw.URL)
+
+	var stderr strings.Builder
+	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setupDesktop: true}, strings.NewReader(""), &stderr); err != nil {
+		t.Fatalf("setup: %v, %s", err, stderr.String())
+	}
+	if !claudeAppSetUp() || claudeCLISetUp() {
+		t.Fatalf("app set up = %v, Claude Code set up = %v; want only the app", claudeAppSetUp(), claudeCLISetUp())
+	}
+}
+
+// `dari claude --setup-cli --setup-desktop` then `--remove-setup` leaves
+// Claude Code's settings as they were, including the hint-header variable both
+// setups set.
 func TestClaudeSetupRoundTripRestoresSettings(t *testing.T) {
 	gw := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"models":[{"slug":"dari/model/anthropic/claude-sonnet-5-5"}]}`))
@@ -603,7 +675,7 @@ func TestClaudeSetupRoundTripRestoresSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stderr strings.Builder
-	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setup: true}, strings.NewReader(""), &stderr); err != nil {
+	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setupCLI: true, setupDesktop: true}, strings.NewReader(""), &stderr); err != nil {
 		t.Fatalf("setup: %v, %s", err, stderr.String())
 	}
 	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", removeSetup: true}, strings.NewReader(""), &stderr); err != nil {
@@ -641,7 +713,7 @@ func TestClaudeSetupNamesTheKeptPick(t *testing.T) {
 		t.Fatal(err)
 	}
 	var stderr strings.Builder
-	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setup: true}, strings.NewReader(""), &stderr); err != nil {
+	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setupCLI: true}, strings.NewReader(""), &stderr); err != nil {
 		t.Fatalf("setup: %v, %s", err, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "starting on "+saved+";") || strings.Contains(stderr.String(), "starting on dari/model/anthropic/claude-sonnet-5-5") {

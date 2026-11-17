@@ -37,8 +37,8 @@ func TestCurrentOrgCommandsUseAPIKeyRoutes(t *testing.T) {
 	useTestAPIKey(t)
 
 	commands := [][]string{
-		{"--api-url", srv.URL, "credentials", "list"},
-		{"--api-url", srv.URL, "credentials", "subscription", "disconnect", "codex"},
+		{"--api-url", srv.URL, "accounts", "list"},
+		{"--api-url", srv.URL, "accounts", "subscription", "disconnect", "codex"},
 		{"--api-url", srv.URL, "org", "members"},
 		{"--api-url", srv.URL, "org", "invite", "new@example.test", "--role", "member"},
 	}

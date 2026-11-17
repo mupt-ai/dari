@@ -22,22 +22,56 @@ import (
 
 func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, gf *globalFlags) {
-		root.AddCommand(&cobra.Command{
+		cmd := &cobra.Command{
 			Use:   "accounts",
 			Short: "Manage your subscriptions, API keys, and auto-routing, hosted or on a gateway",
-			Args:  cobra.NoArgs,
+			Long: "With no subcommand, opens the Accounts page wherever coding agents route, which needs a terminal.\n" +
+				"The subcommands work without one, for scripts and agents, and print JSON. `subscription`\n" +
+				"works hosted or on a gateway; `provider` and `list` manage organization credentials on hosted Dari;\n" +
+				"`auto-routing` sets the local gateway's Dari API key.",
+			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				return runAccounts(cmd.Context(), gf, cmd.InOrStdin(), cmd.ErrOrStderr())
 			},
-		})
+		}
+		cmd.AddCommand(
+			newSubscriptionCredentialsCmd(gf),
+			newProviderCredentialsCmd(gf),
+			newCredentialsListCmd(gf),
+			newAccountsAutoRoutingCmd(),
+		)
+		root.AddCommand(cmd)
 	})
+}
+
+// newAccountsAutoRoutingCmd sets the Dari API key a local gateway routes with,
+// as the Accounts page does.
+func newAccountsAutoRoutingCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "auto-routing <dari-api-key|off>",
+		Short: "Local gateway only: route with Dari's routing policy, using your Dari API key",
+		Long: "Auto-routing picks the model for each request with Dari's routing policy. The local gateway calls it with a Dari API key.\n" +
+			"A self-hosted gateway's operator sets DARI_AUTO_ROUTING_API_KEY on the server instead; hosted Dari includes it with the Autorouting plan.",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			gw, err := localGateway()
+			if err != nil {
+				return err
+			}
+			gw.settings.AutoRoutingKey = strings.TrimSpace(args[0])
+			if strings.EqualFold(gw.settings.AutoRoutingKey, "off") {
+				gw.settings.AutoRoutingKey = ""
+			}
+			return saveLocalGateway(cmd.Context(), gw, cmd.ErrOrStderr())
+		},
+	}
 }
 
 // runAccounts opens the Accounts page wherever coding agents route: the
 // hosted Dari API, or the local or self-hosted gateway.
 func runAccounts(ctx context.Context, gf *globalFlags, stdin io.Reader, stderr io.Writer) error {
 	if !agentInputIsTerminal(stdin) {
-		return errors.New("the Accounts page needs an interactive terminal; use `dari credentials subscription` instead")
+		return errors.New("the Accounts page needs an interactive terminal; use `dari accounts subscription` instead")
 	}
 	gw, err := agentGateway(ctx, stdin, stderr)
 	if err != nil {

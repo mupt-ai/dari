@@ -84,7 +84,7 @@ func TestSubscriptionListShowsConnectionOrderWithActiveAndHeld(t *testing.T) {
 	defer srv.Close()
 
 	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{"--api-url", srv.URL, "credentials", "subscription", "list"})
+	cmd.SetArgs([]string{"--api-url", srv.URL, "accounts", "subscription", "list"})
 	output, err := captureStdoutBytes(t, cmd.Execute)
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +137,7 @@ func TestSubscriptionCommandsNeedANameWhenSeveralAreConnected(t *testing.T) {
 	defer srv.Close()
 
 	ambiguous := newRootCmd("dev")
-	ambiguous.SetArgs([]string{"--api-url", srv.URL, "credentials", "subscription", "mark-available", "codex"})
+	ambiguous.SetArgs([]string{"--api-url", srv.URL, "accounts", "subscription", "mark-available", "codex"})
 	err := captureStdout(t, ambiguous.Execute)
 	if err == nil || !strings.Contains(err.Error(), "3 ChatGPT subscriptions are connected; pass one of: "+
 		"OPENAI_CODEX_OAUTH_TOKEN, OPENAI_CODEX_OAUTH_TOKEN_2, OPENAI_CODEX_OAUTH_TOKEN_3") {
@@ -145,12 +145,12 @@ func TestSubscriptionCommandsNeedANameWhenSeveralAreConnected(t *testing.T) {
 	}
 
 	for _, args := range [][]string{
-		{"credentials", "subscription", "mark-available", "openai_codex_oauth_token"},
+		{"accounts", "subscription", "mark-available", "openai_codex_oauth_token"},
 		// The only Claude Code subscription is found by its provider alias.
-		{"credentials", "subscription", "disconnect", "claude-code"},
-		{"credentials", "subscription", "mark-available", "muse-code"},
-		{"credentials", "subscription", "rename", "muse-code", "Muse Max"},
-		{"credentials", "subscription", "disconnect", "muse-code"},
+		{"accounts", "subscription", "disconnect", "claude-code"},
+		{"accounts", "subscription", "mark-available", "muse-code"},
+		{"accounts", "subscription", "rename", "muse-code", "Muse Max"},
+		{"accounts", "subscription", "disconnect", "muse-code"},
 	} {
 		cmd := newRootCmd("dev")
 		cmd.SetArgs(append([]string{"--api-url", srv.URL}, args...))
@@ -197,7 +197,7 @@ func TestSubscriptionConnectAddsAnotherOrReconnectsOne(t *testing.T) {
 		cmd := newRootCmd("dev")
 		cmd.SetIn(strings.NewReader("\n"))
 		cmd.SetErr(&strings.Builder{})
-		cmd.SetArgs(append([]string{"--api-url", srv.URL, "credentials", "subscription", "connect"}, tc.args...))
+		cmd.SetArgs(append([]string{"--api-url", srv.URL, "accounts", "subscription", "connect"}, tc.args...))
 		if err := captureStdout(t, cmd.Execute); err != nil {
 			t.Fatalf("connect %v: %v", tc.args, err)
 		}
@@ -224,7 +224,7 @@ func TestSubscriptionAutoResetSendsTheSetting(t *testing.T) {
 	defer srv.Close()
 
 	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{"--api-url", srv.URL, "credentials", "subscription", "auto-reset", "openai_codex_oauth_token_2", "on"})
+	cmd.SetArgs([]string{"--api-url", srv.URL, "accounts", "subscription", "auto-reset", "openai_codex_oauth_token_2", "on"})
 	if err := captureStdout(t, cmd.Execute); err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +234,7 @@ func TestSubscriptionAutoResetSendsTheSetting(t *testing.T) {
 	}
 
 	invalid := newRootCmd("dev")
-	invalid.SetArgs([]string{"--api-url", srv.URL, "credentials", "subscription", "auto-reset", "codex", "maybe"})
+	invalid.SetArgs([]string{"--api-url", srv.URL, "accounts", "subscription", "auto-reset", "codex", "maybe"})
 	if err := captureStdout(t, invalid.Execute); err == nil || !strings.Contains(err.Error(), "expected on or off") {
 		t.Fatalf("err = %v", err)
 	}
@@ -247,7 +247,7 @@ func TestSubscriptionRenameSendsTheLabel(t *testing.T) {
 	defer srv.Close()
 
 	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{"--api-url", srv.URL, "credentials", "subscription", "rename", "claude-code", " Work Max "})
+	cmd.SetArgs([]string{"--api-url", srv.URL, "accounts", "subscription", "rename", "claude-code", " Work Max "})
 	if err := captureStdout(t, cmd.Execute); err != nil {
 		t.Fatal(err)
 	}

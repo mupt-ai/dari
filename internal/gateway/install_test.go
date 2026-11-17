@@ -184,7 +184,7 @@ func TestRunningVersionFollowsTheProcess(t *testing.T) {
 	if err := os.WriteFile(versionPath(p), []byte("1.0.291"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := MarkRunning(); err != nil {
+	if err := markRunning(); err != nil {
 		t.Fatal(err)
 	}
 	if RunningVersion() != "1.0.291" {

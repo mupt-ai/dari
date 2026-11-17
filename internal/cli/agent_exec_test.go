@@ -72,7 +72,7 @@ func TestLaunchHandsProcessToAgent(t *testing.T) {
 		{"pi", true},
 		{"opencode", true},
 		// With its status bridge off, Codex has nothing for the launcher to
-		// clean up afterward (setup wrote its catalog), so it runs in place too.
+		// clean up afterward (its catalog is a cache file), so it runs in place too.
 		{"codex", true},
 	} {
 		t.Run(tc.agent, func(t *testing.T) {

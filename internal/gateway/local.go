@@ -68,10 +68,10 @@ func LogPath() (string, error) {
 	return p.log, err
 }
 
-// Install downloads the gateway for this machine from the CLI's own release,
+// install downloads the gateway for this machine from the CLI's own release,
 // so the two always match, and returns its version. Unreleased builds take
 // the latest release.
-func Install(ctx context.Context, cliVersion string) (string, error) {
+func install(ctx context.Context, cliVersion string) (string, error) {
 	p, err := paths()
 	if err != nil {
 		return "", err
@@ -136,7 +136,7 @@ func ensureInstalled(ctx context.Context, cliVersion string, progress func(strin
 	}
 	if _, err := os.Stat(p.binary); errors.Is(err, os.ErrNotExist) {
 		progress("Installing Dari Gateway")
-		version, err := Install(ctx, cliVersion)
+		version, err := install(ctx, cliVersion)
 		if err != nil {
 			return false, fmt.Errorf("install Dari Gateway: %w", err)
 		}
@@ -149,7 +149,7 @@ func ensureInstalled(ctx context.Context, cliVersion string, progress func(strin
 		return false, nil
 	}
 	progress("Updating Dari Gateway to v" + bareVersion(cliVersion))
-	version, err := Install(ctx, cliVersion)
+	version, err := install(ctx, cliVersion)
 	if err != nil {
 		progress("Could not update Dari Gateway (" + err.Error() + "); using the installed one")
 		return false, nil
@@ -220,8 +220,8 @@ func EnsureRunning(ctx context.Context, settings Settings, cliVersion string, pr
 	return fmt.Errorf("the local gateway did not start; see %s", p.log)
 }
 
-// Command returns the local gateway process for settings, logging to out.
-func Command(settings Settings, out io.Writer) (*exec.Cmd, error) {
+// command returns the local gateway process for settings, logging to out.
+func command(settings Settings, out io.Writer) (*exec.Cmd, error) {
 	p, err := paths()
 	if err != nil {
 		return nil, err
@@ -279,7 +279,7 @@ func Start(settings Settings) error {
 		return err
 	}
 	defer log.Close()
-	cmd, err := Command(settings, log)
+	cmd, err := command(settings, log)
 	if err != nil {
 		return err
 	}
@@ -290,7 +290,7 @@ func Start(settings Settings) error {
 	if err := os.WriteFile(p.pid, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
 		return err
 	}
-	if err := MarkRunning(); err != nil {
+	if err := markRunning(); err != nil {
 		return err
 	}
 	return cmd.Process.Release()
@@ -304,9 +304,9 @@ func runsOldBinary(installed, running string) bool {
 	return installed != "" && running != installed
 }
 
-// MarkRunning records that a gateway on the installed version is serving, so
+// markRunning records that a gateway on the installed version is serving, so
 // a later launch can tell when the installed binary has moved past it.
-func MarkRunning() error {
+func markRunning() error {
 	p, err := paths()
 	if err != nil {
 		return err
@@ -314,8 +314,8 @@ func MarkRunning() error {
 	return os.WriteFile(runningVersionPath(p), []byte(InstalledVersion()), 0o600)
 }
 
-// ClearRunning forgets the serving gateway's version once it has stopped.
-func ClearRunning() {
+// clearRunning forgets the serving gateway's version once it has stopped.
+func clearRunning() {
 	if p, err := paths(); err == nil {
 		_ = os.Remove(runningVersionPath(p))
 	}
@@ -359,7 +359,7 @@ func Stop(ctx context.Context) (bool, error) {
 	// pid that is gone, or now belongs to another program, is stale.
 	if err != nil || !gatewayRunning(pid, p.binary) {
 		_ = os.Remove(p.pid)
-		ClearRunning()
+		clearRunning()
 		return false, nil
 	}
 	process, err := os.FindProcess(pid)
@@ -374,7 +374,7 @@ func Stop(ctx context.Context) (bool, error) {
 		}
 		if waitForExit(ctx, pid, p.binary, 5*time.Second) {
 			_ = os.Remove(p.pid)
-			ClearRunning()
+			clearRunning()
 			return true, nil
 		}
 	}
@@ -415,7 +415,7 @@ func Restart(ctx context.Context, settings Settings, cliVersion string) error {
 	}
 	if !stopped {
 		// Something this CLI did not start in the background, such as
-		// `dari gateway serve`, holds the port and would keep the old config.
+		// a gateway run by hand, holds the port and would keep the old config.
 		if Healthy(ctx) {
 			return fmt.Errorf("a gateway this CLI did not start is answering at %s; restart it to apply the change", LocalURL())
 		}

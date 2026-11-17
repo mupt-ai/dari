@@ -112,7 +112,7 @@ Model ids are `provider/model`. Clients send `model: "dari/routing"` to let the 
 export DARI_GATEWAY_URL=http://localhost:8080
 export DARI_GATEWAY_KEY=<one of DARI_GATEWAY_KEYS>
 
-dari credentials subscription connect claude-code   # or codex or muse-code; repeat to pool plans
+dari accounts subscription connect claude-code   # or codex or muse-code; repeat to pool plans
 dari claude
 ```
 

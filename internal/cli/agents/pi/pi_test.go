@@ -13,7 +13,7 @@ import (
 // loads it from its extensions directory, so no --extension is passed.
 func TestConfigurePointsTheInstalledExtensionAtTheRouter(t *testing.T) {
 	t.Setenv("PI_CODING_AGENT_DIR", t.TempDir())
-	if _, err := Setup(os.Getenv("PI_CODING_AGENT_DIR"), "https://routing.test", "dak_1", agents.Models{Routing: true}); err != nil {
+	if err := Setup(os.Getenv("PI_CODING_AGENT_DIR"), "https://routing.test", "dak_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
 	command := agents.Command{Path: "/pi", Args: []string{"-p", "review"}, Env: []string{agents.RoutingAPIKeyEnv + "=dari_route"}}
@@ -58,7 +58,7 @@ func TestConfigureBringsTheExtensionWhenItIsNotInstalled(t *testing.T) {
 // holds no key.
 func TestSetupInstallsTheProviderExtension(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Routing: true}); err != nil {
+	if err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Routing: true}); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "extensions", "dari.ts"))
@@ -104,9 +104,8 @@ func TestSetupRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := agents.Models{Enabled: []string{"a/one", "a/two"}}
-	first, err := Setup(dir, "https://routing.test", "dak_1", models)
-	if err != nil || !first {
-		t.Fatalf("first setup = %v, %v", first, err)
+	if err := Setup(dir, "https://routing.test", "dak_1", models); err != nil {
+		t.Fatalf("first setup: %v", err)
 	}
 	settings, _ := readJSON(filepath.Join(dir, "settings.json"))
 	if settings["defaultProvider"] != "dari" || settings["defaultModel"] != "dari/model/a/one" || settings["theme"] != "dark" {
@@ -121,8 +120,8 @@ func TestSetupRoundTrip(t *testing.T) {
 		t.Fatalf("SavedModel = %q", got)
 	}
 	models.Saved = SavedModel(dir)
-	if first, err := Setup(dir, "http://127.0.0.1:7340", "dgw", models); err != nil || first {
-		t.Fatalf("second setup = %v, %v", first, err)
+	if err := Setup(dir, "http://127.0.0.1:7340", "dgw", models); err != nil {
+		t.Fatalf("second setup: %v", err)
 	}
 	if settings, _ := readJSON(filepath.Join(dir, "settings.json")); settings["defaultModel"] != "dari/model/a/two" {
 		t.Fatalf("settings = %v", settings)
@@ -152,7 +151,7 @@ func TestSetupWritesNothingOverUnreadableSettings(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(`{"theme": "dark",}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Enabled: []string{"a/one"}}); err == nil {
+	if err := Setup(dir, "https://routing.test", "dak_1", agents.Models{Enabled: []string{"a/one"}}); err == nil {
 		t.Fatal("setup over unparseable settings succeeded")
 	}
 	for _, name := range []string{"extensions/dari.ts", "dari.json", "dari-setup.json"} {

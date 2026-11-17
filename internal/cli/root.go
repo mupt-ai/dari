@@ -76,8 +76,8 @@ func newRootCmd(version string) *cobra.Command {
 		Use:   "dari",
 		Short: "Route coding agents through Dari and manage your routers.",
 		Long: "Launch a coding agent with Dari, or use Dari commands to manage routing.\n\n" +
-			"Agent launchers pass their arguments through to the agent. Management commands\n" +
-			"are grouped below; commands that need hosted Dari say so in their help.",
+			"Agent launchers pass their arguments through to the agent. Hosted Dari Commands\n" +
+			"need hosted routing; a local or self-hosted gateway has nothing for them to manage.",
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		Version:       version,
@@ -114,6 +114,10 @@ func newRootCmd(version string) *cobra.Command {
 // root. Each command file appends to this slice from its init().
 var commandRegistrars []func(*cobra.Command, *globalFlags)
 
+// hostedGroup lists commands that need hosted Dari: a local or self-hosted
+// gateway has no orgs, routers, keys, activity, or evals to manage.
+const hostedGroup = "hosted"
+
 func registerCommands(root *cobra.Command, gf *globalFlags) {
 	for _, fn := range commandRegistrars {
 		fn(root, gf)
@@ -121,13 +125,16 @@ func registerCommands(root *cobra.Command, gf *globalFlags) {
 	root.AddGroup(
 		&cobra.Group{ID: "agents", Title: "Agent Launchers"},
 		&cobra.Group{ID: "dari", Title: "Dari Commands"},
+		&cobra.Group{ID: hostedGroup, Title: "Hosted Dari Commands"},
 	)
 	for _, command := range root.Commands() {
 		if _, ok := agentLaunchers[command.Name()]; ok {
 			command.GroupID = "agents"
 			continue
 		}
-		command.GroupID = "dari"
+		if command.GroupID == "" {
+			command.GroupID = "dari"
+		}
 	}
 }
 

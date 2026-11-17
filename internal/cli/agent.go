@@ -34,21 +34,23 @@ const (
 // reaches the agent untouched. Cobra only sees them when a Dari flag comes
 // first, which would be dropped, so those commands refuse to run.
 var agentLaunchers = map[string]string{
-	"claude":   "Launch Claude Code through Dari; forward all following arguments (--setup configures the Claude app)",
-	"codex":    "Launch Codex through Dari; forward all following arguments (--setup configures the Codex app)",
-	"opencode": "Launch OpenCode through Dari; forward all following arguments",
-	"pi":       "Launch Pi through Dari; forward all following arguments",
+	"claude":   "Launch Claude Code through Dari; forward all following arguments (--setup-cli sets up plain `claude`, --setup-desktop the Claude app)",
+	"codex":    "Launch Codex through Dari; forward all following arguments (--setup-cli or --setup-desktop sets up plain `codex` and the Codex app, which share a config)",
+	"opencode": "Launch OpenCode through Dari; forward all following arguments (--setup-cli sets up plain `opencode`)",
+	"pi":       "Launch Pi through Dari; forward all following arguments (--setup-cli sets up plain `pi`)",
 	"muse":     "Launch Muse Code through Dari; forward all following arguments",
-	"openclaw": "Set OpenClaw up to route through Dari, then launch it; forward all following arguments (--setup only sets up, --remove-setup undoes it)",
-	"hermes":   "Set Hermes Agent up to route through Dari, then launch it; forward all following arguments (--setup only sets up, --remove-setup undoes it)",
+	"openclaw": "Launch OpenClaw, set up once with --setup-cli to route through Dari; forward all following arguments",
+	"hermes":   "Launch Hermes Agent, set up once with --setup-cli to route through Dari; forward all following arguments",
 }
 
-// agentSetupFlag writes Dari into the agent's own config so its desktop app,
-// which never runs through the launcher, routes through Dari too.
-// agentRemoveSetupFlag undoes it.
+// A launch routes only its own session and leaves the agent's config alone.
+// agentSetupCLIFlag writes Dari into that config so the agent run directly
+// routes through Dari too; agentSetupDesktopFlag does the same for its
+// desktop app. Pass both for both. agentRemoveSetupFlag undoes either.
 const (
-	agentSetupFlag       = "--setup"
-	agentRemoveSetupFlag = "--remove-setup"
+	agentSetupCLIFlag     = "--setup-cli"
+	agentSetupDesktopFlag = "--setup-desktop"
+	agentRemoveSetupFlag  = "--remove-setup"
 )
 
 func init() {
@@ -67,10 +69,25 @@ func init() {
 }
 
 type agentLaunch struct {
-	name        string
-	args        []string
-	setup       bool
-	removeSetup bool
+	name         string
+	args         []string
+	setupCLI     bool
+	setupDesktop bool
+	removeSetup  bool
+}
+
+func (l agentLaunch) setup() bool { return l.setupCLI || l.setupDesktop }
+
+// setupFlags are the setup flags as the user would type them again.
+func (l agentLaunch) setupFlags() string {
+	flags := []string{}
+	if l.setupCLI {
+		flags = append(flags, agentSetupCLIFlag)
+	}
+	if l.setupDesktop {
+		flags = append(flags, agentSetupDesktopFlag)
+	}
+	return strings.Join(flags, " ")
 }
 
 func parseAgentLaunch(args []string) (agentLaunch, bool) {
@@ -87,8 +104,12 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 			launch.args = append(launch.args, args[1+i:]...)
 			break
 		}
-		if arg == agentSetupFlag {
-			launch.setup = true
+		if arg == agentSetupCLIFlag {
+			launch.setupCLI = true
+			continue
+		}
+		if arg == agentSetupDesktopFlag {
+			launch.setupDesktop = true
 			continue
 		}
 		if arg == agentRemoveSetupFlag {
@@ -101,7 +122,7 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 }
 
 func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, stdout, stderr io.Writer) int {
-	if launch.setup || launch.removeSetup {
+	if launch.setup() || launch.removeSetup {
 		if err := runAgentSetup(ctx, launch, stdin, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -114,10 +135,27 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		return 127
 	}
 
+	if routesOnlyWhenSetUp[launch.name] && !agents.OnlyRequestsInfo(launch.args) {
+		if !gatewayAgentSetUp(ctx, launch.name) {
+			fmt.Fprintf(stderr, "%s routes through Dari only once it is set up; run `dari %s %s` first\n", agentApps[launch.name].name, launch.name, agentSetupCLIFlag)
+			return 1
+		}
+		// Its config may name the local gateway, which launches start as they
+		// do for every other agent. It routes on its own config, not on the
+		// current mode, so a gateway that cannot be read or started only warns.
+		if gw, err := currentGateway(); err == nil && gw != nil && gw.local {
+			if err := gw.ensure(ctx, stderr); err != nil {
+				agentStep(stderr, fmt.Sprintf("Could not start the local gateway (%v); run `dari gateway start`", err))
+			}
+		}
+	}
+
 	key := "unused"
 	baseURL := routingBaseURL
 	var models agents.Models
-	if !agents.OnlyRequestsInfo(launch.args) {
+	// OpenClaw and Hermes route on the setup in their own config, so their
+	// launches need no routing of their own.
+	if !agents.OnlyRequestsInfo(launch.args) && !routesOnlyWhenSetUp[launch.name] {
 		key, baseURL, models, err = resolveAgentRouting(ctx, launch, stdin, stderr)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
@@ -136,32 +174,6 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		return 1
 	}
 
-	if !agents.OnlyRequestsInfo(launch.args) {
-		// Write Dari into the agent's own config so it routes the same way
-		// when run directly. The launch routes through Dari either way, so a
-		// config Dari cannot write (one with comments, say) only skips that,
-		// except for Codex, which reads the router's model catalog only from
-		// the config setup writes.
-		first, err := saveAgentConfig(ctx, launch.name, key, baseURL, models)
-		if err != nil && launch.name == "codex" {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		if err != nil {
-			agentStep(stderr, fmt.Sprintf("Could not save Dari into %s's own config (%v); this launch still routes through Dari", launch.name, err))
-		} else if first {
-			agentStep(stderr, fmt.Sprintf("`%s` itself now routes through Dari too; `dari %s %s` undoes it", launch.name, launch.name, agentRemoveSetupFlag))
-		}
-	}
-
-	if launchSetsUpAgent[launch.name] && !agents.OnlyRequestsInfo(launch.args) {
-		if err := applyAgentSetup(ctx, launch.name, key, baseURL, models); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		agentStep(stderr, fmt.Sprintf("%s routes through Dari, starting on %s; `dari %s %s` undoes it", agentApps[launch.name].name, startModel(launch.name, models), launch.name, agentRemoveSetupFlag))
-	}
-
 	command, err := buildAgentCommand(path, launch, key, baseURL, models)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -174,6 +186,10 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		}
 	}()
 	if launch.name == "codex" && !agents.OnlyRequestsInfo(launch.args) {
+		if err := codex.PrepareCatalog(ctx, &command, key, baseURL, models); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
 		if err := codex.PrepareStatus(ctx, &command, launch.args, key, baseURL); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -459,7 +475,7 @@ func buildAgentCommand(path string, launch agentLaunch, key, baseURL string, mod
 	case "muse":
 		muse.Configure(&command, key, models)
 	case "openclaw", "hermes":
-		// Launches run on the setup written into the agent's own config.
+		// Launches run on the setup --setup-cli wrote into the agent's own config.
 	default:
 		return agents.Command{}, fmt.Errorf("unsupported coding agent %q", launch.name)
 	}

@@ -20,7 +20,7 @@ import {
   plansForAnotherClient,
 } from "../link/errors.js";
 import { registeredModelPrice } from "../providers/pi.js";
-import type { LinkUnavailable, ProviderKeySource, ResolvedRouter } from "../types.js";
+import type { LinkUnavailable, ProviderCredential as SuppliedProviderCredential, ProviderKeySource, ResolvedRouter } from "../types.js";
 import {
   allRouterModels,
   routerModelsFor,
@@ -32,6 +32,7 @@ import type { ActiveLinkGrant } from "../link/grants.js";
 import type { SqliteLinkStore } from "../link/sqlite_store.js";
 import { linkTokenGrant } from "../link/service.js";
 import type { RouterModelStore } from "./router_models.js";
+import { refreshedAccessToken } from "./subscriptions/access.js";
 import {
   activeModelHolds,
   freshAccessToken,
@@ -148,20 +149,39 @@ export async function resolveSelfHostedRouter(
     credentials.set(provider, apiKey ? { key: apiKey, source: "user" } : null);
   }
 
-  // A model at its own limit on the serving plan leaves routing until it resets.
+  // A model-specific hold tries the pool's other plans before removing the
+  // model. Its provider's active plan and conversation pin stay unchanged.
+  const modelCredentials: Record<string, SuppliedProviderCredential> = {};
   const linkUnavailable = grant === null
     ? {}
     : grantUnavailable(granted, credentials, request.clientHarness, now);
-  const models = listed.filter((model) => {
+  const models = [];
+  for (const model of listed) {
     const credential = credentials.get(providerForModel(model.id));
-    if (credential == null) return false;
+    if (credential == null) continue;
     const plan = credential.subscription;
     const hold = plan === undefined ? undefined : activeModelHolds(plan, now).find((held) => held.model === model.id);
-    if (plan === undefined || hold === undefined) return true;
+    if (plan === undefined || hold === undefined) {
+      models.push(model);
+      continue;
+    }
+    const alternate = deps.subscriptions.selectCredential(plan.provider, undefined, now, servable, model.id);
+    if (alternate !== null) {
+      modelCredentials[model.id] = {
+        apiKey: request.provisional === true
+          ? alternate.accessToken
+          // A model-only failover must not move the provider-wide rotation anchor.
+          : await refreshedAccessToken(deps.subscriptions, alternate, { fetch: deps.fetch }),
+        subscription: alternate.provider,
+        credentialId: alternate.id,
+      };
+      models.push(model);
+      continue;
+    }
     exhausted.add(plan.provider);
     linkUnavailable[model.id] = plansExhausted([plan.provider], hold.until);
-    return false;
-  });
+  }
+
   // A grant with a gateway key serves the gateway's models by name, listed or not.
   const gatewayKeyed = [...grantedKeys.keys()].some((provider) => gatewayFor(provider) !== undefined);
   if (models.length === 0 && !gatewayKeyed) {
@@ -188,6 +208,7 @@ export async function resolveSelfHostedRouter(
     provider_keys: {},
     provider_key_sources: {},
     subscription_credential_ids: {},
+    provider_credentials: modelCredentials,
     link_grant_id: grant?.id ?? null,
     ...(grant === null
       ? {}

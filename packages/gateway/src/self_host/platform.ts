@@ -5,7 +5,8 @@ import { subscriptionOAuthProviderFor } from "../providers/subscription_limits.j
 import type { PrefixStore } from "./prefix_store.js";
 import type { SessionPinStore } from "./session_pin_store.js";
 import { resolveSelfHostedRouter, type SelfHostedResolverDeps } from "./resolve.js";
-import { freshAccessToken, type SubscriptionStore } from "./subscriptions/index.js";
+import { type SubscriptionStore } from "./subscriptions/index.js";
+import { refreshedAccessToken } from "./subscriptions/access.js";
 
 /**
  * The self-hosted platform: routers from the config file, subscriptions,
@@ -43,11 +44,11 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
         : deps.links.credentialIds(request.linkGrantId);
       const next = plan === null
         ? null
-        : deps.subscriptions.selectCredential(plan, request.conversationId, new Date(), only);
+        : deps.subscriptions.selectCredential(plan, request.conversationId, new Date(), only, request.model);
       if (next === null) return undefined;
       return {
         credentialId: next.id,
-        apiKey: await freshAccessToken(deps.subscriptions, next, { fetch: deps.fetch }),
+        apiKey: await refreshedAccessToken(deps.subscriptions, next, { fetch: deps.fetch }),
       };
     },
     async markSubscriptionUnavailable({ credentialId, limit, linkGrantId }) {

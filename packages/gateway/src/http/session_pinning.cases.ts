@@ -196,17 +196,21 @@ for (const harness of ["Claude Code", "Codex", "Muse Code"] as const) {
       model_configs: Object.fromEntries(Object.entries(base.model_configs!).map(([model, config]) =>
         [model, { ...config, supported_thinking_levels: levels, default_thinking_level: "low" as const }])),
     };
-    const send = (model: string) => harness === "Claude Code"
-      ? claudeCode({ requestClass: "main", model, effort: "high" })
+    const send = (model: string, effort: "medium" | "high") => harness === "Claude Code"
+      ? claudeCode({ requestClass: "main", model, effort })
       : harness === "Codex"
-        ? codex({ threadId: MAIN_SESSION, model, effort: "high" })
-        : muse({ model, effort: "high" });
+        ? codex({ threadId: MAIN_SESSION, model, effort })
+        : muse({ model, effort });
 
-    expect((await send("dari/routing")).status).toBe(200);
-    expect(new Set(selectedEfforts)).toEqual(new Set(levels));
-
-    const requested = await send(`dari/model/${MODEL_B}`);
-    expect(requested.headers.get("x-dari-thinking-level")).toBe("high");
+    // A session preference the router does not enable must not eliminate its
+    // candidates. Explicit models clamp that preference to their default.
+    for (const effort of ["high", "medium"] as const) {
+      expect((await send("dari/routing", effort)).status).toBe(200);
+      expect(new Set(selectedEfforts)).toEqual(new Set(levels));
+      const requested = await send(`dari/model/${MODEL_B}`, effort);
+      expect(requested.status).toBe(200);
+      expect(requested.headers.get("x-dari-thinking-level")).toBe(effort === "medium" ? "low" : effort);
+    }
   });
 }
 

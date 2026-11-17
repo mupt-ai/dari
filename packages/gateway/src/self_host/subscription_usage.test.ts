@@ -56,10 +56,11 @@ test("a request refused at a plan's usage limit is served by the next plan", asy
 });
 
 // A plan can cap one model on its own (a weekly Opus or Fable limit). Only that
-// model is held: the client's retry routes to the plan's other models, and the
-// plan is never switched.
-test("a request refused at one model's own limit holds only that model", async () => {
-  const gateway = await startSubscriptionGateway((_token, model) => model === "claude-fable-5"
+// model is held on the exhausted plan; another plan serves it immediately
+// and on subsequent requests, while other models keep using the first plan.
+test("a model limit fails over to another plan without holding the other models", async () => {
+  let secondExhausted = false;
+  const gateway = await startSubscriptionGateway((token, model) => (token === "sk-ant-oat01-a" || secondExhausted) && model === "claude-fable-5"
     ? Response.json(
       { type: "error", error: { type: "rate_limit_error", message: "usage limit" } },
       {
@@ -73,20 +74,39 @@ test("a request refused at one model's own limit holds only that model", async (
     )
     : anthropicReply(), ["anthropic/claude-sonnet-5-5", "anthropic/claude-fable-5"]);
   stop = gateway.stop;
-  const [a] = gateway.planIds;
+  const [a, b] = gateway.planIds;
   const session = "44444444-4444-4444-8444-444444444444";
 
-  const refused = await gateway.claudeCode(session, "hello", "dari/model/anthropic/claude-fable-5");
-  expect(refused.status).toBe(503);
-  expect(refused.headers.get("retry-after")).toBe("1");
-  expect(await refused.text()).toContain("usage limit for anthropic/claude-fable-5 is reached");
-  expect(gateway.served).toEqual(["sk-ant-oat01-a"]);
+  const response = await gateway.claudeCode(session, "hello", "dari/model/anthropic/claude-fable-5");
+  expect(response.status).toBe(200);
+  expect(await response.text()).toContain("hi");
+  expect(gateway.served).toEqual(["sk-ant-oat01-a", "sk-ant-oat01-b"]);
   expect(gateway.plan(a!)).toMatchObject({
     unavailableUntil: null,
     modelHolds: [expect.objectContaining({ model: "anthropic/claude-fable-5" })],
   });
 
+  const again = await gateway.claudeCode(session, "Fable again", "dari/model/anthropic/claude-fable-5");
+  expect(again.status).toBe(200);
+  await again.text();
+  expect(gateway.served).toEqual(["sk-ant-oat01-a", "sk-ant-oat01-b", "sk-ant-oat01-b"]);
+
   // The plan still serves its other models.
   expect((await gateway.claudeCode(session, "again")).status).toBe(200);
-  expect(gateway.served).toEqual(["sk-ant-oat01-a", "sk-ant-oat01-a"]);
+  expect(gateway.served).toEqual(["sk-ant-oat01-a", "sk-ant-oat01-b", "sk-ant-oat01-b", "sk-ant-oat01-a"]);
+
+  // Exhausting the second plan's Fable quota must hold that credential, not
+  // its provider-wide default, and must stop rather than loop through holds.
+  secondExhausted = true;
+  const exhausted = await gateway.claudeCode(session, "Fable again", "dari/model/anthropic/claude-fable-5");
+  expect(exhausted.status).toBe(503);
+  await exhausted.text();
+  expect(gateway.served.at(-1)).toBe("sk-ant-oat01-b");
+  expect(gateway.plan(b!)).toMatchObject({
+    unavailableUntil: null,
+    modelHolds: [expect.objectContaining({ model: "anthropic/claude-fable-5" })],
+  });
+  expect((await gateway.claudeCode(session, "Sonnet still works")).status).toBe(200);
+  expect(gateway.served.at(-1)).toBe("sk-ant-oat01-a");
+
 });

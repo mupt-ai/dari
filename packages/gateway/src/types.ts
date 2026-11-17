@@ -63,6 +63,8 @@ export type ProviderCredential = {
   baseUrl?: string;
   headers?: Record<string, string>;
   subscription?: SubscriptionKind;
+  // A resolved personal plan: quota holds and usage belong to this credential.
+  credentialId?: string;
 };
 
 export type ProviderAuth = ResolvedProviderAuth | AwsAssumeRoleProviderAuth;
@@ -142,7 +144,7 @@ export type ResolvedRouter = {
   provider_auth?: Partial<Record<Provider, AwsProviderAuth>>;
   provider_key_sources?: Partial<Record<Provider, ProviderKeySource>>;
   // Model -> the platform-supplied credential that replaces the provider key
-  // above for this request. Filled from resolveProviderCredential.
+  // above for this request. Supplied by resolveRouter or resolveProviderCredential.
   provider_credentials?: Record<string, ProviderCredential>;
   // Execution provider -> the user's subscription credential serving it.
   subscription_credential_ids?: Partial<Record<Provider, string>>;

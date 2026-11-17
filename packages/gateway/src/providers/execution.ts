@@ -764,8 +764,8 @@ async function providerFailedAttempt(
   // Retrying an exhausted plan cannot succeed. The platform learns about it
   // before this request returns so the next resolve already serves the
   // user's next subscription, or the model's API credential when the router
-  // allows subscription API fallback for it. A limit on one model holds only
-  // that model, and the next resolve routes to the others.
+  // allows subscription API fallback for it. A model limit holds only that
+  // model on this plan; other plans may still serve it.
   const switched = execution.subscriptionUserId !== undefined
     && await holdSubscription({
       userId: execution.subscriptionUserId,
@@ -774,9 +774,8 @@ async function providerFailedAttempt(
       ...(execution.subscriptionLinkGrantId ? { linkGrantId: execution.subscriptionLinkGrantId } : {}),
     });
   // Nothing reached the client yet, so the same request is retried on the
-  // next plan at once when the platform names it. The same plan still serves
-  // after a model limit, so there is no next plan to retry on.
-  const nextSubscription = switched && limit.model === undefined
+  // next plan with quota for this model, including model-specific limits.
+  const nextSubscription = switched
     ? await nextSubscriptionFor(execution)
     : undefined;
   return {
@@ -890,12 +889,15 @@ async function nextSubscriptionFor(execution: ProviderExecution): Promise<NextSu
   const platform = gatewayPlatform();
   if (platform.nextSubscription === undefined || execution.subscriptionUserId === undefined) return undefined;
   try {
-    return await platform.nextSubscription({
+    const next = await platform.nextSubscription({
       userId: execution.subscriptionUserId,
       provider: execution.provider,
+      model: execution.model,
       conversationId: execution.conversationId,
       ...(execution.subscriptionLinkGrantId ? { linkGrantId: execution.subscriptionLinkGrantId } : {}),
     });
+    // Never retry a held credential, even if a stale lookup returns it.
+    return next?.credentialId === execution.subscriptionCredentialId ? undefined : next;
   } catch (error) {
     console.error("next subscription lookup failed", error);
     captureOperationalError(error, { code: "next_subscription_lookup_failed" });

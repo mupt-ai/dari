@@ -171,10 +171,10 @@ export function prepareProviderExecution(args: {
     providerKeySource,
     // Only resolved personal subscriptions are held at their usage limit;
     // the platform manages the plans it supplies.
-    ...(providerKeySource === "subscription" && !supplied && args.credentials.attributed_user_id
+    ...(providerKeySource === "subscription" && (!supplied || supplied.credentialId !== undefined) && args.credentials.attributed_user_id
       ? {
           subscriptionUserId: args.credentials.attributed_user_id,
-          subscriptionCredentialId: args.credentials.subscription_credential_ids?.[provider],
+          subscriptionCredentialId: supplied?.credentialId ?? args.credentials.subscription_credential_ids?.[provider],
           ...(args.credentials.link_grant_id ? { subscriptionLinkGrantId: args.credentials.link_grant_id } : {}),
         }
       : {}),

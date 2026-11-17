@@ -304,9 +304,11 @@ export class SubscriptionStore {
     conversationId: string | undefined,
     now = new Date(),
     only?: ReadonlySet<string>,
+    model?: string,
   ): SubscriptionCredential | null {
     const all = only === undefined ? this.list(provider) : this.withIds(only, provider);
-    const available = all.filter((credential) => !isHeld(credential, now));
+    const available = all.filter((credential) => !isHeld(credential, now)
+      && (model === undefined || !activeModelHolds(credential, now).some((hold) => hold.model === model)));
     if (available.length === 0) return null;
     const order = rotationFrom(all, lastUsed(all));
     const withHeadroom = available.filter((credential) => hasHeadroom(credential, now));
@@ -320,7 +322,7 @@ export class SubscriptionStore {
         ? [...withHeadroom].sort(soonestResetFirst(now, order))[0]!
         : [...available].sort(leastUsedFirst(now, order))[0]!;
     }
-    if (conversationId !== undefined) this.pinConversation(conversationId, provider, chosen.id, now);
+    if (conversationId !== undefined && model === undefined) this.pinConversation(conversationId, provider, chosen.id, now);
     return chosen;
   }
 

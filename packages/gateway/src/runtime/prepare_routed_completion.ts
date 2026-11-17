@@ -267,7 +267,7 @@ async function withProviderCredentials(
       }),
     ] as const),
   );
-  const provider_credentials: Record<string, ProviderCredential> = {};
+  const provider_credentials: Record<string, ProviderCredential> = { ...credentials.provider_credentials };
   const model_configs = { ...credentials.model_configs };
   for (const [model, credential] of resolved) {
     if (!credential?.apiKey.trim()) continue;

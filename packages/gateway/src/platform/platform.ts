@@ -471,6 +471,7 @@ export type SubscriptionHold = {
 export type NextSubscriptionRequest = {
   userId: string;
   provider: Provider;
+  model: string;
   conversationId: string;
   // The Dari Link grant the request ran under: the next plan must be one of
   // its subscriptions.

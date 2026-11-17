@@ -10,15 +10,10 @@ import {
 import { HttpError } from "../http/errors.js";
 import type { ResolveRouterRequest } from "../platform/platform.js";
 import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
-import { codexModelConfig, subscriptionClient, subscriptionModelProvider } from "../models/subscriptions.js";
+import { codexModelConfig, subscriptionModelProvider } from "../models/subscriptions.js";
 import { CANONICAL_MODELS } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
-import {
-  linkGrantUnavailableError,
-  modelNotServed,
-  plansExhausted,
-  plansForAnotherClient,
-} from "../link/errors.js";
+import { linkNothingServed, plansExhausted, providersUnavailable } from "../link/errors.js";
 import { registeredModelPrice } from "../providers/pi.js";
 import type { LinkUnavailable, ProviderCredential as SuppliedProviderCredential, ProviderKeySource, ResolvedRouter } from "../types.js";
 import {
@@ -152,9 +147,15 @@ export async function resolveSelfHostedRouter(
   // A model-specific hold tries the pool's other plans before removing the
   // model. Its provider's active plan and conversation pin stay unchanged.
   const modelCredentials: Record<string, SuppliedProviderCredential> = {};
+  // A provider the request wanted that no granted plan served.
   const linkUnavailable = grant === null
     ? {}
-    : grantUnavailable(granted, credentials, request.clientHarness, now);
+    : providersUnavailable(
+      granted.map((credential) => ({ kind: credential.provider, unavailableUntil: credential.unavailableUntil })),
+      [...credentials].filter(([, credential]) => credential === null).map(([provider]) => provider),
+      request.clientHarness,
+      now,
+    );
   const models = [];
   for (const model of listed) {
     const credential = credentials.get(providerForModel(model.id));
@@ -185,11 +186,7 @@ export async function resolveSelfHostedRouter(
   // A grant with a gateway key serves the gateway's models by name, listed or not.
   const gatewayKeyed = [...grantedKeys.keys()].some((provider) => gatewayFor(provider) !== undefined);
   if (models.length === 0 && !gatewayKeyed) {
-    if (grant !== null) {
-      throw grant.pins?.length === 1
-        ? modelNotServed({ link_unavailable: linkUnavailable }, grant.pins[0]!.model)
-        : linkGrantUnavailableError(linkUnavailable);
-    }
+    if (grant !== null) throw linkNothingServed(linkUnavailable, grant.pins);
     const missing = [...credentials].filter(([, credential]) => credential == null).map(([provider]) => provider);
     throw unavailableRouterError(request.routerId, exhausted, missing);
   }
@@ -310,40 +307,6 @@ function grantModels(
   // A pinned level replaces the router's own choice of levels for the model.
   const pinned = new Set(grant.pins.map((pin) => pin.model));
   return models.filter((model) => pinned.has(model.id)).map((model) => ({ id: model.id }));
-}
-
-/**
- * Why each provider with a granted plan serves nothing now: its plans serve
- * only another client, or are all at their usage limits.
- */
-function grantUnavailable(
-  granted: readonly SubscriptionCredential[],
-  credentials: ReadonlyMap<string, ProviderCredential | null>,
-  clientHarness: ResolveRouterRequest["clientHarness"],
-  now: Date,
-): Record<string, LinkUnavailable> {
-  const unavailable: Record<string, LinkUnavailable> = {};
-  for (const provider of new Set(granted.map((credential) => subscriptionModelProvider(credential.provider)))) {
-    // Only a provider the request wanted and no plan served.
-    if (credentials.get(provider) !== null) continue;
-    const plans = granted.filter((credential) => subscriptionModelProvider(credential.provider) === provider);
-    const usable = plans.filter((credential) => {
-      const client = subscriptionClient(credential.provider);
-      return client === undefined || client === clientHarness;
-    });
-    if (usable.length === 0) {
-      unavailable[provider] = plansForAnotherClient(plans.map((credential) => credential.provider));
-      continue;
-    }
-    const held = usable.flatMap((credential) =>
-      credential.unavailableUntil !== null && credential.unavailableUntil > now ? [credential.unavailableUntil] : []
-    );
-    unavailable[provider] = plansExhausted(
-      usable.map((credential) => credential.provider),
-      held.length === usable.length ? new Date(Math.min(...held.map((date) => date.getTime()))) : null,
-    );
-  }
-  return unavailable;
 }
 
 // Configured endpoints read their own key variable, or send a placeholder

@@ -23,3 +23,8 @@ export const LINK_KEY_PROVIDERS: readonly LinkKeyProvider[] = [
     .map((provider) => ({ id: provider, name: PROVIDER_NAMES[provider] ?? provider })),
   ...LINK_KEY_GATEWAYS.map((gateway) => ({ id: gateway, name: gatewayFor(gateway)!.label })),
 ];
+
+/** What a provider is called where a user's key for it is shown: "OpenRouter". */
+export function linkKeyProviderName(provider: string): string {
+  return LINK_KEY_PROVIDERS.find((candidate) => candidate.id === provider)?.name ?? provider;
+}

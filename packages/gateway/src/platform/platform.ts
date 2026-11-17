@@ -176,10 +176,11 @@ export type LinkPlatform = {
 };
 
 /**
- * What the gateway's approval and connections pages need. The pages need no
- * account: a user connects a plan by signing in to its provider, and the
- * gateway remembers them in a signed cookie as a subject, so their plans are
- * there the next time an app asks and they manage their connections there.
+ * What the gateway's approval and connections pages need. The gateway
+ * remembers the user in a signed cookie as a subject, so their plans are there
+ * the next time an app asks and they manage their connections there. With
+ * `signIn` the subject is the account they signed in with; without it the
+ * pages need no account, and a user's first plan makes their subject.
  */
 export type LinkApprovalPage = {
   /**
@@ -187,6 +188,11 @@ export type LinkApprovalPage = {
    * `link_not_configured`) when the platform has none.
    */
   sessionSecret(): string;
+  /**
+   * Set on a platform whose users have accounts: the page then acts only for
+   * a user who signed in with one, so their plans follow them to any browser.
+   */
+  signIn?: LinkSignIn;
   /** The kinds of plan a user can connect on the page, in the order offered. */
   connectable: readonly SubscriptionKind[];
   /** The providers and gateways a user can add an API key for, in the order offered. */
@@ -228,6 +234,18 @@ export type LinkApprovalPage = {
   disconnect(subject: string, grantId: string): Promise<boolean>;
   /** Replace one of the user's grants' budget (empty removes it); false when they have none by that id. */
   setBudget(subject: string, grantId: string, budget: LinkBudget[]): Promise<boolean>;
+};
+
+/**
+ * The platform's own sign-in. The page sends the user to `url()` with `state`
+ * and `next`; the platform signs them in and returns them to
+ * `/v1/link/session` with the same `next` and a ticket for that state.
+ */
+export type LinkSignIn = {
+  /** Throws HttpError(503, `link_not_configured`) when the platform has none. */
+  url(): string;
+  /** Who a ticket signed in, for which state, and when (epoch ms); null for no ticket. */
+  redeem(ticket: string): Promise<{ subject: string; state: string; issuedAt: number } | null>;
 };
 
 /** A plan or API key the user added, and who they are now. */

@@ -21,7 +21,7 @@ import {
   type SubscriptionCredential,
 } from "../self_host/subscriptions/index.js";
 import { linkCompleteThrough } from "./in_flight.js";
-import { LINK_KEY_PROVIDERS } from "./key_providers.js";
+import { LINK_KEY_PROVIDERS, linkKeyProviderName } from "./key_providers.js";
 import { linkPlatform } from "./service.js";
 import type { LinkApiKey } from "./sqlite_store.js";
 
@@ -160,7 +160,7 @@ function linkKey(key: LinkApiKey): LinkSubscription {
     id: key.id,
     provider: "api_key",
     apiKeyProvider: key.provider,
-    name: LINK_KEY_PROVIDERS.find((provider) => provider.id === key.provider)?.name ?? key.provider,
+    name: linkKeyProviderName(key.provider),
     label: `Key ending ${key.apiKey.slice(-4)}`,
     accountEmail: null,
     unavailableUntil: null,

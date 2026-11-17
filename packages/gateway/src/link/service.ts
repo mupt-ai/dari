@@ -9,13 +9,13 @@ import { randomUUID } from "node:crypto";
 
 import { HttpError } from "../http/errors.js";
 import type {
-  LinkApp,
   LinkBudget,
   LinkBudgetStanding,
   LinkConnect,
   LinkKeyProvider,
   LinkPlanAdded,
   LinkPlatform,
+  LinkSignIn,
   LinkSubscription,
 } from "../platform/platform.js";
 import type { SubscriptionKind } from "../types.js";
@@ -80,6 +80,8 @@ export type LinkStore = LinkRepo & {
 export type LinkUsers = {
   /** Signs the pages' cookies; throws HttpError(503, `link_not_configured`) without one. */
   sessionSecret(): string;
+  /** See `LinkApprovalPage.signIn`. */
+  signIn?: LinkSignIn;
   connectable: readonly SubscriptionKind[];
   keyProviders: readonly LinkKeyProvider[];
   /** See `LinkPlatform.httpRedirectHosts`. */
@@ -135,6 +137,7 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
     httpRedirectHosts: users.httpRedirectHosts ?? [],
     approval: {
       sessionSecret: () => users.sessionSecret(),
+      ...(users.signIn === undefined ? {} : { signIn: users.signIn }),
       connectable: users.connectable,
       keyProviders: users.keyProviders,
       subscriptions: (subject) => users.plans(subject),
@@ -213,14 +216,9 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
       if (apiKey === undefined && !users.openRegistration) {
         throw new HttpError(401, "Register with a Dari API key, so the app belongs to an organization.", "authentication_error");
       }
-      const clientSecret = confidential === true ? linkSecret(LINK_CLIENT_SECRET_PREFIX) : undefined;
-      const app: LinkApp = {
-        clientId: `lnk_${randomUUID().replaceAll("-", "")}`,
-        name,
-        redirectUris,
-        confidential: clientSecret !== undefined,
-      };
-      await users.registerApp({ ...app, clientSecretHash: clientSecret === undefined ? null : linkHash(clientSecret) }, apiKey);
+      const { record, clientSecret } = newLinkApp({ name, redirectUris, confidential: confidential === true });
+      await users.registerApp(record, apiKey);
+      const { clientSecretHash: _, ...app } = record;
       return { ...app, ...(clientSecret === undefined ? {} : { clientSecret }) };
     },
     async app(clientId) {
@@ -266,6 +264,32 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
       return (await ownGrant(subject, grantId)) !== null && (await revoke(grantId));
     },
   };
+}
+
+/**
+ * A new app: its client id, and for a confidential one a client secret,
+ * returned this once, of which only the hash is kept. Every app is made here,
+ * whichever way it registers (hosted Dari's console included).
+ */
+export function newLinkApp(request: { name: string; redirectUris: string[]; confidential: boolean }): {
+  record: LinkAppRecord;
+  clientSecret?: string;
+} {
+  const secret = request.confidential ? newLinkClientSecret() : null;
+  const record: LinkAppRecord = {
+    clientId: `lnk_${randomUUID().replaceAll("-", "")}`,
+    name: request.name,
+    redirectUris: request.redirectUris,
+    confidential: secret !== null,
+    clientSecretHash: secret?.hash ?? null,
+  };
+  return { record, ...(secret === null ? {} : { clientSecret: secret.secret }) };
+}
+
+/** A confidential app's client secret, and the hash that is kept of it. */
+export function newLinkClientSecret(): { secret: string; hash: string } {
+  const secret = linkSecret(LINK_CLIENT_SECRET_PREFIX);
+  return { secret, hash: linkHash(secret) };
 }
 
 /**

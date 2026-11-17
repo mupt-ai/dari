@@ -13,18 +13,20 @@ import { SessionPinStore } from "../self_host/session_pin_store.js";
 import { SubscriptionStore } from "../self_host/subscriptions/index.js";
 import { codexAccessToken, fakeFetch, jsonResponse } from "../self_host/subscriptions/test_support.js";
 import { addTestApp, approveTestGrant } from "./test_support.js";
+import type { LinkSignIn } from "../platform/platform.js";
 
 const BASE = "http://gateway.test";
 const REDIRECT_URI = "http://127.0.0.1:9999/callback";
 
 // A gateway whose provider sign-ins answer from `responses`, and a browser
-// that keeps the approval page's cookies.
-function gateway(responses: Array<() => Response>) {
+// that keeps the approval page's cookies; with `signIn`, a platform whose
+// users sign in with an account.
+function gateway(responses: Array<() => Response>, signIn?: LinkSignIn) {
   const db = new Database(":memory:");
   const secrets = new SecretBox([randomBytes(32)]);
   const subscriptions = new SubscriptionStore(db, secrets);
   const links = new SqliteLinkStore(db, secrets);
-  const platform = createSelfHostedPlatform({
+  const selfHosted = createSelfHostedPlatform({
     config: parseGatewayConfig({ routers: { default: { models: ["anthropic/claude-sonnet-5-5", "openai/gpt-5.5"] } } }),
     routerModels: new RouterModelStore(db),
     gatewayKeys: ["k"],
@@ -37,6 +39,10 @@ function gateway(responses: Array<() => Response>) {
     env: {},
     fetch: fakeFetch(responses),
   });
+  const withSignIn = (signIn: LinkSignIn | undefined) => signIn === undefined
+    ? selfHosted
+    : { ...selfHosted, link: { ...selfHosted.link!, approval: { ...selfHosted.link!.approval, signIn } } };
+  let platform = withSignIn(signIn);
   const app = addTestApp(links, "Notes App", [REDIRECT_URI], false);
   const params = {
     response_type: "code",
@@ -62,6 +68,9 @@ function gateway(responses: Array<() => Response>) {
     subscriptions,
     links,
     cookies,
+    // The same gateway with a sign-in added or taken away.
+    setSignIn: (next: LinkSignIn | undefined) => { platform = withSignIn(next); },
+    get: async (path: string) => await send(new Request(`${BASE}${path}`)),
     // The approval page as the browser lands on it, following its own redirect.
     page: async () => {
       const open = () => send(new Request(`${BASE}/v1/link/authorize?${new URLSearchParams(params)}`));
@@ -76,7 +85,7 @@ function gateway(responses: Array<() => Response>) {
   };
 }
 
-// Dari Link needs no account: the user picks a plan, signs in to its provider,
+// A self-hosted gateway needs no account: the user picks a plan, signs in to its provider,
 // and allows the app; the cookie that remembers them makes the next app one click.
 test("a new user connects plans by signing in to their providers, then allows the app", async () => {
   const browser = gateway([
@@ -106,6 +115,8 @@ test("a new user connects plans by signing in to their providers, then allows th
   // The plan is there, ticked, and one more can be connected.
   const first = await browser.page();
   expect(first).toContain("Share With Notes App");
+  // Without accounts the cookie is who they are: there is nothing to sign out of.
+  expect(first).not.toContain('value="sign_out"');
   expect(first).toContain("me@example.com");
   expect(first).toMatch(/name="credential_id" value="cred_[0-9a-f]+" checked/);
 
@@ -233,3 +244,82 @@ test("the connections page sets a grant's budget, disconnects it, and removes pl
   await browser.manage({ csrf, remove_id: id, decision: "remove_confirmed" });
   expect(browser.subscriptions.withIds(new Set([id]))).toEqual([]);
 });
+
+// On a platform with accounts the user signs in first, and is that account:
+// the plans it already has are there to share, in any browser.
+test("a user who signs in with their account finds the plans it has", async () => {
+  const tickets = new Map<string, { subject: string; state: string; issuedAt: number }>();
+  const browser = gateway([], { url: () => "https://app.test/link/sign-in", redeem: async (ticket) => tickets.get(ticket) ?? null });
+  browser.links.addKey("usr_me", "openrouter", "sk-or-mine");
+
+  // Nothing happens before they sign in: every step goes to the sign-in.
+  expect(await browser.page()).toContain("Notes App Uses Dari To Connect Your AI Subscriptions");
+  const sent = await browser.submit({ decision: "select" });
+  expect(sent.status).toBe(303);
+  const at = new URL(sent.headers.get("location")!);
+  expect(`${at.origin}${at.pathname}`).toBe("https://app.test/link/sign-in");
+  const state = at.searchParams.get("state")!;
+  const next = at.searchParams.get("next")!;
+  expect(next).toStartWith("/v1/link/authorize?");
+  expect(browser.cookies.has("dari_link_sign_in")).toBe(true);
+
+  // A ticket for another browser's state, a stale one, or a `next` off the
+  // Link pages signs no one in.
+  const session = (ticket: string, to = next) => browser.get(`/v1/link/session?${new URLSearchParams({ ticket, next: to })}`);
+  tickets.set("other", { subject: "usr_me", state: "someone-elses", issuedAt: Date.now() });
+  tickets.set("stale", { subject: "usr_me", state, issuedAt: Date.now() - 10 * 60 * 1000 });
+  tickets.set("good", { subject: "usr_me", state, issuedAt: Date.now() });
+  for (const refused of [await session("other"), await session("stale"), await session("good", "https://evil.test/")]) {
+    expect(refused.status).toBe(400);
+  }
+  expect(browser.cookies.has("dari_link_user")).toBe(false);
+
+  const signedIn = await session("good");
+  expect(signedIn.status).toBe(303);
+  expect(signedIn.headers.get("location")).toBe(next);
+  // Signed in for a month; the platform's sign-in is a click away after that.
+  expect(signedIn.headers.getSetCookie().find((cookie) => cookie.startsWith("dari_link_user="))).toContain(`Max-Age=${30 * 24 * 60 * 60};`);
+  expect(browser.cookies.has("dari_link_sign_in")).toBe(false);
+  const choose = await browser.page();
+  expect(choose).toContain("Share With Notes App");
+  expect(choose).toContain("Key ending mine");
+
+  // They can sign out, from the approval page or the connections page.
+  expect((await browser.submit({ decision: "sign_out" })).status).toBe(303);
+  expect(browser.cookies.has("dari_link_user")).toBe(false);
+  expect(await browser.page()).toContain("Notes App Uses Dari To Connect Your AI Subscriptions");
+  // The ticket that signed them in does not sign them back in.
+  expect((await session("good")).status).toBe(400);
+  const again = new URL((await browser.submit({ decision: "select" })).headers.get("location")!).searchParams.get("state")!;
+  tickets.set("again", { subject: "usr_me", state: again, issuedAt: Date.now() });
+  expect((await session("again")).status).toBe(303);
+  const connections = await browser.connections();
+  expect(connections).toContain('value="sign_out"');
+  const csrf = /name="csrf" value="([^"]+)"/.exec(connections)![1]!;
+  browser.cookies.set("dari_link_connect", "a-sign-in-under-way");
+  expect((await browser.manage({ decision: "sign_out", csrf })).status).toBe(303);
+  expect(browser.cookies.has("dari_link_user")).toBe(false);
+  expect(browser.cookies.has("dari_link_connect")).toBe(false);
+
+  // The connections page asks a browser with no one signed in to sign in.
+  browser.cookies.clear();
+  expect(await (await browser.get("/v1/link/connections")).text()).toContain('value="sign_in"');
+  const fromConnections = await browser.manage({ decision: "sign_in" });
+  expect(new URL(fromConnections.headers.get("location")!).searchParams.get("next")).toBe("/v1/link/connections");
+});
+
+test("a browser Link remembered before it had accounts signs in", async () => {
+  const signIn: LinkSignIn = { url: () => "https://app.test/link/sign-in", redeem: async () => null };
+  const browser = gateway([jsonResponse({ data: [] }), jsonResponse({ device_auth_id: "dev_1", user_code: "ABCD-1234" })]);
+  await browser.page();
+  expect((await browser.submit({ decision: "add_key", key_provider: "openrouter", api_key: "sk-or-before" })).status).toBe(303);
+  expect(await browser.connections()).toContain("Key ending fore");
+  expect((await browser.submit({ connect: "openai_codex" })).status).toBe(303);
+
+  // Neither that user nor their provider sign-in under way carries over.
+  browser.setSignIn(signIn);
+  expect(await browser.page()).toContain("Notes App Uses Dari To Connect Your AI Subscriptions");
+  expect(new URL((await browser.submit({ decision: "select" })).headers.get("location")!).pathname).toBe("/link/sign-in");
+  expect(await browser.connections()).toContain('value="sign_in"');
+});
+

@@ -24,7 +24,8 @@
 import { providerForModel } from "@mupt-ai/dari-router/policy-engine";
 
 import { HttpError } from "../http/errors.js";
-import type { LinkUnavailable, ResolvedRouter, SubscriptionKind } from "../types.js";
+import { subscriptionClient, subscriptionModelProvider } from "../models/subscriptions.js";
+import type { ClientHarness, LinkUnavailable, ResolvedRouter, SubscriptionKind } from "../types.js";
 
 export const LINK_GRANT_ERROR_CODES = [
   "subscription_exhausted",
@@ -98,6 +99,57 @@ export function plansForAnotherClient(plans: readonly SubscriptionKind[]): LinkU
     code: "subscription_client_mismatch",
     message: `This Dari Link grant cannot serve this client: ${only.join("; ")}. Ask the user to grant a plan that serves any app, such as a ChatGPT plan.`,
   };
+}
+
+/** A granted subscription, as a platform's resolve found it. */
+export type LinkGrantedPlan = { kind: SubscriptionKind; unavailableUntil: Date | null };
+
+/**
+ * Why a grant serves nothing for each provider in `unserved` (the request
+ * wanted it, the grant holds a plan for it, and no plan served): its plans
+ * serve only another client, or are all at their usage limits. Every
+ * platform's resolve says it this way.
+ */
+export function providersUnavailable(
+  granted: readonly LinkGrantedPlan[],
+  unserved: Iterable<string>,
+  clientHarness: ClientHarness | undefined,
+  now: Date,
+): Record<string, LinkUnavailable> {
+  const unavailable: Record<string, LinkUnavailable> = {};
+  for (const provider of unserved) {
+    const plans = granted.filter((plan) => subscriptionModelProvider(plan.kind) === provider);
+    if (plans.length === 0) continue;
+    const usable = plans.filter((plan) => {
+      const client = subscriptionClient(plan.kind);
+      return client === undefined || client === clientHarness;
+    });
+    if (usable.length === 0) {
+      unavailable[provider] = plansForAnotherClient(plans.map((plan) => plan.kind));
+      continue;
+    }
+    const held = usable.flatMap((plan) =>
+      plan.unavailableUntil !== null && plan.unavailableUntil > now ? [plan.unavailableUntil] : []
+    );
+    unavailable[provider] = plansExhausted(
+      usable.map((plan) => plan.kind),
+      held.length === usable.length ? new Date(Math.min(...held.map((date) => date.getTime()))) : null,
+    );
+  }
+  return unavailable;
+}
+
+/**
+ * The error a grant that serves the request nothing gets: why its one pinned
+ * model is not served, or why none is.
+ */
+export function linkNothingServed(
+  unavailable: Record<string, LinkUnavailable>,
+  pins: readonly { model: string }[] | null | undefined,
+): HttpError {
+  return pins?.length === 1
+    ? modelNotServed({ link_unavailable: unavailable }, pins[0]!.model)
+    : linkGrantUnavailableError(unavailable);
 }
 
 /**

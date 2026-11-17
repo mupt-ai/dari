@@ -24,6 +24,7 @@
    - PUT  /v1/link/grants/{id}/budget  the user sets or removes the grant's
                                  budget: the most tokens the app may use per
                                  five hours and per week
+   - GET  /v1/link/session       where a platform's sign-in returns the user
    - GET  /v1/link/connections   the page where the approval page's user sees
                                  the apps they connected, sets each one's
                                  budget, disconnects it, and removes plans
@@ -33,15 +34,16 @@
    with HTTP Basic (`client_id:client_secret`); a public one sends `client_id`
    in the body.
 
-   The gateway's own approval page needs no account, like a bank link: the
-   user picks a plan, signs in to its provider, and allows the app. Their first
-   plan makes them a user (hosted: a Dari account with no sign-in) the gateway
-   keeps in a signed, HttpOnly, SameSite=Lax cookie scoped to /v1/link/, so
-   the next app that asks finds their plans connected and the connections page
-   knows them. Every change needs that cookie and a form token derived from
-   it, so another site cannot make one. */
+   The user picks a plan, signs in to its provider, and allows the app. The
+   gateway keeps who they are in a signed, HttpOnly, SameSite=Lax cookie
+   scoped to /v1/link/, so the next app that asks finds their plans connected
+   and the connections page knows them. On a platform with accounts (hosted:
+   Dari's own sign-in) they sign in first and are that account, with the plans
+   it already has; elsewhere their first plan makes them a user. Every change
+   needs that cookie and a form token derived from it, so another site cannot
+   make one. */
 
-import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 
 import { isReasoningEffort, providerForModel } from "@mupt-ai/dari-router/policy-engine";
 
@@ -61,6 +63,7 @@ import type {
   LinkKeyProvider,
   LinkUsageTotals,
   LinkPlatform,
+  LinkSignIn,
   LinkBudget,
   LinkBudgetStanding,
   LinkSubscription,
@@ -70,7 +73,7 @@ import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
 import { explicitModelId, explicitModelSlug } from "../protocol/input/router_model.js";
 import { CANONICAL_MODELS, canonicalModelName } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
-import { budgetBody, validBudget } from "./budget.js";
+import { budgetBody, linkTokens, validBudget } from "./budget.js";
 import { catalogModelFor } from "./grant_access.js";
 import { requestTags } from "../runtime/request_tags.js";
 import type { ClientHarness, ResolvedRouter, SubscriptionKind } from "../types.js";
@@ -90,12 +93,21 @@ const MAX_REGISTRATIONS_PER_MINUTE = 20;
 const GRANT_ROUTE = /^\/v1\/link\/grants\/([^/]+)$/;
 const GRANT_BUDGET_ROUTE = /^\/v1\/link\/grants\/([^/]+)\/budget$/;
 const MAX_TAG_KEY_CHARS = 64;
-// Who the approval page's user is, for a year from their last plan.
+// Who the approval page's user is. Without accounts the cookie is who they
+// are, so it lasts a year from their last plan; with accounts, a month from
+// their sign-in, which is a click away again.
 const USER_COOKIE = "dari_link_user";
 const USER_SECONDS = 365 * 24 * 60 * 60;
+const ACCOUNT_SECONDS = 30 * 24 * 60 * 60;
 // A provider sign-in under way, for as long as providers keep one open.
 const CONNECT_COOKIE = "dari_link_connect";
 const CONNECT_SECONDS = 15 * 60;
+// A sign-in at the platform under way: the state its ticket must carry.
+const SIGN_IN_COOKIE = "dari_link_sign_in";
+const SIGN_IN_SECONDS = 15 * 60;
+// How long after the platform signed the user in its ticket is good.
+const TICKET_MS = 2 * 60 * 1000;
+const SESSION_PATH = "/v1/link/session";
 // How often the page asks a provider whether the user approved its code.
 const DEVICE_POLL_SECONDS = 5;
 const AUTHORIZE_PATH = "/v1/link/authorize";
@@ -168,6 +180,9 @@ export async function handleLinkRequest(request: Request, platform: GatewayPlatf
     }
     if (pathname === AUTHORIZE_PATH && request.method === "POST") {
       return await authorizeSubmit(link, request, new URLSearchParams(await request.text()));
+    }
+    if (pathname === SESSION_PATH && request.method === "GET") {
+      return await signedIn(link.approval, request, url.searchParams);
     }
     if (pathname === CONNECTIONS_PATH && request.method === "GET") {
       return await connectionsPage(link.approval, request);
@@ -315,14 +330,7 @@ function isHttps(request: Request): boolean {
 
 async function registerApp(link: LinkPlatform, request: Request): Promise<Response> {
   const apiKey = bearerToken(request.headers);
-  const body = await parseJsonRequest<{ name?: unknown; redirect_uris?: unknown; confidential?: unknown }>(request);
-  const { name, redirectUris } = validClient(link, body.name, body.redirect_uris, (message, param) => {
-    throw new HttpError(400, message, "invalid_request_error", param);
-  });
-  if (body.confidential !== undefined && typeof body.confidential !== "boolean") {
-    throw new HttpError(400, "confidential must be a boolean.", "invalid_request_error", "confidential");
-  }
-  const app = await link.registerApp({ apiKey, name, redirectUris, confidential: body.confidential === true });
+  const app = await link.registerApp({ apiKey, ...linkAppMetadata(link, await parseJsonRequest(request)) });
   return Response.json(
     // The secret is shown this once; only its hash is stored.
     { ...appBody(app), ...(app.clientSecret === undefined ? {} : { client_secret: app.clientSecret }) },
@@ -416,8 +424,25 @@ function registrationError(error: string, description: string): Response {
   return Response.json({ error, error_description: description }, { status: 400, headers: { "Cache-Control": "no-store" } });
 }
 
+/**
+ * An app's name, redirect URIs, and whether it is confidential, as every
+ * registration takes them; HttpError(400) for anything else.
+ */
+export function linkAppMetadata(
+  link: Pick<LinkPlatform, "httpRedirectHosts">,
+  body: { name?: unknown; redirect_uris?: unknown; confidential?: unknown },
+): { name: string; redirectUris: string[]; confidential: boolean } {
+  const { name, redirectUris } = validClient(link, body.name, body.redirect_uris, (message, param) => {
+    throw new HttpError(400, message, "invalid_request_error", param);
+  });
+  if (body.confidential !== undefined && typeof body.confidential !== "boolean") {
+    throw new HttpError(400, "confidential must be a boolean.", "invalid_request_error", "confidential");
+  }
+  return { name, redirectUris, confidential: body.confidential === true };
+}
+
 function validClient(
-  link: LinkPlatform,
+  link: Pick<LinkPlatform, "httpRedirectHosts">,
   rawName: unknown,
   rawRedirectUris: unknown,
   refuse: (message: string, param: string) => never,
@@ -1008,8 +1033,9 @@ async function authorizePage(link: LinkPlatform, request: Request, params: URLSe
   if (authorize instanceof Response) return authorize;
   const approval = link.approval;
   const secret = approval.sessionSecret();
-  const session = sessionFrom(request, secret);
-  const connect = connectFrom(request, secret);
+  const session = sessionFrom(request, approval);
+  // On a platform with accounts, only a signed-in user has a provider sign-in under way.
+  const connect = session === null && approval.signIn !== undefined ? null : connectFrom(request, secret);
   if (connect !== null) {
     // A provider that gave the user a code to enter is asked whether they approved.
     return connect.userCode === null
@@ -1058,7 +1084,10 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
   if (authorize instanceof Response) return authorize;
   const back = { redirectUri: authorize.redirectUri, state: authorize.state, webMessage: authorize.webMessage };
   const secret = approval.sessionSecret();
-  const session = sessionFrom(request, secret);
+  const session = sessionFrom(request, approval);
+  if (session === null && approval.signIn !== undefined && !["deny", "sign_out"].includes(form.get("decision") ?? "")) {
+    return signIn(request, approval.signIn, secret, `${AUTHORIZE_PATH}?${authorizeQuery(authorize)}`);
+  }
   const endConnect = clearCookie(request, CONNECT_COOKIE);
   // A plan's or a key provider's row on the select page is its own submit button.
   const kind = form.get("connect");
@@ -1070,6 +1099,7 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
   }
   const decision = kind !== null ? "connect" : form.get("decision");
   if (decision === "deny") return redirect(back, { error: "access_denied" }, [endConnect]);
+  if (decision === "sign_out") return seeAuthorize(authorize, signOutCookies(request));
   if (decision === "select") return selectPage(approval, authorize, undefined, [endConnect]);
   if (decision === "connect") {
     if (!connectKinds(approval, authorize).includes(kind as SubscriptionKind)) {
@@ -1106,7 +1136,7 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
       if (!(error instanceof HttpError) || (error.status !== 400 && error.code !== "link_not_configured")) throw error;
       return keyPage(authorize, keyProvider, error.message);
     }
-    return seeAuthorize(authorize, [userCookie(request, secret, added.subject), endConnect]);
+    return seeAuthorize(authorize, [userCookie(request, approval, added.subject), endConnect]);
   }
   const connect = connectFrom(request, secret);
   if (decision === "complete" && connect !== null) {
@@ -1178,7 +1208,7 @@ async function finishConnect(
   }
   return connected === null
     ? providerPage(authorize, connect)
-    : seeAuthorize(authorize, [userCookie(request, approval.sessionSecret(), connected.subject), endConnect]);
+    : seeAuthorize(authorize, [userCookie(request, approval, connected.subject), endConnect]);
 }
 
 /**
@@ -1187,10 +1217,13 @@ async function finishConnect(
  * and keys, each of which they can remove.
  */
 async function connectionsPage(approval: LinkApprovalPage, request: Request, error?: string): Promise<Response> {
-  const session = sessionFrom(request, approval.sessionSecret());
+  const session = sessionFrom(request, approval);
   const title = "Connected Apps";
   if (session === null) {
-    return page(title, `<div class="body"><h1>${title}</h1><p>No apps are connected in this browser. Apps that use Dari Link connect from their own Connect button.</p></div>`);
+    return approval.signIn === undefined
+      ? page(title, `<div class="body"><h1>${title}</h1><p>No apps are connected in this browser. Apps that use Dari Link connect from their own Connect button.</p></div>`)
+      : page(title, `<form method="post" action="${CONNECTIONS_PATH}"><div class="body"><h1>${title}</h1><p>Sign in to see the apps you connected.</p></div>
+<div class="foot"><button class="btn primary" type="submit" name="decision" value="sign_in">Sign In</button></div></form>`);
   }
   const [connections, plans] = await Promise.all([
     approval.connections(session.subject),
@@ -1207,13 +1240,13 @@ async function connectionsPage(approval: LinkApprovalPage, request: Request, err
 ${error === undefined ? "" : `<p role="alert">${escapeHtml(error)}</p>`}
 ${cards.length === 0 ? "<p>No apps are connected.</p>" : cards.join("\n")}
 ${planRows.length === 0 ? "" : `<p class="label">Your Plans And Keys</p>\n${planRows.join("\n")}`}
+${session.account ? `<form method="post" action="${CONNECTIONS_PATH}">${csrf}${SIGN_OUT}</form>` : ""}
 </div>`,
   );
 }
 
 function connectionCard(connection: LinkConnection, csrf: string): string {
-  const tokens = connection.usage.inputTokens + connection.usage.outputTokens
-    + connection.usage.cacheReadTokens + connection.usage.cacheWriteTokens;
+  const tokens = linkTokens(connection.usage);
   const limit = (minutes: number, label: string) => {
     const standing = connection.budget.find((window) => window.windowMinutes === minutes);
     return `<label class="field" for="max_${minutes}_${escapeHtml(connection.id)}">Most Tokens ${label}</label>
@@ -1235,10 +1268,19 @@ async function connectionsSubmit(approval: LinkApprovalPage, request: Request, f
   if (crossSite(request)) {
     return page("Request Refused", `<div class="body"><h1>Request Refused</h1><p>Open the connections page again.</p></div>`, { status: 403 });
   }
-  const session = sessionFrom(request, approval.sessionSecret());
+  const secret = approval.sessionSecret();
+  const session = sessionFrom(request, approval);
+  if (session === null && approval.signIn !== undefined && form.get("decision") === "sign_in") {
+    return signIn(request, approval.signIn, secret, CONNECTIONS_PATH);
+  }
   const back = new Response(null, { status: 303, headers: { Location: CONNECTIONS_PATH, "Cache-Control": "no-store" } });
   if (session === null || !sameText(form.get("csrf") ?? "", session.csrf)) return back;
   const decision = form.get("decision");
+  if (decision === "sign_out") {
+    const headers = new Headers({ Location: CONNECTIONS_PATH, "Cache-Control": "no-store" });
+    for (const cookie of signOutCookies(request)) headers.append("Set-Cookie", cookie);
+    return new Response(null, { status: 303, headers });
+  }
   const grantId = form.get("grant_id") ?? "";
   if (decision === "disconnect") {
     await approval.disconnect(session.subject, grantId);
@@ -1321,12 +1363,18 @@ function shareable(authorize: AuthorizeRequest, subscriptions: LinkSubscription[
 }
 
 // The user the cookie remembers, and the form token that ties an approval to
-// them; another site has neither.
-type Session = { subject: string; csrf: string };
+// them; another site has neither. `account`: they signed in to the platform's
+// account, so they can sign out (as on a shared computer).
+type Session = { subject: string; csrf: string; account: boolean };
 
-function sessionFrom(request: Request, secret: string): Session | null {
-  const subject = readSigned(request, secret, USER_COOKIE)?.sub;
-  return typeof subject === "string" ? { subject, csrf: sign(secret, `csrf\0${subject}`) } : null;
+const SIGN_OUT = `<button class="btn ghost" type="submit" name="decision" value="sign_out" formnovalidate>Sign Out</button>`;
+
+function sessionFrom(request: Request, approval: LinkApprovalPage): Session | null {
+  const secret = approval.sessionSecret();
+  const user = readSigned(request, secret, USER_COOKIE);
+  // A platform with accounts knows only users its sign-in made.
+  if (typeof user?.sub !== "string" || (approval.signIn !== undefined && user.account !== true)) return null;
+  return { subject: user.sub, csrf: sign(secret, `csrf\0${user.sub}`), account: approval.signIn !== undefined };
 }
 
 // A provider sign-in under way.
@@ -1346,6 +1394,39 @@ function connectFrom(request: Request, secret: string): Connect | null {
     url: value.url,
     userCode: typeof value.code === "string" ? value.code : null,
   };
+}
+
+// Send the user to the platform's sign-in, which returns them to `next` (a
+// page of this gateway's) by way of /v1/link/session. The state, kept in a
+// cookie here, binds the ticket that comes back to this browser, so no one
+// can sign a user in as someone else.
+function signIn(request: Request, platform: LinkSignIn, secret: string, next: string): Response {
+  const state = randomBytes(24).toString("base64url");
+  const url = new URL(platform.url());
+  url.searchParams.set("state", state);
+  url.searchParams.set("next", next);
+  const headers = new Headers({ Location: url.toString(), "Cache-Control": "no-store" });
+  headers.append("Set-Cookie", signedCookie(request, secret, SIGN_IN_COOKIE, { state }, SIGN_IN_SECONDS));
+  return new Response(null, { status: 303, headers });
+}
+
+// The platform's sign-in returns here: a fresh ticket for this browser's state
+// makes the browser that user's, and the user goes on to `next`.
+async function signedIn(approval: LinkApprovalPage, request: Request, params: URLSearchParams): Promise<Response> {
+  const secret = approval.sessionSecret();
+  const state = readSigned(request, secret, SIGN_IN_COOKIE)?.state;
+  const next = params.get("next") ?? "";
+  const ticket = params.get("ticket") ?? "";
+  const signed = approval.signIn === undefined || typeof state !== "string" || !ticket || !next.startsWith(LINK_ROUTE_PREFIX)
+    ? null
+    : await approval.signIn.redeem(ticket);
+  if (signed === null || signed.state !== state || Date.now() - signed.issuedAt > TICKET_MS) {
+    return page("Sign-In Expired", `<div class="body"><h1>Sign-In Expired</h1><p>Open Dari Link from the app again.</p></div>`, { status: 400 });
+  }
+  const headers = new Headers({ Location: next, "Cache-Control": "no-store" });
+  headers.append("Set-Cookie", userCookie(request, approval, signed.subject));
+  headers.append("Set-Cookie", clearCookie(request, SIGN_IN_COOKIE));
+  return new Response(null, { status: 303, headers });
 }
 
 // A signed cookie's payload: `<payload>.<HMAC-SHA256>`, where the payload
@@ -1377,9 +1458,16 @@ function signedCookie(request: Request, secret: string, cookie: string, value: R
   return `${cookie}=${signedValue(secret, cookie, value, seconds)}; Path=${COOKIE_PATH}; Max-Age=${seconds}; HttpOnly; SameSite=Lax${isHttps(request) ? "; Secure" : ""}`;
 }
 
-// Who the user is, for a year from their last plan.
-function userCookie(request: Request, secret: string, subject: string): string {
-  return signedCookie(request, secret, USER_COOKIE, { sub: subject }, USER_SECONDS);
+// Who the user is, from when the page last said so (see USER_COOKIE).
+function userCookie(request: Request, approval: LinkApprovalPage, subject: string): string {
+  return approval.signIn === undefined
+    ? signedCookie(request, approval.sessionSecret(), USER_COOKIE, { sub: subject }, USER_SECONDS)
+    : signedCookie(request, approval.sessionSecret(), USER_COOKIE, { sub: subject, account: true }, ACCOUNT_SECONDS);
+}
+
+// Signing out leaves nothing of the user's: not who they are, nor a provider sign-in under way.
+function signOutCookies(request: Request): string[] {
+  return [clearCookie(request, USER_COOKIE), clearCookie(request, CONNECT_COOKIE)];
 }
 
 function clearCookie(request: Request, cookie: string): string {
@@ -1583,7 +1671,8 @@ function choosePage(
     body: `<h1>${current === null ? `Share With ${app}` : `Update Plans For ${app}`}</h1>
 <input type="hidden" name="csrf" value="${session.csrf}">
 ${plans.map((plan) => planOption(authorize, plan, ticked.has(plan.id))).join("\n")}
-<button class="btn ghost" type="submit" name="decision" value="select" formnovalidate>${ICONS.plus}Connect Another</button>`,
+<button class="btn ghost" type="submit" name="decision" value="select" formnovalidate>${ICONS.plus}Connect Another</button>
+${session.account ? SIGN_OUT : ""}`,
     footer: `<button class="btn primary" type="submit" name="decision" value="approve">${current === null ? "Allow" : "Save"}</button>
 <p class="fine">${app} keeps access until you or it disconnect. Its requests fail while a plan is at its usage limit.</p>`,
   });
@@ -1722,7 +1811,9 @@ ${body}
     "Cache-Control": "no-store",
     "Content-Security-Policy": `default-src 'none'; style-src 'unsafe-inline'; font-src 'self'; ${options.scriptNonce ? `script-src 'nonce-${options.scriptNonce}'; ` : ""}frame-ancestors 'none'`,
     "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
+    // No other site sees these pages' URLs. Not no-referrer: under it a form
+    // posts Origin: null, which an http gateway (sent no Sec-Fetch-Site) refuses.
+    "Referrer-Policy": "same-origin",
   });
   for (const cookie of options.cookies ?? []) headers.append("Set-Cookie", cookie);
   return new Response(html, { status: options.status ?? 200, headers });

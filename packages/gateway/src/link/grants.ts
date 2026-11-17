@@ -134,13 +134,15 @@ export type LinkRepo = {
   /**
    * Store tokens for a grant, all or none. With `rotate`, also mark that
    * refresh token rotated: `race` when another request already did. `revoked`
-   * when the grant is no longer live.
+   * when the grant is no longer live. The grant's tokens that expired, or were
+   * rotated (except refresh tokens), before `forgetBefore` go.
    */
   issueTokens(request: {
     grantId: string;
     tokens: LinkTokenIssue[];
     rotate?: string;
     now: number;
+    forgetBefore: number;
   }): MaybePromise<"ok" | "race" | "revoked">;
   /** Delete one token. */
   deleteToken(tokenHash: string): MaybePromise<void>;
@@ -182,6 +184,9 @@ export function linkGrants(repo: LinkRepo) {
       tokens: kinds.map((entry, index) => ({ ...entry, tokenHash: linkHash(tokens[index]!) })),
       ...(rotate === undefined ? {} : { rotate }),
       now: now.getTime(),
+      // Rotated refresh tokens stay while the grant lives (revoking it deletes
+      // them): presenting one again is how a stolen refresh token is caught.
+      forgetBefore: now.getTime() - LINK_TOKEN_RETENTION_MS,
     });
     if (result === "race") {
       throw new HttpError(

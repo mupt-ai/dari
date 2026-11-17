@@ -9,9 +9,8 @@ import { randomUUID } from "node:crypto";
 
 import { type SecretBox, openWithoutKey } from "../self_host/secret_box.js";
 import type { LinkBudget, LinkUsageQuery } from "../platform/platform.js";
-import type { BudgetUse } from "./budget.js";
+import type { BudgetUse, LinkTokenCounts } from "./budget.js";
 import {
-  LINK_TOKEN_RETENTION_MS,
   type LinkAppRecord,
   type LinkPin,
   type LinkRevoker,
@@ -211,12 +210,12 @@ export class SqliteLinkStore implements LinkStore {
 
   budgetUses(grantId: string, since: number): BudgetUse[] {
     return this.db
-      .query<{ received_at: number; tokens: number }, [string, number]>(
-        `SELECT received_at, input_tokens + output_tokens + cache_read_tokens + cache_write_tokens AS tokens
+      .query<UsageTokenRow & { received_at: number }, [string, number]>(
+        `SELECT received_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
          FROM link_usage WHERE grant_id = ? AND received_at > ?`,
       )
       .all(grantId, since)
-      .map((row) => ({ at: new Date(row.received_at), tokens: row.tokens }));
+      .map((row) => ({ at: new Date(row.received_at), ...tokenCounts(row) }));
   }
 
   /** Record what one of a grant's requests used; a repeated request id is ignored. */
@@ -256,10 +255,7 @@ export class SqliteLinkStore implements LinkStore {
       model: row.model,
       thinking: row.thinking,
       tags: JSON.parse(row.tags) as Record<string, string>,
-      inputTokens: row.input_tokens,
-      outputTokens: row.output_tokens,
-      cacheReadTokens: row.cache_read_tokens,
-      cacheWriteTokens: row.cache_write_tokens,
+      ...tokenCounts(row),
     }));
   }
 
@@ -392,7 +388,7 @@ export class SqliteLinkStore implements LinkStore {
         };
   }
 
-  issueTokens(request: { grantId: string; tokens: LinkTokenIssue[]; rotate?: string; now: number }): "ok" | "race" | "revoked" {
+  issueTokens(request: { grantId: string; tokens: LinkTokenIssue[]; rotate?: string; now: number; forgetBefore: number }): "ok" | "race" | "revoked" {
     return this.db.transaction((): "ok" | "race" | "revoked" => {
       const live = this.db
         .query<{ id: string }, [string]>("SELECT id FROM link_grants WHERE id = ? AND revoked_at IS NULL")
@@ -405,10 +401,10 @@ export class SqliteLinkStore implements LinkStore {
         ).changes;
         if (rotated === 0) return "race";
       }
-      const stale = request.now - LINK_TOKEN_RETENTION_MS;
-      // Rotated refresh tokens stay while the grant lives (revoking it deletes
-      // them): presenting one again is how a stolen refresh token is caught.
-      this.db.run("DELETE FROM link_tokens WHERE expires_at < ? OR (rotated_at < ? AND kind != 'refresh')", [stale, stale]);
+      this.db.run(
+        "DELETE FROM link_tokens WHERE grant_id = ? AND (expires_at < ? OR (rotated_at < ? AND kind != 'refresh'))",
+        [request.grantId, request.forgetBefore, request.forgetBefore],
+      );
       this.insertTokens(request.grantId, request.tokens, request.now);
       return "ok";
     })();
@@ -470,16 +466,28 @@ export type LinkUsageEntry = {
   status: string;
 };
 
-type UsageRow = {
-  status: string | null;
-  model: string | null;
-  thinking: string | null;
-  tags: string;
+type UsageTokenRow = {
   input_tokens: number;
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
 };
+
+type UsageRow = UsageTokenRow & {
+  status: string | null;
+  model: string | null;
+  thinking: string | null;
+  tags: string;
+};
+
+function tokenCounts(row: UsageTokenRow): LinkTokenCounts {
+  return {
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    cacheReadTokens: row.cache_read_tokens,
+    cacheWriteTokens: row.cache_write_tokens,
+  };
+}
 
 // A child token's models. One minted before `pins` existed kept its one model
 // in `model` and `thinking`.

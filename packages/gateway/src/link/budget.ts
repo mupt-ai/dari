@@ -10,13 +10,21 @@
    A window at its cap is back once enough of its oldest requests roll off to
    bring it under the cap again: `resetsAt` is when that happens. */
 
-import type { LinkBudget } from "../platform/platform.js";
+import type { LinkBudget, LinkUsageTotals } from "../platform/platform.js";
 
 /** The windows a budget can cap: five hours and one week. */
 export const LINK_BUDGET_WINDOW_MINUTES = [300, 10080] as const;
 
+/** The tokens a request used, as each kind is recorded. */
+export type LinkTokenCounts = Pick<LinkUsageTotals, "inputTokens" | "outputTokens" | "cacheReadTokens" | "cacheWriteTokens">;
+
+/** What a budget counts, and Connected Apps shows: every token, of every kind. */
+export function linkTokens(counts: LinkTokenCounts): number {
+  return counts.inputTokens + counts.outputTokens + counts.cacheReadTokens + counts.cacheWriteTokens;
+}
+
 /** Tokens one of a grant's requests used, and when it was received. */
-export type BudgetUse = { at: Date; tokens: number };
+export type BudgetUse = LinkTokenCounts & { at: Date };
 
 /** A budget window as it stands for a grant; `resetsAt` is set only at the cap. */
 export type BudgetStanding = { windowMinutes: number; maxTokens: number; usedTokens: number; resetsAt: Date | null };
@@ -28,12 +36,12 @@ export function budgetStandings(budget: readonly LinkBudget[], uses: readonly Bu
     const live = uses
       .filter((use) => use.at.getTime() > now.getTime() - windowMs)
       .sort((a, b) => a.at.getTime() - b.at.getTime());
-    const usedTokens = live.reduce((sum, use) => sum + use.tokens, 0);
+    const usedTokens = live.reduce((sum, use) => sum + linkTokens(use), 0);
     let resetsAt: Date | null = null;
     let remaining = usedTokens;
     for (const use of live) {
       if (remaining < entry.maxTokens) break;
-      remaining -= use.tokens;
+      remaining -= linkTokens(use);
       resetsAt = new Date(use.at.getTime() + windowMs);
     }
     return { windowMinutes: entry.windowMinutes, maxTokens: entry.maxTokens, usedTokens, resetsAt };

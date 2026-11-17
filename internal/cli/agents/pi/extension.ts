@@ -148,10 +148,12 @@ export default function (pi: any) {
     // start when two extensions register a tool of one name as they load, and
     // drops the later of two registered afterwards. So this one waits for the
     // first prompt, by when other extensions have registered theirs, whether
-    // on load or at session start.
+    // on load or at session start. A session on another provider's model is
+    // left alone, as its requests are.
     let offered = false;
-    pi.on("before_agent_start", () => {
-      if (offered || pi.getAllTools().some((tool: any) => tool.name === webSearch.name)) return;
+    pi.on("before_agent_start", (_event: any, ctx: any) => {
+      if (offered || ctx.model?.provider !== "dari") return;
+      if (pi.getAllTools().some((tool: any) => tool.name === webSearch.name)) return;
       offered = true;
       pi.registerTool(webSearch);
     });

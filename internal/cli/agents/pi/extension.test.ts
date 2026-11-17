@@ -41,7 +41,7 @@ for (const outcome of ["session_compact", "session_compact_failed"]) {
 // The web search tool, driven with a stubbed fetch standing in for the router.
 afterEach(() => { delete process.env.DARI_ROUTING_API_KEY; });
 
-function searchTool(models: string[], others: Array<{ name: string }> = []) {
+function searchTool(models: string[], others: Array<{ name: string }> = [], providers = ["dari", "dari"]) {
   process.env.DARI_MODELS = JSON.stringify(models);
   process.env.DARI_ROUTING_BASE_URL = "https://router.test/rtr_1";
   process.env.DARI_ROUTING_API_KEY = "dak_test";
@@ -59,7 +59,9 @@ function searchTool(models: string[], others: Array<{ name: string }> = []) {
         tool = definition;
       },
     });
-    for (const prompt of [...prompts, ...prompts]) prompt();
+    for (const provider of providers) {
+      for (const prompt of prompts) prompt({}, { model: { provider } });
+    }
   } finally {
     delete process.env.DARI_MODELS;
     delete process.env.DARI_ROUTING_BASE_URL;
@@ -141,6 +143,12 @@ test("Pi's search reports every provider's reason when none can serve it", async
 
 test("Pi gets no search tool when no model on the router can search", () => {
   expect(searchTool(["dari/routing", "dari/model/deepseek/deepseek-flash"])).toBeUndefined();
+});
+
+test("Pi's search tool is offered only to a session on a Dari model", () => {
+  expect(searchTool(BOTH, [], ["anthropic"])).toBeUndefined();
+  // Switching to a Dari model brings it in at the next prompt.
+  expect(searchTool(BOTH, [], ["anthropic", "dari"])?.name).toBe("web_search");
 });
 
 // Pi refuses to start on two tools of one name.

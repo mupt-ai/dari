@@ -325,6 +325,35 @@ test("hosted web search fails before selection without an approved candidate", (
   ).toThrow("Hosted web search requires an enabled OpenAI or Azure Responses model");
 });
 
+test("Anthropic web search keeps only Claude API candidates", () => {
+  const compatible = resolveCompatibleCandidates({
+    requiredCapabilities: ["anthropic_web_search"],
+    candidateModels: ["openai/gpt-5.5", "anthropic/claude-haiku-4-5", "bedrock/claude-sonnet-4-6"],
+    metadataLookup: metadataLookup({
+      "openai/gpt-5.5": metadata(["off"], { provider: "openai", api: "openai-responses" }),
+      "anthropic/claude-haiku-4-5": metadata(["off", "low"], { provider: "anthropic", api: "anthropic-messages" }),
+      "bedrock/claude-sonnet-4-6": metadata(["off"], { provider: "amazon-bedrock", api: "bedrock-converse-stream" }),
+    }),
+  });
+
+  expect(compatible.candidates).toEqual([
+    { model: "anthropic/claude-haiku-4-5", reasoningEffort: "off" },
+    { model: "anthropic/claude-haiku-4-5", reasoningEffort: "low" },
+  ]);
+});
+
+test("Anthropic web search says the router has no Claude model", () => {
+  expect(() =>
+    resolveCompatibleCandidates({
+      requiredCapabilities: ["anthropic_web_search"],
+      candidateModels: ["openai/gpt-5.5"],
+      metadataLookup: metadataLookup({
+        "openai/gpt-5.5": metadata(["off"], { provider: "openai", api: "openai-responses" }),
+      }),
+    })
+  ).toThrow("Web search needs a Claude model served by the Anthropic API, and this router has none enabled.");
+});
+
 function metadataLookup(entries: Record<string, CandidateModelMetadata>) {
   return (modelId: string) =>
     entries[modelId] ??

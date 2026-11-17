@@ -120,8 +120,8 @@ export type InteractionReasoningConfiguration = {
 export type InteractionHostedToolCall = {
   type: "hosted_tool_call";
   id: string;
-  tool: "web_search" | "server_tool_use" | "tool_search";
-  providerType: "web_search_call" | "server_tool_use" | "tool_search_result";
+  tool: "web_search" | "server_tool_use" | "tool_search" | "web_search_result";
+  providerType: "web_search_call" | "server_tool_use" | "tool_search_result" | "web_search_tool_result";
   status?: "in_progress" | "searching" | "completed" | "incomplete" | "failed";
   payload: Record<string, unknown>;
   source?: ProviderIdentity;
@@ -164,7 +164,11 @@ export type ServerToolKind =
   | "tool_search_tool_regex"
   | "tool_search_tool_regex_20251119"
   | "tool_search_tool_bm25"
-  | "tool_search_tool_bm25_20251119";
+  | "tool_search_tool_bm25_20251119"
+  | AnthropicWebSearchToolType;
+
+// Anthropic's web search tool at any dated version, e.g. `web_search_20250305`.
+export type AnthropicWebSearchToolType = `web_search_${number}`;
 
 export type ClientTool = {
   kind: "client_tool";
@@ -202,6 +206,9 @@ export type ServerTool = {
   name: string;
   type: ServerToolKind;
   description?: string;
+  // A web search tool as the client defined it (its domains and limits),
+  // sent to Anthropic verbatim.
+  definition?: Record<string, unknown>;
 };
 
 export type InteractionTool = FunctionTool | CustomTool | HostedTool | ServerTool | ClientTool;

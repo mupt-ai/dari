@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 
+import { requiredCapabilitiesFor } from "../../interaction/capabilities.js";
 import { buildContext } from "../../providers/pi_context.js";
 import { anthropicMessagesToInteraction } from "./anthropic_messages.js";
 import { encodeProviderContinuationState } from "../../interaction/provider_continuation_state.js";
@@ -449,9 +450,49 @@ test("Messages gate still rejects models that are neither canonical, a tier, nor
   }
 });
 
+// Anthropic runs web search itself, so the tool passes through as defined and
+// only a Claude model on Anthropic's API can serve the request.
+test("Anthropic Messages ingress keeps a web search tool as the client defined it", () => {
+  const tool = { type: "web_search_20250305", name: "web_search", max_uses: 8, allowed_domains: ["dari.dev"] };
+  const request = anthropicMessagesToInteraction({
+    model: "dari/routing",
+    max_tokens: 100,
+    messages: [
+      { role: "user", content: "search" },
+      {
+        role: "assistant",
+        content: [
+          { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "dari" } },
+          { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [{ type: "web_search_result", title: "dari.dev", url: "https://dari.dev/" }] },
+          { type: "text", text: "Dari is a router." },
+        ],
+      },
+      { role: "user", content: "more" },
+    ],
+    tools: [tool],
+  });
+
+  expect(request.tools).toEqual([{ kind: "server_tool", name: "web_search", type: "web_search_20250305", description: undefined, definition: tool }]);
+  expect(requiredCapabilitiesFor(request)).toEqual(["anthropic_web_search"]);
+  expect(request.items[2]).toMatchObject({
+    type: "hosted_tool_call",
+    tool: "web_search_result",
+    providerType: "web_search_tool_result",
+    serverToolUseId: "srvtoolu_1",
+    payload: { tool_use_id: "srvtoolu_1", content: [{ type: "web_search_result", title: "dari.dev", url: "https://dari.dev/" }] },
+  });
+  // Pi cannot replay the search's blocks, so a past search goes back as text.
+  const assistant = buildContext(request, CLAUDE).messages.find((message) => message.role === "assistant")!;
+  expect(assistant.content).toEqual([
+    { type: "text", text: '[Web search: {"query":"dari"}]' },
+    { type: "text", text: "[Web search results: dari.dev https://dari.dev/]" },
+    { type: "text", text: "Dari is a router." },
+  ]);
+});
+
 // Hosted results and computer display configuration are not preserved by the adapter.
 test.each([
-  ["web_search_20250305", "web_search"],
+  ["web_search_preview", "web_search"],
   ["web_fetch_20250910", "web_fetch"],
   ["code_execution_20250522", "code_execution"],
   ["computer_20250124", "computer"],

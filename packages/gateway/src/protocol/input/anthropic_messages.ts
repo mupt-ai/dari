@@ -1,6 +1,7 @@
 import { isReasoningEffort, isRecord, type ReasoningEffort } from "@mupt-ai/dari-router/policy-engine";
 
 import { HttpError } from "../../http/errors.js";
+import { isAnthropicWebSearchToolType } from "../../interaction/capabilities.js";
 import { parseDataImageUrl } from "../../interaction/image.js";
 import { decodeUntrustedProviderContinuationState } from "../../interaction/provider_continuation_state.js";
 import { decodeUntrustedPortableReasoningState } from "../../interaction/portable_reasoning_state.js";
@@ -32,7 +33,7 @@ const SUPPORTED_SERVER_TOOL_TYPES: readonly ServerToolKind[] = [
 ] as const;
 
 const isServerToolType = (type: string): type is ServerToolKind =>
-  SUPPORTED_SERVER_TOOL_TYPES.includes(type as ServerToolKind);
+  SUPPORTED_SERVER_TOOL_TYPES.includes(type as ServerToolKind) || isAnthropicWebSearchToolType(type);
 
 export function anthropicMessagesToInteraction(
   payload: Record<string, unknown>,
@@ -219,6 +220,20 @@ function appendAnthropicMessage(
         serverToolName: serverToolUse?.name,
         serverToolInput: serverToolUse?.input,
         serverToolResult: references,
+      });
+      continue;
+    }
+    if (type === "web_search_tool_result") {
+      if (role !== "assistant") throw invalidRequest("web_search_tool_result blocks require the assistant role.", param);
+      flushMessage();
+      const toolUseId = requiredString(rawBlock.tool_use_id, `${param}.tool_use_id`);
+      items.push({
+        type: "hosted_tool_call",
+        id: `${toolUseId}_result`,
+        tool: "web_search_result",
+        providerType: "web_search_tool_result",
+        payload: { tool_use_id: toolUseId, content: rawBlock.content },
+        serverToolUseId: toolUseId,
       });
       continue;
     }
@@ -433,6 +448,7 @@ function anthropicTools(value: unknown): InteractionTool[] {
           name: requiredString(rawTool.name, `tools.${index}.name`),
           type,
           description: optionalString(rawTool.description, `tools.${index}.description`),
+          ...(isAnthropicWebSearchToolType(type) ? { definition: rawTool } : {}),
         };
       }
       throw new HttpError(

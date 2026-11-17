@@ -6,7 +6,7 @@ import { errorResponseHeaders, HttpError, normalizeError } from "../http/errors.
 import { LINK_GRANT_ERROR_CODES, LINK_TOKEN_ERROR_CODES } from "../link/errors.js";
 import { captureRequestError } from "../observability/errors.js";
 import { anthropicMessagesToInteraction } from "../protocol/input/anthropic_messages.js";
-import { explicitModelId, linkTokenModel } from "../protocol/input/router_model.js";
+import { CANONICAL_ROUTER_MODEL, explicitModelId, isLinkToken, linkTokenModel } from "../protocol/input/router_model.js";
 import { handleRoutedCompletion } from "../runtime/routed_completion.js";
 import type { SelectorBackend } from "../strategies/routing.js";
 import { claudeCodeRequestContext } from "./claude_code/request_context.js";
@@ -15,6 +15,8 @@ import {
   claudeCodeConversationIdentity,
 } from "../runtime/harness_identity/index.js";
 import { parseJsonRequest } from "./json.js";
+import { anthropicWebSearchTool } from "../interaction/capabilities.js";
+import { isBackgroundRequest } from "../interaction/types.js";
 import type { AnthropicContextManagement, AnthropicSafeguards, ReasoningControls } from "../interaction/types.js";
 
 type AnthropicErrorType =
@@ -41,8 +43,18 @@ export async function handleAnthropicMessages(
     const isClaudeCode = isClaudeCodeRequest(request.headers);
     const anthropicSafeguards = safeguardsFrom(rawPayload, request.headers);
     const anthropicContextManagement = contextManagementFrom(rawPayload, request.headers);
+    const agentContext = isClaudeCode ? claudeCodeRequestContext(request.headers) : undefined;
+    // Claude Code runs a web search as a background request that names one of
+    // the session's models. Like its other background work, Dari serves it on
+    // the cheapest model that can: a Claude model on Anthropic's API. A Dari
+    // Link token keeps the model it names.
+    const backgroundWebSearch = agentContext !== undefined
+      && isBackgroundRequest({ ...interaction, agentContext })
+      && anthropicWebSearchTool(interaction) !== undefined
+      && !isLinkToken(apiKey);
     const forwarded = {
       ...interaction,
+      ...(backgroundWebSearch ? { model: CANONICAL_ROUTER_MODEL } : {}),
       ...(anthropicSafeguards === undefined ? {} : { anthropicSafeguards }),
       ...(anthropicContextManagement === undefined ? {} : { anthropicContextManagement }),
     };
@@ -50,7 +62,7 @@ export async function handleAnthropicMessages(
       ? {
           ...forwarded,
           reasoning: routedReasoning(forwarded),
-          agentContext: claudeCodeRequestContext(request.headers),
+          agentContext: agentContext!,
           // Native tool results may be followed by harness-injected text.
           // Preserve their structural continuation semantics, not prompt inference.
           ...(latestMessageHasToolResult(rawPayload.messages)

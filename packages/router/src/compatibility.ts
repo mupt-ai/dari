@@ -89,6 +89,21 @@ export function resolveCompatibleCandidates(args: {
     }
   }
 
+  // Anthropic runs its web search tool inside the Claude API only.
+  if (args.requiredCapabilities.includes("anthropic_web_search")) {
+    candidates = candidates.filter(({ metadata }) =>
+      metadata.provider === "anthropic" && metadata.api === "anthropic-messages"
+    );
+    if (candidates.length === 0) {
+      throw new RouterCoreError(
+        "invalid_request",
+        "Web search needs a Claude model served by the Anthropic API, and this router has none enabled. Enable one on the router to search the web.",
+        "unsupported_tool",
+        "tools",
+      );
+    }
+  }
+
   if (args.requiredCapabilities.includes("reasoning_configuration_update")) {
     candidates = candidates.filter(({ metadata }) => metadata.supportsReasoningConfigurationUpdate);
     if (candidates.length === 0) {

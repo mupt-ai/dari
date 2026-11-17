@@ -108,24 +108,34 @@ export async function* eventsWithSafeguardResults(
 function safeguardResultsScanner(
   onResults: (results: unknown[]) => void,
 ): TransformStream<Uint8Array, Uint8Array> {
-  const decoder = new TextDecoder();
-  let pending = "";
-  const scan = (line: string) => {
-    if (!line.startsWith("data:") || !line.includes("\"safeguard_results\"")) return;
-    let event: unknown;
-    try {
-      event = JSON.parse(line.slice("data:".length));
-    } catch {
-      return;
-    }
+  return sseEventScanner("\"safeguard_results\"", (event) => {
     if (
-      isRecord(event) &&
       event.type === "message_delta" &&
       isRecord(event.delta) &&
       Array.isArray(event.delta.safeguard_results)
     ) {
       onResults(event.delta.safeguard_results);
     }
+  });
+}
+
+// Passes an SSE body through unchanged and hands over each event whose data
+// line mentions `marker`, for fields Pi does not carry.
+export function sseEventScanner(
+  marker: string,
+  onEvent: (event: Record<string, unknown>) => void,
+): TransformStream<Uint8Array, Uint8Array> {
+  const decoder = new TextDecoder();
+  let pending = "";
+  const scan = (line: string) => {
+    if (!line.startsWith("data:") || !line.includes(marker)) return;
+    let event: unknown;
+    try {
+      event = JSON.parse(line.slice("data:".length));
+    } catch {
+      return;
+    }
+    if (isRecord(event)) onEvent(event);
   };
   return new TransformStream({
     transform(chunk, controller) {

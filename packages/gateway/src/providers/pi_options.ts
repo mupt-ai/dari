@@ -15,6 +15,7 @@ import {
   payloadWithContextManagement,
   payloadWithSafeguards,
 } from "./anthropic_safeguards.js";
+import { anthropicWebSearchFor, payloadWithWebSearchTool } from "./anthropic_web_search.js";
 
 type PiOptionsSupport = {
   getSupportedThinkingLevels?: (model: Record<string, unknown>) => string[];
@@ -122,6 +123,10 @@ export function buildOptions(
   const contextManagement = request.anthropicContextManagement;
   if (contextManagement !== undefined && forwardsAnthropicContextManagement(request, model)) {
     patches.push((payload) => payloadWithContextManagement(payload, contextManagement));
+  }
+  const webSearch = anthropicWebSearchFor(request, model);
+  if (webSearch !== undefined) {
+    patches.push((payload) => payloadWithWebSearchTool(payload, webSearch));
   }
 
   // Pi keeps only the content it models, so native compaction output reaches

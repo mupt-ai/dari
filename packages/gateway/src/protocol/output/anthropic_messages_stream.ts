@@ -167,18 +167,20 @@ export function anthropicMessagesSseStream(args: {
               }
               send("content_block_stop", { type: "content_block_stop", index });
             } else if (type === "server_tool_call_start" && index !== null) {
-              const serverToolCall = isRecord(event.serverToolCall) ? event.serverToolCall : {};
-              const id = stringValue(serverToolCall.id) ?? `st_${index}`;
+              const serverToolCall = blockFromEvent(event, "serverToolCall");
               send("content_block_start", {
                 type: "content_block_start",
                 index,
                 content_block: {
                   type: "server_tool_use",
-                  id,
+                  id: stringValue(serverToolCall.id) ?? `st_${index}`,
                   name: stringValue(serverToolCall.name) ?? "tool_search_tool",
                   input: {},
                 },
               });
+            } else if (type === "server_tool_call_end" && index !== null) {
+              // The call's input is complete only once its block ends.
+              const serverToolCall = blockFromEvent(event, "serverToolCall");
               send("content_block_delta", {
                 type: "content_block_delta",
                 index,
@@ -187,10 +189,9 @@ export function anthropicMessagesSseStream(args: {
                   partial_json: JSON.stringify(isRecord(serverToolCall.arguments) ? serverToolCall.arguments : {}),
                 },
               });
-            } else if (type === "server_tool_call_end" && index !== null) {
               send("content_block_stop", { type: "content_block_stop", index });
             } else if (type === "tool_search_result_start" && index !== null) {
-              const result = isRecord(event.toolSearchResult) ? event.toolSearchResult : {};
+              const result = blockFromEvent(event, "toolSearchResult");
               const content = Array.isArray(result.content) ? result.content.map((ref) => {
                 if (isRecord(ref)) return { type: "tool_reference", tool_name: String(ref.tool_name ?? "") };
                 return ref;
@@ -205,6 +206,19 @@ export function anthropicMessagesSseStream(args: {
                 },
               });
             } else if (type === "tool_search_result_end" && index !== null) {
+              send("content_block_stop", { type: "content_block_stop", index });
+            } else if (type === "web_search_result" && index !== null) {
+              // Anthropic sends a web search result whole in its block start.
+              const result = isRecord(event.webSearchResult) ? event.webSearchResult : {};
+              send("content_block_start", {
+                type: "content_block_start",
+                index,
+                content_block: {
+                  type: "web_search_tool_result",
+                  tool_use_id: String(result.toolUseId ?? ""),
+                  content: result.content,
+                },
+              });
               send("content_block_stop", { type: "content_block_stop", index });
             } else if (type === "done") {
               if (!isRecord(event.message)) throw new Error("Provider stream ended without a terminal message.");
@@ -267,11 +281,20 @@ function contentIndex(event: Record<string, unknown>): number | null {
 }
 
 function toolCallFromEvent(event: Record<string, unknown>): Record<string, unknown> {
-  if (isRecord(event.toolCall)) return event.toolCall;
+  return blockFromEvent(event, "toolCall");
+}
+
+// The content block an event is about: the one it carries, else the one at its
+// index in the partial message. Pi's start events carry only the partial.
+function blockFromEvent(
+  event: Record<string, unknown>,
+  type: "toolCall" | "serverToolCall" | "toolSearchResult",
+): Record<string, unknown> {
+  if (isRecord(event[type])) return event[type];
   if (!isRecord(event.partial) || !Array.isArray(event.partial.content)) return {};
   const index = contentIndex(event);
   const block = index === null ? undefined : event.partial.content[index];
-  return isRecord(block) && block.type === "toolCall" ? block : {};
+  return isRecord(block) && block.type === type ? block : {};
 }
 
 function stringValue(value: unknown): string | undefined {

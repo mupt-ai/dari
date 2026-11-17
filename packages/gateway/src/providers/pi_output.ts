@@ -98,6 +98,19 @@ export function piMessageToInteractionOutput(
       });
       continue;
     }
+    if (block.type === "webSearchResult") {
+      const toolUseId = requiredString(block.toolUseId, "web search result tool_use_id");
+      items.push({
+        type: "hosted_tool_call",
+        id: `${toolUseId}_result`,
+        tool: "web_search_result",
+        providerType: "web_search_tool_result",
+        payload: { tool_use_id: toolUseId, content: block.content },
+        serverToolUseId: toolUseId,
+        source,
+      });
+      continue;
+    }
     throw invalidProviderOutput(`content block type '${String(block.type ?? "unknown")}' is not supported.`);
   }
 

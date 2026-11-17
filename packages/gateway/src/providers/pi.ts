@@ -48,6 +48,12 @@ import {
   safeguardResultsTap,
 } from "./anthropic_safeguards.js";
 import {
+  anthropicWebSearchFor,
+  eventsWithWebSearchResults,
+  messageWithWebSearchResults,
+  webSearchResultsTap,
+} from "./anthropic_web_search.js";
+import {
   eventsWithProviderReportedCost,
   messageWithProviderReportedCost,
   providerReportedCostTap,
@@ -152,6 +158,9 @@ export async function completeInteractionModel(args: {
   const safeguards = forwardsAnthropicSafeguards(args.request, model)
     ? safeguardResultsTap(costTap?.fetch ?? args.fetch)
     : undefined;
+  const webSearch = anthropicWebSearchFor(args.request, model)
+    ? webSearchResultsTap(safeguards?.fetch ?? costTap?.fetch ?? args.fetch)
+    : undefined;
   const options = buildOptions(
     args.request,
     args.auth ?? args.apiKey,
@@ -162,7 +171,7 @@ export async function completeInteractionModel(args: {
     args.selectedReasoningEffort,
     args.timeoutMs,
     args.signal,
-    safeguards?.fetch ?? costTap?.fetch ?? args.fetch,
+    webSearch?.fetch ?? safeguards?.fetch ?? costTap?.fetch ?? args.fetch,
   );
   const usageContext = subscriptionUsageContext(args.model, model, source);
   const message = options.emitProviderEvents === true
@@ -171,7 +180,10 @@ export async function completeInteractionModel(args: {
   return {
     message: messageWithProviderReportedCost(
       messageWithSubscriptionCacheWrites(
-        messageWithSafeguardResults(message, safeguards?.results()),
+        messageWithWebSearchResults(
+          messageWithSafeguardResults(message, safeguards?.results()),
+          webSearch?.results() ?? [],
+        ),
         usageContext
       ),
       costTap?.cost(),
@@ -251,6 +263,9 @@ export async function streamInteractionModel(args: {
   const safeguards = forwardsAnthropicSafeguards(args.request, model)
     ? safeguardResultsTap(costTap?.fetch ?? args.fetch)
     : undefined;
+  const webSearch = anthropicWebSearchFor(args.request, model)
+    ? webSearchResultsTap(safeguards?.fetch ?? costTap?.fetch ?? args.fetch)
+    : undefined;
   const events = pi.streamSimple(
     model,
     buildContext(args.request, source),
@@ -264,11 +279,15 @@ export async function streamInteractionModel(args: {
       args.selectedReasoningEffort,
       undefined,
       args.signal,
-      safeguards?.fetch ?? costTap?.fetch ?? args.fetch,
+      webSearch?.fetch ?? safeguards?.fetch ?? costTap?.fetch ?? args.fetch,
     )
   );
+  const withSafeguardResults = safeguards ? eventsWithSafeguardResults(events, safeguards) : events;
+  const withWebSearchResults = webSearch
+    ? eventsWithWebSearchResults(withSafeguardResults, webSearch)
+    : withSafeguardResults;
   const withCacheWrites = eventsWithSubscriptionCacheWrites(
-    safeguards ? eventsWithSafeguardResults(events, safeguards) : events,
+    withWebSearchResults,
     subscriptionUsageContext(args.model, model, source)
   );
   return {

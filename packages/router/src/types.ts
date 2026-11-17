@@ -245,4 +245,5 @@ export type HardCapability =
   | "image_input"
   | "structured_output"
   | "openai_hosted_web_search"
+  | "anthropic_web_search"
   | "reasoning_configuration_update";

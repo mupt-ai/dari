@@ -44,6 +44,12 @@ export function anthropicContent(output: InteractionOutput): Array<Record<string
             tool_name: ref.toolName,
           })),
         });
+      } else if (item.tool === "web_search_result") {
+        content.push({
+          type: "web_search_tool_result",
+          tool_use_id: item.serverToolUseId ?? item.id,
+          content: item.payload.content,
+        });
       }
       continue;
     }

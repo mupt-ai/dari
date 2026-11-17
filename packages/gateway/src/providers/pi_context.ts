@@ -200,7 +200,9 @@ export function buildContext(
       continue;
     }
     if (item.type === "hosted_tool_call") {
-      if (item.tool === "server_tool_use" || item.tool === "tool_search") {
+      if (item.tool === "web_search_result" || (item.tool === "server_tool_use" && item.serverToolName === "web_search")) {
+        assistantFor(item.source ?? target).content.push({ type: "text", text: webSearchHistoryText(item) });
+      } else if (item.tool === "server_tool_use" || item.tool === "tool_search") {
         // Server tool use and tool search results are Anthropic-specific.
         // Handle them before the generic OpenAI Responses branch to avoid
         // emitting Anthropic-shaped payloads as Responses provider items.
@@ -405,6 +407,17 @@ function portableReasoningText(
     break;
   }
   return readable;
+}
+
+// Pi cannot replay Anthropic's web search blocks, so a past search goes back
+// as text: its query, then each result's title and URL.
+function webSearchHistoryText(item: Extract<InteractionItem, { type: "hosted_tool_call" }>): string {
+  if (item.tool === "server_tool_use") return `[Web search: ${JSON.stringify(item.serverToolInput ?? {})}]`;
+  const content = item.payload.content;
+  const results = Array.isArray(content)
+    ? content.filter(isRecord).map((result) => `${String(result.title ?? "")} ${String(result.url ?? "")}`.trim())
+    : [JSON.stringify(content)];
+  return `[Web search results: ${results.join("; ")}]`;
 }
 
 function readableContent(content: InteractionContent[]): string {

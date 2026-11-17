@@ -47,15 +47,19 @@ function searchTool(models: string[], others: Array<{ name: string }> = []) {
   process.env.DARI_ROUTING_API_KEY = "dak_test";
   let tool: any;
   try {
-    // The tool is offered once the session starts, after every extension has loaded.
-    const starts: Function[] = [];
+    // The tool is offered at the first prompt, after other extensions have
+    // registered theirs, and only once.
+    const prompts: Function[] = [];
     extension({
       registerProvider() {},
-      on(name: string, handler: Function) { if (name === "session_start") starts.push(handler); },
-      getAllTools: () => others,
-      registerTool(definition: any) { tool = definition; },
+      on(name: string, handler: Function) { if (name === "before_agent_start") prompts.push(handler); },
+      getAllTools: () => tool === undefined ? others : [...others, tool],
+      registerTool(definition: any) {
+        if (tool !== undefined) throw new Error("registered twice");
+        tool = definition;
+      },
     });
-    for (const start of starts) start();
+    for (const prompt of [...prompts, ...prompts]) prompt();
   } finally {
     delete process.env.DARI_MODELS;
     delete process.env.DARI_ROUTING_BASE_URL;

@@ -144,11 +144,13 @@ export default function (pi: any) {
         throw new Error(`Web search failed. ${failures.join(" ")}`);
       },
     };
-    // Pi refuses to start when two extensions register a tool of one name, so
-    // this one waits until every extension has loaded and steps aside for a
-    // `web_search` the user already has.
+    // A `web_search` the user already has is theirs to keep: Pi refuses to
+    // start when two extensions register a tool of one name as they load, and
+    // drops the later of two registered afterwards. So this one waits for the
+    // first prompt, by when other extensions have registered theirs, whether
+    // on load or at session start.
     let offered = false;
-    pi.on("session_start", () => {
+    pi.on("before_agent_start", () => {
       if (offered || pi.getAllTools().some((tool: any) => tool.name === webSearch.name)) return;
       offered = true;
       pi.registerTool(webSearch);

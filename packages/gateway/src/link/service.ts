@@ -85,6 +85,12 @@ export type LinkUsers = {
   /** See `LinkPlatform.httpRedirectHosts`. */
   httpRedirectHosts?: readonly string[];
   /**
+   * Whether an app may register with no API key (RFC 7591). Hosted Dari says no,
+   * so every app belongs to an organization; a self-hosted gateway's operator
+   * decides.
+   */
+  openRegistration: boolean;
+  /**
    * Store a registered app; with `apiKey`, owned by whoever that key is.
    * Throws HttpError(401 or 403) for a key that may not register apps.
    */
@@ -204,6 +210,9 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
       },
     },
     async registerApp({ apiKey, name, redirectUris, confidential }) {
+      if (apiKey === undefined && !users.openRegistration) {
+        throw new HttpError(401, "Register with a Dari API key, so the app belongs to an organization.", "authentication_error");
+      }
       const clientSecret = confidential === true ? linkSecret(LINK_CLIENT_SECRET_PREFIX) : undefined;
       const app: LinkApp = {
         clientId: `lnk_${randomUUID().replaceAll("-", "")}`,

@@ -332,9 +332,10 @@ async function registerApp(link: LinkPlatform, request: Request): Promise<Respon
 
 let registrationWindow = { startedAt: 0, count: 0 };
 
-// RFC 7591: any app registers itself with no key: a public client (PKCE, no
-// secret), or with `client_secret_basic` a confidential one, whose secret is
-// returned this once. Either way the user still approves every grant.
+// RFC 7591: an app registers itself: a public client (PKCE, no secret), or with
+// `client_secret_basic` a confidential one, whose secret is returned this once.
+// Either way the user still approves every grant. Hosted Dari needs the
+// organization's key as a Bearer token, so the app belongs to that organization.
 async function registerClient(link: LinkPlatform, request: Request): Promise<Response> {
   const now = Date.now();
   if (now - registrationWindow.startedAt >= 60_000) registrationWindow = { startedAt: now, count: 0 };
@@ -372,8 +373,28 @@ async function registerClient(link: LinkPlatform, request: Request): Promise<Res
     if (error instanceof HttpError) return registrationError(error.code, error.message);
     throw error;
   }
+  let app;
+  try {
+    app = await link.registerApp({
+      ...client,
+      // No header is no key; a malformed one is refused.
+      apiKey: request.headers.has("authorization") ? bearerToken(request.headers) : undefined,
+      confidential: authMethod === "client_secret_basic",
+    });
+  } catch (error) {
+    // A refused request is the caller's to fix; a server failure goes to the
+    // same masked response as every other Link request.
+    if (error instanceof HttpError && error.status < 500) {
+      return Response.json(
+        { error: error.code, error_description: error.message },
+        { status: error.status, headers: { "Cache-Control": "no-store" } },
+      );
+    }
+    throw error;
+  }
+  // Only apps actually created count against the cap, so refused keys cannot
+  // exhaust it for everyone else.
   registrationWindow.count += 1;
-  const app = await link.registerApp({ ...client, confidential: authMethod === "client_secret_basic" });
   return Response.json(
     {
       client_id: app.clientId,

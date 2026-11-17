@@ -61,6 +61,8 @@ export function selfHostedLink(
   const newSubject = () => `lu_${randomUUID().replaceAll("-", "")}`;
   return linkPlatform(deps.links, {
     httpRedirectHosts: deps.config.link?.allowHttpRedirectHosts ?? [],
+    // A self-hosted gateway's operator owns its apps; registration stays open.
+    openRegistration: true,
     sessionSecret: () => sessionSecret,
     connectable: SUBSCRIPTION_PROVIDERS,
     keyProviders,

@@ -12,7 +12,8 @@ func init() {
 		cmd := &cobra.Command{
 			Use:     "eval",
 			Aliases: []string{"evals"},
-			Short:   "Hosted only: inspect eval scorecards for the current org",
+			Short:   "Inspect eval scorecards for the current org",
+			GroupID: hostedGroup,
 		}
 		cmd.AddCommand(
 			newEvalCreateCmd(gf),

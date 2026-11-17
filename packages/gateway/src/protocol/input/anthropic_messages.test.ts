@@ -434,7 +434,7 @@ test("Messages gate accepts concrete Claude-family ids as synonyms", () => {
     "claude-sonnet-4-5",
     "claude-haiku-4-5-20251001",
     "anthropic/claude-fable-5",
-    // What `dari claude --setup` lists as Dari Routing in the Claude app.
+    // What `dari claude --setup-desktop` lists as Dari Routing in the Claude app.
     "claude-dari-routing",
   ]) {
     const request = anthropicMessagesToInteraction({ ...MINIMAL_MESSAGES_PAYLOAD, model });

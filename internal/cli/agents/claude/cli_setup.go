@@ -36,21 +36,19 @@ func SavedModel(settingsPath string) string {
 // routes through Dari as `dari claude` does: the router and key, the model to
 // start on (the launch's default, which keeps the user's last /model pick),
 // the router's models in /model, and Dari's status line unless the user has
-// their own. It runs on every launch, so the settings follow the routing
-// mode and the claude.ai login of the Claude Code at executable. Each value it
-// replaces is recorded the first time; it reports whether this was the first
-// setup.
-func CLISetup(settingsPath, executable, baseURL, key string, models agents.Models) (bool, error) {
+// their own. Setup reruns it, as does a routing mode switch, so the settings
+// follow the routing mode and the claude.ai login of the Claude Code at
+// executable. Each value it replaces is recorded the first time.
+func CLISetup(settingsPath, executable, baseURL, key string, models agents.Models) error {
 	settings, err := readJSON(settingsPath)
 	if err != nil {
-		return false, err
+		return err
 	}
 	setupPath := filepath.Join(filepath.Dir(settingsPath), cliSetupFile)
 	setup, err := readJSON(setupPath)
 	if err != nil {
-		return false, err
+		return err
 	}
-	first := len(setup) == 0
 	replaced := recorded(setup, "settings")
 	replacedEnv := recorded(setup, "env")
 
@@ -66,7 +64,7 @@ func CLISetup(settingsPath, executable, baseURL, key string, models agents.Model
 	if _, owned := replaced[statusLineKey]; owned || settings[statusLineKey] == nil {
 		executable, err := agents.StatusExecutable()
 		if err != nil {
-			return false, err
+			return err
 		}
 		set(statusLineKey, map[string]any{
 			"type":    "command",
@@ -98,13 +96,13 @@ func CLISetup(settingsPath, executable, baseURL, key string, models agents.Model
 	settings["env"] = env
 
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
-		return false, fmt.Errorf("create Claude Code settings directory: %w", err)
+		return fmt.Errorf("create Claude Code settings directory: %w", err)
 	}
 	// The record first: settings written without it could not be undone.
 	if err := writeJSON(setupPath, map[string]any{"settings": replaced, "env": replacedEnv}); err != nil {
-		return false, err
+		return err
 	}
-	return first, writeJSON(settingsPath, settings)
+	return writeJSON(settingsPath, settings)
 }
 
 // RemoveCLISetup restores what CLISetup replaced in Claude Code's settings and

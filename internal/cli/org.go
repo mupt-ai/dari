@@ -12,7 +12,7 @@ import (
 
 func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, gf *globalFlags) {
-		org := &cobra.Command{Use: "org", Short: "Hosted only: manage organizations"}
+		org := &cobra.Command{Use: "org", Short: "Manage organizations", GroupID: hostedGroup}
 		org.AddCommand(
 			newOrgListCmd(gf),
 			newOrgCreateCmd(gf),

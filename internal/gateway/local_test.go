@@ -26,7 +26,7 @@ func TestCommandEnvironment(t *testing.T) {
 	t.Setenv("DARI_AUTO_ROUTING_API_KEY", "from-shell")
 	settings := Settings{Mode: ModeLocal, LocalKey: "gw-key", ProviderKeys: map[string]string{"ANTHROPIC_API_KEY": "saved"}}
 
-	cmd, err := Command(settings, nil)
+	cmd, err := command(settings, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +56,7 @@ func TestCommandEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings.AutoRoutingKey = "dari-key"
-	cmd, err = Command(settings, nil)
+	cmd, err = command(settings, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

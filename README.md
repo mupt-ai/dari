@@ -51,9 +51,9 @@ dari codex exec "Fix the failing tests"
 
 The agent must be on `PATH`, or set `DARI_<AGENT>_PATH`. Supported status lines show the serving model, thinking level, and lease turns left (turns before the routing choice is reconsidered).
 
-**Running the agent directly.** Each launch of `claude`, `codex`, `pi`, or `opencode` also writes Dari into that agent's own config, so running it without `dari` routes the same way. The config follows your routing setup and remembers your last `/model` choice while that model remains available. `dari <agent> --remove-setup` undoes the change and restores what was there. A local gateway must be running for direct runs: `dari gateway start`.
+**Running the agent directly.** A launch routes only its own session and leaves the agent's config alone. `dari <agent> --setup-cli` (for `claude`, `codex`, `pi`, or `opencode`) writes Dari into that agent's own config, so running it without `dari` routes the same way, then exits. The config follows `dari gateway setup` between routing modes and keeps your last `/model` choice while that model remains available; rerun it after changing the router's models. `dari <agent> --remove-setup` undoes it and restores what was there. A local gateway must be running for direct runs: `dari gateway start`.
 
-**Desktop apps.** `dari claude --setup` and `dari codex --setup` write Dari into the Claude and Codex apps' config; `--remove-setup` undoes it. OpenClaw and Hermes Agent always use this setup, since their long-lived gateways read their own config.
+**Desktop apps.** `dari claude --setup-desktop` writes Dari into the Claude app's config; pass both flags to set up `claude` and the app. The Codex app reads the same `config.toml` as `codex`, so either flag sets up both. OpenClaw and Hermes Agent route only through this setup, since their long-lived gateways read their own config: `dari openclaw` and `dari hermes` refuse to start until `--setup-cli` has run. Muse Code has no setup: it fetches its model list from its endpoint's root, so it routes only through `dari muse`.
 
 ## Pool Multiple Subscriptions
 
@@ -74,9 +74,9 @@ Subscription restrictions still apply: Claude Code subscriptions serve Claude Co
 For scripts, connect each account separately and list the pool:
 
 ```bash
-dari credentials subscription connect claude-code   # repeat for another Claude account
-dari credentials subscription connect codex         # repeat for another ChatGPT account
-dari credentials subscription list
+dari accounts subscription connect claude-code   # repeat for another Claude account
+dari accounts subscription connect codex         # repeat for another ChatGPT account
+dari accounts subscription list
 ```
 
 ## Choose Where Requests Go
@@ -101,7 +101,7 @@ These use the hosted Dari API. Sign in with `dari auth login`, or set `DARI_API_
 ```bash
 dari router list
 dari router create ./router.yml
-dari credentials provider add openrouter "OpenRouter" --value-stdin
+dari accounts provider add openrouter "OpenRouter" --value-stdin
 dari activity overview --from 2026-07-01T00:00:00Z --to 2026-07-08T00:00:00Z
 dari eval create --name "SWE-bench" --min-score 0 --max-score 100 --file scores.csv
 dari api-keys create

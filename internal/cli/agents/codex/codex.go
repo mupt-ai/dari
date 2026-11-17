@@ -4,13 +4,16 @@ package codex
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"github.com/mupt-ai/dari/internal/cli/agents"
 	"io"
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/mupt-ai/dari/internal/cli/agents"
 )
 
 // Configure selects the launch's default model through Codex config overrides
@@ -34,9 +37,31 @@ func Configure(command *agents.Command, baseURL string, models agents.Models) {
 	command.Args = agents.InsertBeforeDoubleDash(command.Args, args)
 }
 
+// PrepareCatalog hands this launch the router's model catalog through a config
+// override, leaving the user's Codex config untouched. The file is named for
+// its content, so concurrent launches on different routers never share one and
+// the launcher has nothing to clean up.
+func PrepareCatalog(ctx context.Context, command *agents.Command, key, baseURL string, models agents.Models) error {
+	body, disableWebSearch, err := Catalog(ctx, key, baseURL, models)
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(body)
+	path, err := agents.WriteCacheFile("codex/models-"+hex.EncodeToString(digest[:8])+".json", string(body))
+	if err != nil {
+		return fmt.Errorf("write Codex model catalog: %w", err)
+	}
+	args := []string{"--config", "model_catalog_json=" + strconv.Quote(path)}
+	if disableWebSearch {
+		args = append(args, "--config", `web_search="disabled"`)
+	}
+	command.Args = agents.InsertBeforeDoubleDash(command.Args, args)
+	return nil
+}
+
 // Catalog fetches the router's Codex model catalog, narrowed to the models
 // menu, and reports whether the default model needs web search disabled.
-// Setup writes it for Codex to read: Codex does not discover remote catalogs
+// Launches and setup hand it to Codex: Codex does not discover remote catalogs
 // for custom providers, so the authenticated router catalog is supplied
 // explicitly, and auxiliary agents never pick bundled OpenAI models the
 // routing endpoint cannot serve. Its models fill Codex's /model menu;

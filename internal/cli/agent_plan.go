@@ -22,7 +22,7 @@ type agentSubscriptionStatus struct {
 // errNoProviderCredentials is a gateway router with no subscription or API
 // key that can serve any of its models.
 var errNoProviderCredentials = errors.New("no connected account or API key can serve this gateway's models; " +
-	"connect one with `dari accounts` or `dari credentials subscription connect`")
+	"connect one with `dari accounts` or `dari accounts subscription connect`")
 
 // routerModels builds a launch's model menu from the router's /v1/models at
 // baseURL, the same list in hosted and gateway mode: dari/routing when the

@@ -16,24 +16,6 @@ import (
 	"golang.org/x/term"
 )
 
-func init() {
-	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, gf *globalFlags) {
-		cmd := &cobra.Command{
-			Use:   "credentials",
-			Short: "Manage organization credentials and personal subscriptions",
-			Long: "`provider` and `list` manage organization credentials on Hosted Dari.\n" +
-				"`subscription` manages personal coding-agent subscriptions on Hosted, Fully local,\n" +
-				"or Self-hosted routing. For the interactive accounts menu, use `dari accounts`.",
-		}
-		cmd.AddCommand(
-			newCredentialsListCmd(gf),
-			newProviderCredentialsCmd(gf),
-			newSubscriptionCredentialsCmd(gf),
-		)
-		root.AddCommand(cmd)
-	})
-}
-
 func newProviderCredentialsCmd(gf *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "provider",
@@ -254,7 +236,7 @@ func newProviderCredentialRemoveCmd(gf *globalFlags) *cobra.Command {
 func newCredentialsListCmd(gf *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List stored credentials for the current org",
+		Short: "Hosted only: list stored credentials for the current org as JSON",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var resp struct {

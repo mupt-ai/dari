@@ -33,13 +33,13 @@ func TestProviderCredentialCommandsSendTypedPayloads(t *testing.T) {
 	useTestAPIKey(t)
 
 	commands := [][]string{
-		{"--api-url", srv.URL, "credentials", "provider", "add", "openrouter", "OpenRouter Production", "sk-test"},
-		{"--api-url", srv.URL, "credentials", "provider", "update", "cred_aws", "Bedrock Production", "--aws-region", "us-east-1", "--aws-access-key-id-env", "TEST_AWS_ACCESS_KEY_ID", "--aws-secret-access-key-env", "TEST_AWS_SECRET_ACCESS_KEY"},
-		{"--api-url", srv.URL, "credentials", "provider", "update", "cred_aws", "Bedrock Production", "--aws-region", "us-west-2"},
-		{"--api-url", srv.URL, "credentials", "provider", "add", "amazon-bedrock", "Bedrock Role", "--aws-region", "us-east-1", "--aws-role-arn", "arn:aws:iam::123456789012:role/dari-bedrock"},
-		{"--api-url", srv.URL, "credentials", "provider", "add", "azure", "Azure Production", "azure-key", "--azure-endpoint", "https://dari.services.ai.azure.com"},
-		{"--api-url", srv.URL, "credentials", "provider", "update", "cred_azure", "Azure Production", "--azure-endpoint", "https://dari-eu.openai.azure.com"},
-		{"--api-url", srv.URL, "credentials", "provider", "remove", "cred_old"},
+		{"--api-url", srv.URL, "accounts", "provider", "add", "openrouter", "OpenRouter Production", "sk-test"},
+		{"--api-url", srv.URL, "accounts", "provider", "update", "cred_aws", "Bedrock Production", "--aws-region", "us-east-1", "--aws-access-key-id-env", "TEST_AWS_ACCESS_KEY_ID", "--aws-secret-access-key-env", "TEST_AWS_SECRET_ACCESS_KEY"},
+		{"--api-url", srv.URL, "accounts", "provider", "update", "cred_aws", "Bedrock Production", "--aws-region", "us-west-2"},
+		{"--api-url", srv.URL, "accounts", "provider", "add", "amazon-bedrock", "Bedrock Role", "--aws-region", "us-east-1", "--aws-role-arn", "arn:aws:iam::123456789012:role/dari-bedrock"},
+		{"--api-url", srv.URL, "accounts", "provider", "add", "azure", "Azure Production", "azure-key", "--azure-endpoint", "https://dari.services.ai.azure.com"},
+		{"--api-url", srv.URL, "accounts", "provider", "update", "cred_azure", "Azure Production", "--azure-endpoint", "https://dari-eu.openai.azure.com"},
+		{"--api-url", srv.URL, "accounts", "provider", "remove", "cred_old"},
 	}
 	for _, args := range commands {
 		cmd := newRootCmd("dev")

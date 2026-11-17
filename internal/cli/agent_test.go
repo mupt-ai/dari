@@ -21,16 +21,18 @@ func TestParseAgentLaunch(t *testing.T) {
 		wantName string
 		wantArgs []string
 		wantOK   bool
-		setup    bool
+		cli      bool
+		desktop  bool
 		remove   bool
 	}{
 		{
-			name:     "--setup and --remove-setup are Dari's",
-			args:     []string{"codex", "--setup", "--remove-setup", "--", "--setup"},
+			name:     "setup flags are Dari's",
+			args:     []string{"codex", "--setup-cli", "--setup-desktop", "--remove-setup", "--", "--setup-cli"},
 			wantName: "codex",
-			wantArgs: []string{"--", "--setup"},
+			wantArgs: []string{"--", "--setup-cli"},
 			wantOK:   true,
-			setup:    true,
+			cli:      true,
+			desktop:  true,
 			remove:   true,
 		},
 		{
@@ -94,8 +96,8 @@ func TestParseAgentLaunch(t *testing.T) {
 			if got.name != tt.wantName {
 				t.Errorf("name = %q, want %q", got.name, tt.wantName)
 			}
-			if got.setup != tt.setup || got.removeSetup != tt.remove {
-				t.Errorf("setup, removeSetup = %v, %v, want %v, %v", got.setup, got.removeSetup, tt.setup, tt.remove)
+			if got.setupCLI != tt.cli || got.setupDesktop != tt.desktop || got.removeSetup != tt.remove {
+				t.Errorf("setup cli, desktop, remove = %v, %v, %v, want %v, %v, %v", got.setupCLI, got.setupDesktop, got.removeSetup, tt.cli, tt.desktop, tt.remove)
 			}
 			if !slices.Equal(got.args, tt.wantArgs) {
 				t.Errorf("args = %q, want %q", got.args, tt.wantArgs)

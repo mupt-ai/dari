@@ -18,30 +18,66 @@ import (
 	"github.com/mupt-ai/dari/internal/cli/agents/pi"
 )
 
-// agentApp is what --setup configures for an agent, and how the change
-// takes effect.
+// agentApp names what setup configures for an agent and how each change
+// takes effect: --setup-cli the agent run directly, --setup-desktop its
+// desktop app ("" when it has none).
 type agentApp struct {
-	name    string
-	applies string
+	name           string
+	applies        string
+	desktop        string
+	desktopApplies string
+	// sharedConfig marks a desktop app that reads the CLI's own config, so
+	// setting up either sets up both.
+	sharedConfig bool
 }
 
 var agentApps = map[string]agentApp{
-	"claude":   {name: "Claude Code and the Claude app", applies: "restart the app to apply"},
-	"codex":    {name: "Codex and the Codex app", applies: "restart the app to apply"},
+	"claude":   {name: "Claude Code", applies: "new Claude Code sessions pick it up", desktop: "the Claude app", desktopApplies: "restart the Claude app to apply it there"},
+	"codex":    {name: "Codex", applies: "new Codex sessions pick it up", desktop: "the Codex app", desktopApplies: "restart the Codex app to apply it there", sharedConfig: true},
 	"pi":       {name: "Pi", applies: "new Pi sessions pick it up"},
 	"opencode": {name: "OpenCode", applies: "new OpenCode sessions pick it up"},
 	"openclaw": {name: "OpenClaw", applies: "its gateway picks it up without a restart"},
 	"hermes":   {name: "Hermes Agent", applies: "new sessions use it; run `hermes gateway restart` for messaging sessions already open"},
 }
 
-// launchSetsUpAgent marks agents whose sessions all run in one long-lived
-// gateway that reads the agent's own config, so a launch cannot route only
-// itself: every launch writes the same setup --setup does.
-var launchSetsUpAgent = map[string]bool{"openclaw": true, "hermes": true}
+// target names what a setup of cli and desktop covers, and how it takes effect.
+func (app agentApp) target(cli, desktop bool) (string, string) {
+	if app.sharedConfig {
+		cli, desktop = true, true
+	}
+	names, applies := []string{}, []string{}
+	if cli {
+		names, applies = append(names, app.name), append(applies, app.applies)
+	}
+	if desktop && app.desktop != "" {
+		names, applies = append(names, app.desktop), append(applies, app.desktopApplies)
+	}
+	return strings.Join(names, " and "), strings.Join(applies, "; ")
+}
 
-// runAgentSetup writes, or with --remove-setup removes, the persistent config
-// the agent's app or gateway reads. Setup runs the launcher's onboarding
-// first, so it uses the same router, key, and model menu as `dari <agent>`.
+// routesOnlyWhenSetUp marks agents whose sessions all run in one long-lived
+// gateway that reads the agent's own config, so a launch cannot route only
+// itself: they route through Dari once --setup-cli has written that config,
+// and a launch before then is refused rather than run unrouted.
+var routesOnlyWhenSetUp = map[string]bool{"openclaw": true, "hermes": true}
+
+// gatewayAgentSetUp reports whether OpenClaw or Hermes has Dari set up.
+func gatewayAgentSetUp(ctx context.Context, name string) bool {
+	switch name {
+	case "openclaw":
+		executable, err := agentExecutable(name)
+		return err == nil && openclaw.IsSetUp(ctx, executable)
+	case "hermes":
+		config, err := hermesConfigPath(ctx)
+		return err == nil && hermes.IsSetUp(config)
+	}
+	return false
+}
+
+// runAgentSetup writes, or with --remove-setup removes, the config the agent
+// reads when run directly (--setup-cli) or its desktop app reads
+// (--setup-desktop). Setup runs the launcher's onboarding first, so it uses
+// the same router, key, and model menu as `dari <agent>`.
 func runAgentSetup(ctx context.Context, launch agentLaunch, stdin io.Reader, stderr io.Writer) error {
 	app, ok := agentApps[launch.name]
 	if !ok {
@@ -50,43 +86,58 @@ func runAgentSetup(ctx context.Context, launch agentLaunch, stdin io.Reader, std
 			names = append(names, name)
 		}
 		slices.Sort(names)
-		return fmt.Errorf("%s and %s are only available for %s", agentSetupFlag, agentRemoveSetupFlag, strings.Join(names, ", "))
+		return fmt.Errorf("%s and %s are only available for %s", agentSetupCLIFlag, agentRemoveSetupFlag, strings.Join(names, ", "))
 	}
-	if launch.setup && launch.removeSetup {
-		return fmt.Errorf("use either %s or %s", agentSetupFlag, agentRemoveSetupFlag)
+	if launch.setup() && launch.removeSetup {
+		return fmt.Errorf("use either %s or setup, not both", agentRemoveSetupFlag)
+	}
+	if launch.setupDesktop && app.desktop == "" {
+		return fmt.Errorf("%s has no desktop app; use `dari %s %s`", app.name, launch.name, agentSetupCLIFlag)
 	}
 	if len(launch.args) > 0 {
-		return fmt.Errorf("%s does not take agent arguments", agentSetupFlag)
+		return errors.New("setup does not take agent arguments")
 	}
 	if launch.removeSetup {
+		// Removal undoes both, whichever was set up.
+		target, applies := app.target(true, true)
 		removed, err := removeAgentSetup(ctx, launch.name)
 		if err != nil {
 			return err
 		}
 		if !removed {
-			agentStep(stderr, "Dari is not set up in "+app.name)
+			agentStep(stderr, "Dari is not set up in "+target)
 			return nil
 		}
-		agentStep(stderr, "Removed Dari from "+app.name+"; "+app.applies)
+		agentStep(stderr, "Removed Dari from "+target+"; "+applies)
 		return nil
 	}
 	key, baseURL, models, err := resolveAgentRouting(ctx, launch, stdin, stderr)
 	if err != nil {
 		return err
 	}
-	// The app first: it is the step that can refuse (the Claude app lists
-	// only Claude models), and nothing is written when it does.
-	if err := applyAgentSetup(ctx, launch.name, key, baseURL, models); err != nil {
+	if err := writeAgentSetup(ctx, launch.name, launch.setupCLI, launch.setupDesktop, key, baseURL, models); err != nil {
 		return err
 	}
-	// Codex's app setup is its CLI setup.
-	if launch.name != "codex" {
-		if _, err := saveAgentConfig(ctx, launch.name, key, baseURL, models); err != nil {
+	target, applies := app.target(launch.setupCLI, launch.setupDesktop)
+	agentStep(stderr, fmt.Sprintf("Dari is set up in %s, starting on %s; %s", target, startModel(launch.name, models), applies))
+	agentStep(stderr, fmt.Sprintf("Run `dari %s %s` again after changing the router's models, or `dari %s %s` to undo", launch.name, launch.setupFlags(), launch.name, agentRemoveSetupFlag))
+	return nil
+}
+
+// writeAgentSetup writes Dari into the agent's own config (cli) and its
+// desktop app's (desktop). Only the Claude app has a config of its own; the
+// Codex app reads the CLI's.
+func writeAgentSetup(ctx context.Context, name string, cli, desktop bool, key, baseURL string, models agents.Models) error {
+	// The app first: it is the step that can refuse (the Claude app lists
+	// only Claude models), and nothing is written when it does.
+	if desktop && name == "claude" {
+		if err := setUpClaudeApp(key, baseURL, models); err != nil {
 			return err
 		}
 	}
-	agentStep(stderr, fmt.Sprintf("%s now routes through Dari, starting on %s; %s", capitalized(app.name), startModel(launch.name, models), app.applies))
-	agentStep(stderr, fmt.Sprintf("Run `dari %s %s` again after changing the router's models, or `dari %s %s` to undo", launch.name, agentSetupFlag, launch.name, agentRemoveSetupFlag))
+	if cli || (desktop && name != "claude") {
+		return saveAgentConfig(ctx, name, key, baseURL, models)
+	}
 	return nil
 }
 
@@ -122,56 +173,21 @@ func savedAgentModel(name string) string {
 	return ""
 }
 
-// saveAgentConfig writes Dari into the agent's own config on every launch, so
-// the agent routes through Dari when run directly and keeps the user's model
-// pick. It reports whether this was the agent's first setup.
-func saveAgentConfig(ctx context.Context, name, key, baseURL string, models agents.Models) (bool, error) {
+// saveAgentConfig writes Dari into the config the agent reads when run
+// directly, so it routes through Dari and keeps the user's model pick. Only
+// setup and a routing mode switch write it.
+func saveAgentConfig(ctx context.Context, name, key, baseURL string, models agents.Models) error {
 	switch name {
 	case "claude":
 		settings, err := claude.SettingsPath()
 		if err != nil {
-			return false, err
+			return err
 		}
 		// Without Claude Code on PATH there is no login to keep.
 		executable, _ := agentExecutable("claude")
 		return claude.CLISetup(settings, executable, baseURL, key, models)
 	case "codex":
 		// Codex's app and CLI read the same config.toml, so its setup serves both.
-		home, err := codex.Home()
-		if err != nil {
-			return false, err
-		}
-		first := !codex.IsSetUp(home)
-		return first, applyAgentSetup(ctx, name, key, baseURL, models)
-	case "pi":
-		dir, err := pi.AgentDir()
-		if err != nil {
-			return false, err
-		}
-		return pi.Setup(dir, baseURL, key, models)
-	case "opencode":
-		dir, err := opencode.ConfigDir()
-		if err != nil {
-			return false, err
-		}
-		return opencode.Setup(dir, baseURL, key, models)
-	}
-	return false, nil
-}
-
-func applyAgentSetup(ctx context.Context, name, key, baseURL string, models agents.Models) error {
-	switch name {
-	case "claude":
-		dir, err := claude.DesktopDir()
-		if err != nil {
-			return err
-		}
-		settings, err := claude.SettingsPath()
-		if err != nil {
-			return err
-		}
-		return claude.Setup(dir, settings, baseURL, key, models)
-	case "codex":
 		home, err := codex.Home()
 		if err != nil {
 			return err
@@ -181,6 +197,18 @@ func applyAgentSetup(ctx context.Context, name, key, baseURL string, models agen
 			return err
 		}
 		return codex.Setup(home, baseURL, key, models.Default(), catalog, disableWebSearch, models.RemoteCompaction)
+	case "pi":
+		dir, err := pi.AgentDir()
+		if err != nil {
+			return err
+		}
+		return pi.Setup(dir, baseURL, key, models)
+	case "opencode":
+		dir, err := opencode.ConfigDir()
+		if err != nil {
+			return err
+		}
+		return opencode.Setup(dir, baseURL, key, models)
 	case "openclaw":
 		executable, err := agentExecutable(name)
 		if err != nil {
@@ -193,11 +221,21 @@ func applyAgentSetup(ctx context.Context, name, key, baseURL string, models agen
 			return err
 		}
 		return hermes.Setup(config, baseURL, key, models)
-	case "pi", "opencode":
-		// Neither has an app; saveAgentConfig is the whole setup.
-		return nil
 	}
 	return fmt.Errorf("unsupported coding agent %q", name)
+}
+
+// setUpClaudeApp writes Dari into the Claude desktop app's configuration.
+func setUpClaudeApp(key, baseURL string, models agents.Models) error {
+	dir, err := claude.DesktopDir()
+	if err != nil {
+		return err
+	}
+	settings, err := claude.SettingsPath()
+	if err != nil {
+		return err
+	}
+	return claude.Setup(dir, settings, baseURL, key, models)
 }
 
 func removeAgentSetup(ctx context.Context, name string) (bool, error) {
@@ -273,9 +311,7 @@ func capitalized(value string) string {
 // order. OpenClaw and Hermes are only asked when installed.
 func setUpAgents(ctx context.Context) []string {
 	set := []string{}
-	if settings, err := claude.SettingsPath(); err == nil && claude.IsCLISetUp(settings) {
-		set = append(set, "claude")
-	} else if dir, err := claude.DesktopDir(); err == nil && claude.IsSetUp(dir) {
+	if claudeCLISetUp() || claudeAppSetUp() {
 		set = append(set, "claude")
 	}
 	if home, err := codex.Home(); err == nil && codex.IsSetUp(home) {
@@ -287,11 +323,10 @@ func setUpAgents(ctx context.Context) []string {
 	if dir, err := opencode.ConfigDir(); err == nil && opencode.IsSetUp(dir) {
 		set = append(set, "opencode")
 	}
-	if executable, err := agentExecutable("openclaw"); err == nil && openclaw.IsSetUp(ctx, executable) {
-		set = append(set, "openclaw")
-	}
-	if config, err := hermesConfigPath(ctx); err == nil && hermes.IsSetUp(config) {
-		set = append(set, "hermes")
+	for _, name := range []string{"openclaw", "hermes"} {
+		if gatewayAgentSetUp(ctx, name) {
+			set = append(set, name)
+		}
 	}
 	return set
 }
@@ -307,41 +342,45 @@ func moveAgentSetups(ctx context.Context, stdin io.Reader, stderr io.Writer) {
 	}
 	// Hosted routing needs a sign-in, which a switch must not start on its own.
 	if gw, err := currentGateway(); err != nil || (gw == nil && !signedIn()) {
-		agentStep(stderr, "Set-up agents move to hosted Dari on their next `dari <agent>` launch, after you sign in")
+		agentStep(stderr, fmt.Sprintf("Set up agents (%s) still route the old way; sign in with `dari auth login`, then run `dari gateway setup --mode hosted` again to move them", strings.Join(agentNames, ", ")))
 		return
 	}
 	for _, name := range agentNames {
-		if err := moveAgentSetup(ctx, name, stdin, stderr); err != nil {
-			agentPrintln(stderr, fmt.Sprintf("%s still routes the old way (%v); run `dari %s %s`", agentApps[name].name, err, name, agentSetupFlag))
+		// Claude Code and the Claude app are set up apart; each moves only if set up.
+		cli, desktop := true, false
+		if name == "claude" {
+			cli, desktop = claudeCLISetUp(), claudeAppSetUp()
+		}
+		target, applies := agentApps[name].target(cli, desktop)
+		if err := moveAgentSetup(ctx, name, cli, desktop, stdin, stderr); err != nil {
+			flags := agentLaunch{setupCLI: cli, setupDesktop: desktop}.setupFlags()
+			agentPrintln(stderr, fmt.Sprintf("%s still routes the old way (%v); run `dari %s %s`", capitalized(target), err, name, flags))
 			continue
 		}
-		agentStep(stderr, capitalized(agentApps[name].name)+" moved; "+agentApps[name].applies)
+		agentStep(stderr, capitalized(target)+" moved; "+applies)
 	}
 }
 
-func moveAgentSetup(ctx context.Context, name string, stdin io.Reader, stderr io.Writer) error {
+// claudeCLISetUp reports whether Claude Code has Dari set up.
+func claudeCLISetUp() bool {
+	settings, err := claude.SettingsPath()
+	return err == nil && claude.IsCLISetUp(settings)
+}
+
+// claudeAppSetUp reports whether the Claude app has Dari set up.
+func claudeAppSetUp() bool {
+	dir, err := claude.DesktopDir()
+	return err == nil && claude.IsSetUp(dir)
+}
+
+func moveAgentSetup(ctx context.Context, name string, cli, desktop bool, stdin io.Reader, stderr io.Writer) error {
 	key, baseURL, models, err := existingAgentRouting(ctx, name, stdin, stderr)
 	if err != nil {
 		return err
 	}
 	// Keep the user's last model pick, as a launch does.
 	models.Saved = savedAgentModel(name)
-	// The app first: it is the step that can refuse (the Claude app lists only
-	// Claude models), and nothing moves when it does.
-	claudeApp := false
-	if name == "claude" {
-		if dir, err := claude.DesktopDir(); err == nil && claude.IsSetUp(dir) {
-			claudeApp = true
-		}
-	}
-	if claudeApp || name == "openclaw" || name == "hermes" {
-		if err := applyAgentSetup(ctx, name, key, baseURL, models); err != nil {
-			return err
-		}
-	}
-	// Codex's setup is its config; the others write their own settings.
-	_, err = saveAgentConfig(ctx, name, key, baseURL, models)
-	return err
+	return writeAgentSetup(ctx, name, cli, desktop, key, baseURL, models)
 }
 
 // existingAgentRouting is where an agent routes in the current mode, found

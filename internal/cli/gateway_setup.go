@@ -566,7 +566,7 @@ func reportGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, m
 	if !models.Routing && len(models.Enabled) > 0 {
 		hint := "Switch models with /model"
 		if gw.local {
-			hint += ", or turn on auto-routing with `dari gateway auto-routing <dari-api-key>`"
+			hint += ", or turn on auto-routing with `dari accounts auto-routing <dari-api-key>`"
 		}
 		agentPrintln(stderr, fmt.Sprintf("Starting on %s. %s.", startModel(agent, models), hint))
 	}

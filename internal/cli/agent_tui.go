@@ -485,7 +485,7 @@ func titlePanel(width, height int, subtitle string) []string {
 		for _, line := range logo {
 			content = append(content, ansiSilver+padRight(line, logoWidth)+ansiReset)
 		}
-		content = append(content, "", ansiBold+"dari.dev"+ansiReset, ansiGray+subtitle+ansiReset)
+		content = append(content, "", title, ansiGray+subtitle+ansiReset)
 		break
 	}
 	center := func(text string) string {

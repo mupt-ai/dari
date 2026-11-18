@@ -1797,3 +1797,14 @@ func TestAgentPickerKeysIncludePaymentCycling(t *testing.T) {
 		t.Fatalf("keys = %q", got)
 	}
 }
+
+// Esc on the model picker goes back a step; q leaves the command.
+func TestAgentPickerEscGoesBackAndQuitLeaves(t *testing.T) {
+	p := &agentPickerState{rows: []agentPickerRow{{selected: true}}}
+	if _, canceled := p.handleKey("esc"); !canceled || p.quit {
+		t.Fatalf("esc: canceled=%v quit=%v", canceled, p.quit)
+	}
+	if _, canceled := p.handleKey("quit"); !canceled || !p.quit {
+		t.Fatalf("quit: canceled=%v quit=%v", canceled, p.quit)
+	}
+}

@@ -374,7 +374,15 @@ func ensureAgentRouter(
 	for _, model := range models {
 		sources[model.ID] = keyContext.sources(model, modelProviders[model.ID])
 	}
+	// Models, then when Dari picks among them. Esc on the second comes back
+	// to the models as they were chosen; Esc on the models asks before
+	// leaving setup.
 	var choices []agentModelChoice
+	pinningDefault := false
+	if !setup.ownsRouter() {
+		pinningDefault = defaultRouter.SessionPinning
+	}
+	var sessionPinning bool
 	for {
 		routing, err := autoroutingAllowed(ctx, client)
 		if err != nil {
@@ -389,16 +397,40 @@ func ensureAgentRouter(
 			note = []string{"The checked models are recommended. Switch between them with /model.", offer}
 		}
 		choices, err = selectAgentModels(stdin, stderr, title, note, !routing, models, defaultIDs, currentLevels, recommendedLevels, sources)
-		if !errors.Is(err, errAgentWantsAutorouting) {
-			if err != nil {
+		if errors.Is(err, errAgentWantsAutorouting) {
+			// Esc on the auto-routing page comes back to the models.
+			if _, err := getAutorouting(ctx, client, stdin, stderr); err != nil && !errors.Is(err, errAgentChoiceCanceled) {
 				return "", err
 			}
-			break
+			continue
 		}
-		// Esc on the auto-routing page comes back to the models.
-		if _, err := getAutorouting(ctx, client, stdin, stderr); err != nil && !errors.Is(err, errAgentChoiceCanceled) {
+		if errors.Is(err, errAgentChoiceCanceled) {
+			leave, err := runAgentChoiceTUI(stdin, stderr, "Leave setup?", []string{"  " + ansiGray + "Nothing is saved until you finish choosing models." + ansiReset, ""}, []agentChoiceOption{{label: "Keep choosing"}, {label: "Leave setup"}})
+			if (err == nil && leave == 0) || errors.Is(err, errAgentChoiceCanceled) {
+				continue
+			}
+			if err == nil {
+				err = errAgentQuit
+			}
 			return "", err
 		}
+		if err != nil {
+			return "", err
+		}
+		sessionPinning, err = chooseAgentSessionPinning(stdin, stderr, pinningDefault)
+		if errors.Is(err, errAgentChoiceCanceled) {
+			// Back to the models, as they were just chosen.
+			defaultIDs, currentLevels = nil, map[string][]string{}
+			for _, choice := range choices {
+				defaultIDs = append(defaultIDs, choice.ID)
+				currentLevels[choice.ID] = choice.Levels
+			}
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		break
 	}
 	choices = keyContext.withSources(models, choices, modelProviders)
 	agentStep(stderr, "Paying with "+agentSourceSummary(models, choices))
@@ -409,9 +441,7 @@ func ensureAgentRouter(
 		keys.apply(body.ModelProviders, body.ProviderKeySources)
 		body.ProviderCredentialIDs = keys.credentialIDs
 		body.SubscriptionAPIFallbackModels = keys.fallbackModels(defaultRouter.SubscriptionAPIFallbackModels, body.EnabledModels)
-		if body.SessionPinning, err = chooseAgentSessionPinning(stdin, stderr, defaultRouter.SessionPinning); err != nil {
-			return "", err
-		}
+		body.SessionPinning = sessionPinning
 		if len(keys.credentialIDs) > 0 || body.SessionPinning != defaultRouter.SessionPinning || agentRouterNeedsUpdate(defaultRouter, choices) {
 			if defaultRouter, err = putAgentRouter(ctx, client, defaultRouter.ID, body); err != nil {
 				return "", err
@@ -432,10 +462,7 @@ func ensureAgentRouter(
 		if fallback := keys.fallbackModels(nil, body.EnabledModels); fallback != nil {
 			body.SubscriptionAPIFallbackModels = fallback
 		}
-		body.SessionPinning, err = chooseAgentSessionPinning(stdin, stderr, false)
-		if err != nil {
-			return "", err
-		}
+		body.SessionPinning = sessionPinning
 		var created agentRouter
 		createErr := client.Do(ctx, http.MethodPost, "/v1/organizations/current/routers", body, &created)
 		if createErr == nil {
@@ -1041,6 +1068,9 @@ type agentPickerState struct {
 	offset      int
 	editing     bool
 	levelCursor int
+	// quit is set when the picker was left with q or ctrl+c, which leaves the
+	// command, rather than with esc, which goes back.
+	quit bool
 }
 
 func newAgentPickerState(
@@ -1157,7 +1187,10 @@ func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
 			return false, false
 		}
 		return true, false
-	case "quit", "esc":
+	case "esc":
+		return false, true
+	case "quit":
+		p.quit = true
 		return false, true
 	}
 	return false, false
@@ -1176,6 +1209,7 @@ func (p *agentPickerState) handleLevelKey(key string) (done, canceled bool) {
 	case "left", "h", "esc", "enter":
 		p.exitEditing()
 	case "quit":
+		p.quit = true
 		return false, true
 	}
 	return false, false
@@ -1396,7 +1430,7 @@ func chooseAgentSessionPinning(stdin io.Reader, stderr io.Writer, current bool) 
 	if !agentInputIsTerminal(stdin) {
 		return current, nil
 	}
-	choice, err := runAgentChoicePageClosing(stdin, stderr, "When should Dari pick the model?", nil, []agentChoiceOption{
+	choice, err := runAgentChoiceTUI(stdin, stderr, "When should Dari pick the model?", nil, []agentChoiceOption{
 		{label: "Every turn (default)", description: "Dari picks the best model for each request.", done: "Routing every turn"},
 		{label: "Once per session", description: "Dari picks when a session starts and keeps that model. Each subagent gets its own pick, then keeps it.", done: "Routing once per session"},
 	})

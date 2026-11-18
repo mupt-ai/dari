@@ -1187,8 +1187,11 @@ func runAgentPicker(
 					return nil, errAgentWantsAutorouting
 				}
 				done, canceled := p.handleKey(key)
+				if canceled && p.quit {
+					return nil, errAgentQuit
+				}
 				if canceled {
-					return nil, errors.New("model selection canceled")
+					return nil, errAgentChoiceCanceled
 				}
 				if done {
 					return p.choices(), nil
@@ -1296,7 +1299,7 @@ func agentPickerLines(title string, note []string, p *agentPickerState, visible 
 	if p.editing {
 		return append(lines, agentHintLine("↑↓ move", "space toggle thinking level", "← done"))
 	}
-	hints := []string{"↑↓ move", "space toggle", "→ thinking levels", "s payment", "enter confirm", "esc close"}
+	hints := []string{"↑↓ move", "space toggle", "→ thinking levels", "s payment", "enter confirm", "esc back"}
 	// Payment is chosen per model only where a model has more than one
 	// source, never on a gateway.
 	if !slices.ContainsFunc(p.rows, func(row agentPickerRow) bool { return len(row.sources) > 0 }) {

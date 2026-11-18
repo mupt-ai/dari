@@ -84,7 +84,7 @@ func (ui *browserLoginUI) wait(
 		return auth.CallbackResult{}, err
 	}
 	ui.session = session
-	header := pageHeader(session.width, ui.pageSubtitle())
+	header := ui.pageSubtitle()
 
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

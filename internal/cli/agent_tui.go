@@ -9,7 +9,9 @@ import (
 	"os/signal"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -135,6 +137,11 @@ type agentTUISession struct {
 	oldState *term.State
 	// width and height are what remains inside the page margin.
 	width, height int
+	// The last page drawn, drawn again when the terminal is resized.
+	mu       sync.Mutex
+	subtitle string
+	lines    []string
+	resized  chan os.Signal
 }
 
 // agentPageMargin indents every page, under a header, from the terminal's
@@ -161,12 +168,27 @@ func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, 
 		agentScreen.active, agentScreen.stderr = true, stderr
 	}
 	fmt.Fprint(stderr, "\033[?25l")
+	// A resized terminal gets the page laid out again for its new size.
+	session.resized = make(chan os.Signal, 1)
+	signal.Notify(session.resized, syscall.SIGWINCH)
+	go func() {
+		for range session.resized {
+			if w, h, err := term.GetSize(fd); err == nil {
+				session.mu.Lock()
+				session.width, session.height = w-len(agentPageMargin), h-6
+				session.mu.Unlock()
+				session.draw()
+			}
+		}
+	}()
 	return session, nil
 }
 
 // Close returns to the normal screen so the caller can print its summary,
 // unless onboarding holds the screen for its next page.
 func (session *agentTUISession) Close() {
+	signal.Stop(session.resized)
+	close(session.resized)
 	_ = term.Restore(int(session.file.Fd()), session.oldState)
 	if !agentScreen.held {
 		releaseAgentScreen()
@@ -200,17 +222,127 @@ func pageHeader(width int, subtitle string) []string {
 // render draws a page from the top of the screen. Raw mode disables output
 // post-processing, so lines end in \r\n.
 func (session *agentTUISession) render(lines []string) {
-	session.renderPage(agentPageHeader(session.width), lines)
+	session.renderPage("Setting up your coding agent", lines)
 }
 
-func (session *agentTUISession) renderPage(header, lines []string) {
+// renderPage draws a page under the dari.dev title and its subtitle.
+func (session *agentTUISession) renderPage(subtitle string, lines []string) {
+	session.mu.Lock()
+	session.subtitle, session.lines = subtitle, lines
+	session.mu.Unlock()
+	session.draw()
+}
+
+// sidePanelMinWidth is the narrowest title panel worth drawing beside a page.
+const sidePanelMinWidth = 36
+
+// draw lays out the last page for the terminal's size: the title in a panel
+// beside the page when there is room for one, and above it otherwise. No
+// line runs past the terminal's edge.
+func (session *agentTUISession) draw() {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.lines == nil {
+		return
+	}
+	pageWidth := 0
+	for _, line := range session.lines {
+		pageWidth = max(pageWidth, ansiVisibleWidth(line))
+	}
+	const gap = 4
+	var page []string
+	if panel := min(session.width-pageWidth-gap-1, 72); panel >= sidePanelMinWidth {
+		page = besidePanel(session.lines, pageWidth, gap, titlePanel(panel, max(len(session.lines), 9), session.subtitle))
+	} else {
+		page = append(pageHeader(session.width, session.subtitle), session.lines...)
+	}
 	var frame strings.Builder
 	frame.WriteString("\033[H\033[K\r\n")
-	for _, line := range append(header, lines...) {
-		frame.WriteString(agentPageMargin + line + ansiReset + "\033[K\r\n")
+	for _, line := range page {
+		frame.WriteString(agentPageMargin + clipANSI(line, session.width) + ansiReset + "\033[K\r\n")
 	}
 	frame.WriteString("\033[J")
 	_, _ = session.stderr.Write([]byte(frame.String()))
+}
+
+// titlePanel is a rounded panel of the given size with the dari.dev title
+// and subtitle at its center.
+func titlePanel(width, height int, subtitle string) []string {
+	inner := width - 2
+	title := ansiCoral + "⑂" + ansiReset + " " + ansiBold + "dari.dev" + ansiReset
+	center := func(text string) string {
+		pad := inner - ansiVisibleWidth(text)
+		return ansiGray + "│" + ansiReset + strings.Repeat(" ", pad/2) + text + strings.Repeat(" ", pad-pad/2) + ansiGray + "│" + ansiReset
+	}
+	lines := []string{ansiGray + "╭" + strings.Repeat("─", inner) + "╮" + ansiReset}
+	top := (height-2-2)/2
+	for row := 0; row < height-2; row++ {
+		switch row {
+		case top:
+			lines = append(lines, center(title))
+		case top + 1:
+			lines = append(lines, center(ansiGray+subtitle+ansiReset))
+		default:
+			lines = append(lines, center(""))
+		}
+	}
+	return append(lines, ansiGray+"╰"+strings.Repeat("─", inner)+"╯"+ansiReset)
+}
+
+// besidePanel sets the page's lines in a column of pageWidth and the panel
+// to their right.
+func besidePanel(lines []string, pageWidth, gap int, panel []string) []string {
+	out := []string{}
+	for i := 0; i < max(len(lines), len(panel)); i++ {
+		left := ""
+		if i < len(lines) {
+			left = lines[i]
+		}
+		right := ""
+		if i < len(panel) {
+			right = panel[i]
+		}
+		out = append(out, left+ansiReset+strings.Repeat(" ", pageWidth-ansiVisibleWidth(left)+gap)+right)
+	}
+	return out
+}
+
+// clipANSI cuts a styled line to width visible cells, keeping its escape
+// sequences.
+func clipANSI(line string, width int) string {
+	if width <= 0 || ansiVisibleWidth(line) <= width {
+		return line
+	}
+	var out strings.Builder
+	visible := 0
+	for i := 0; i < len(line); {
+		if line[i] == '\033' {
+			j := i + 1
+			if j < len(line) && line[j] == ']' {
+				// OSC, through its ST.
+				for j < len(line) && !(line[j] == '\\' && line[j-1] == '\033') {
+					j++
+				}
+			} else {
+				for j < len(line) && !((line[j] >= 'A' && line[j] <= 'Z') || (line[j] >= 'a' && line[j] <= 'z')) {
+					j++
+				}
+			}
+			j = min(j+1, len(line))
+			out.WriteString(line[i:j])
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if visible >= width {
+			i += size
+			continue
+		}
+		out.WriteRune(r)
+		visible++
+		i += size
+	}
+	return out.String()
 }
 
 // clipText shortens plain text to width cells, marking the cut with an
@@ -379,11 +511,12 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 	headings := []int{}
 	// Boxed options share one width, the widest of them.
 	boxWidth := 0
-	for _, option := range options {
+	for index, option := range options {
 		if option.boxed {
-			boxWidth = max(boxWidth, ansiVisibleWidth(option.label))
+			number := len(fmt.Sprintf("[%d] ", index+1))
+			boxWidth = max(boxWidth, number+ansiVisibleWidth(option.label))
 			for _, detail := range option.details {
-				boxWidth = max(boxWidth, ansiVisibleWidth(strings.TrimPrefix(detail, "  ")))
+				boxWidth = max(boxWidth, number+ansiVisibleWidth(strings.TrimPrefix(detail, "  ")))
 			}
 		}
 	}
@@ -405,24 +538,18 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 			label = ansiCoral + number + ansiReset + " " + ansiBold + option.label + ansiReset
 		}
 		if option.boxed {
-			// The number stays in line with the others, and the box follows it,
-			// taking the cursor's color under the cursor.
-			edge, mark := ansiGray, number
+			// The box holds its number, in line with the other numbers; the box
+			// under the cursor takes the cursor's color in place of the ❯.
+			edge := ansiGray
 			if index == cursor {
-				edge, mark = ansiCoral, ansiCoral+number+ansiReset
-			}
-			rows := []string{option.label}
-			for _, detail := range option.details {
-				rows = append(rows, strings.TrimPrefix(detail, "  "))
+				edge = ansiCoral
 			}
 			indent := strings.Repeat(" ", len(number)+1)
-			for i, line := range agentBox(rows, boxWidth, edge) {
-				prefix := "  " + indent
-				if i == 1 {
-					prefix = agentCursor(index == cursor) + mark + " "
-				}
-				lines = append(lines, prefix+line)
+			rows := []string{label}
+			for _, detail := range option.details {
+				rows = append(rows, indent+strings.TrimPrefix(detail, "  "))
 			}
+			lines = append(lines, agentBox(rows, boxWidth, edge)...)
 			continue
 		}
 		line := agentCursor(index == cursor) + label

@@ -357,11 +357,12 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 	lines := append([]string{agentPromptLine(prompt)}, details...)
 	for index, option := range options {
 		if option.heading != "" {
-			lines = append(lines, "", "  "+ansiBold+option.heading+ansiReset)
+			rule := strings.Repeat("─", max(3, 44-len([]rune(option.heading))))
+			lines = append(lines, "", "  "+ansiBold+option.heading+ansiReset+" "+ansiGray+rule+ansiReset, "")
 		} else if option.gap {
 			lines = append(lines, "")
 		}
-		label := fmt.Sprintf("%d. %s", index+1, option.label)
+		label := fmt.Sprintf("[%d] %s", index+1, option.label)
 		if index == cursor {
 			label = ansiBold + label + ansiReset
 		}
@@ -374,7 +375,7 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 			lines = append(lines, "     "+ansiGray+option.description+ansiReset)
 		}
 		for _, detail := range option.details {
-			lines = append(lines, "     "+detail)
+			lines = append(lines, "    "+detail)
 		}
 	}
 	return append(lines, agentHintLine("↑↓ move", "enter confirm", escHint))

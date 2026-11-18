@@ -280,14 +280,14 @@ func TestAgentChoiceLinesNumberGroupedAccounts(t *testing.T) {
 		{label: "Add a subscription"},
 	}, 2, "esc close")
 	got := stripANSI(strings.Join(lines[1:], "\n"))
-	want := "\n  Subscriptions\n" +
-		"  1. Claude Code  CLAUDE\n" +
-		"       › 5 Hour · 40% used · Resets " + usageResetTime(resets) + "\n" +
-		"\n  API Keys\n" +
-		"  2. Vercel AI Gateway\n" +
+	want := "\n  Subscriptions " + strings.Repeat("─", 31) + "\n\n" +
+		"  [1] Claude Code  CLAUDE\n" +
+		"      5 Hour  ▰▰▰▰▱▱▱▱▱▱   40% used · resets " + usageResetTime(resets) + "\n" +
+		"\n  API Keys " + strings.Repeat("─", 36) + "\n\n" +
+		"  [2] Vercel AI Gateway\n" +
 		"\n" +
-		"❯ 3. Done\n" +
-		"  4. Add a subscription\n" +
+		"❯ [3] Done\n" +
+		"  [4] Add a subscription\n" +
 		"  ↑↓ move · enter confirm · esc close"
 	if got != want {
 		t.Fatalf("lines:\n%s\nwant:\n%s", got, want)

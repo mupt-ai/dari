@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"cmp"
 	"context"
+	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/mupt-ai/dari/internal/api"
 )
@@ -84,16 +87,55 @@ func subscriptionLabel(subscription subscriptionCredential, showProvider bool) s
 	return label
 }
 
-// subscriptionDetailLines are a subscription's usage, model limits, and
-// renewal, one gray line each.
+// subscriptionDetailLines are a subscription's quota windows and models at
+// their own limit, each a meter with its reset, then its renewal.
 func subscriptionDetailLines(subscription subscriptionCredential) []string {
+	type meter struct {
+		label  string
+		used   float64
+		resets time.Time
+	}
+	meters := []meter{}
+	now := time.Now()
+	if subscription.Usage != nil {
+		for _, window := range subscription.Usage.Windows {
+			resets, err := time.Parse(time.RFC3339Nano, window.ResetsAt)
+			if err == nil && resets.After(now) {
+				meters = append(meters, meter{window.Label, window.Utilization, resets})
+			}
+		}
+	}
+	for _, hold := range activeModelHolds(subscription, now) {
+		// A full Fable window already says its models are at their limit.
+		if fableWindowFull(subscription) && strings.HasPrefix(hold.Model, "anthropic/claude-fable-") {
+			continue
+		}
+		resets, _ := time.Parse(time.RFC3339Nano, hold.UnavailableUntil)
+		meters = append(meters, meter{cmp.Or(hold.DisplayName, hold.Model), 1, resets})
+	}
+	width := 0
+	for _, m := range meters {
+		width = max(width, len([]rune(m.label)))
+	}
 	lines := []string{}
-	for _, detail := range subscriptionDetails(subscription) {
-		detail = strings.Replace(detail, usageLimitReached, ansiRed+usageLimitReached+ansiGray, 1)
-		lines = append(lines, "  "+ansiGray+"› "+detail+ansiReset)
+	for _, m := range meters {
+		label := m.label + strings.Repeat(" ", width-len([]rune(m.label)))
+		filled := min(usageMeterWidth, int(m.used*usageMeterWidth+0.5))
+		bar := ansiReset + strings.Repeat("▰", filled) + ansiGray + strings.Repeat("▱", usageMeterWidth-filled)
+		used := fmt.Sprintf("%3.0f%% used", m.used*100)
+		if m.used >= 1 {
+			bar = ansiRed + strings.Repeat("▰", usageMeterWidth) + ansiGray
+			used = ansiRed + usageLimitReached + ansiGray
+		}
+		lines = append(lines, "  "+ansiGray+label+"  "+bar+"  "+used+" · resets "+usageResetTime(m.resets)+ansiReset)
+	}
+	if renews, err := time.Parse(time.RFC3339, subscription.SafeMetadata["renews_at"]); err == nil && renews.After(now) {
+		lines = append(lines, "  "+ansiGray+"Renews "+renews.Local().Format("Jan 2")+ansiReset)
 	}
 	return lines
 }
+
+const usageMeterWidth = 10
 
 // subscriptionProviderFor names the provider of a stored subscription.
 func subscriptionProviderFor(oauthProvider string) agentSubscriptionProvider {

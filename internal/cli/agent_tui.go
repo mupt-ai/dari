@@ -387,15 +387,20 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 			label = ansiBold + label + ansiReset
 		}
 		if option.boxed {
+			// The box under the cursor takes the cursor's color.
+			edge := ansiGray
+			if index == cursor {
+				edge = ansiCoral
+			}
 			row := func(text string) string {
-				return ansiGray + "│" + ansiReset + " " + text + strings.Repeat(" ", max(0, boxWidth-ansiVisibleWidth(text))) + " " + ansiGray + "│" + ansiReset
+				return edge + "│" + ansiReset + " " + text + strings.Repeat(" ", max(0, boxWidth-ansiVisibleWidth(text))) + " " + edge + "│" + ansiReset
 			}
 			border := strings.Repeat("─", boxWidth+2)
-			lines = append(lines, "  "+ansiGray+"╭"+border+"╮"+ansiReset, agentCursor(index == cursor)+row(label))
+			lines = append(lines, "  "+edge+"╭"+border+"╮"+ansiReset, agentCursor(index == cursor)+row(label))
 			for _, detail := range option.details {
 				lines = append(lines, "  "+row("  "+detail))
 			}
-			lines = append(lines, "  "+ansiGray+"╰"+border+"╯"+ansiReset)
+			lines = append(lines, "  "+edge+"╰"+border+"╯"+ansiReset)
 			continue
 		}
 		line := agentCursor(index == cursor) + label

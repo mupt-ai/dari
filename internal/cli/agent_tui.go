@@ -464,9 +464,21 @@ func scrollToFocus(page []string, rows int) []string {
 	if rows < 4 || len(page) <= rows {
 		return page
 	}
-	body, hints := page[:len(page)-1], page[len(page)-1]
+	// The keys at the bottom stay put: the lines after the last blank line,
+	// when there are only a few.
+	split := len(page) - 1
+	for i := len(page) - 1; i > 0 && i >= len(page)-6; i-- {
+		if strings.TrimSpace(stripAgentANSI(page[i])) == "" {
+			split = i + 1
+			break
+		}
+	}
+	body, keys := page[:split], page[split:]
 	// A line above and below say whether more is there.
-	window := rows - 3
+	window := rows - 2 - len(keys)
+	if window < 1 {
+		return page[len(page)-rows:]
+	}
 	first, last := -1, -1
 	for i, line := range body {
 		if strings.Contains(line, agentFocusMark) {
@@ -491,7 +503,7 @@ func scrollToFocus(page []string, rows int) []string {
 		below = ansiGray + "  ↓ more" + ansiReset
 	}
 	shown := append([]string{above}, body[start:start+window]...)
-	return append(shown, below, hints)
+	return append(append(shown, below), keys...)
 }
 
 // titlePanel is a rounded panel of the given size with the dari.dev title and

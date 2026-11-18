@@ -119,7 +119,7 @@ func connectAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader
 	// Credentials that need more than one key are added in the web app.
 	webApp := agentWebAppURL(ctx, client, "/credentials")
 	options = append(options,
-		agentChoiceOption{label: "AWS Bedrock, Microsoft Azure, or other", note: "opens the Dari web app"},
+		agentChoiceOption{label: "AWS Bedrock, Microsoft Azure, or other " + ansiGray + "(opens the Dari web app)" + ansiReset},
 		agentChoiceOption{label: "Back", gap: true},
 	)
 	// Esc on the key's input comes back to this list.

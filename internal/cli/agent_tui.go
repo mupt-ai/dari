@@ -81,6 +81,7 @@ func holdAgentScreen() {
 // releaseAgentScreen returns to the normal screen and prints the lines held
 // for it.
 func releaseAgentScreen() {
+	stopAgentSpinner()
 	if agentScreen.signals != nil {
 		signal.Stop(agentScreen.signals)
 		close(agentScreen.signals)
@@ -114,6 +115,48 @@ func agentHintLine(hints ...string) string {
 
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
+// agentSpinnerFrames spin while something the user started is still running.
+var agentSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+var agentSpinner struct{ stop, done chan struct{} }
+
+// startAgentSpinner draws a spinner frame through draw every 80ms until
+// stopAgentSpinner, starting only once the wait is long enough to notice.
+func startAgentSpinner(draw func(frame string)) {
+	stopAgentSpinner()
+	stop, done := make(chan struct{}), make(chan struct{})
+	agentSpinner.stop, agentSpinner.done = stop, done
+	go func() {
+		defer close(done)
+		select {
+		case <-stop:
+			return
+		case <-time.After(150 * time.Millisecond):
+		}
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+		for i := 0; ; i++ {
+			draw(agentSpinnerFrames[i%len(agentSpinnerFrames)])
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+// stopAgentSpinner stops the spinner and waits for its last frame, so the
+// next page draws over it.
+func stopAgentSpinner() {
+	if agentSpinner.stop == nil {
+		return
+	}
+	close(agentSpinner.stop)
+	<-agentSpinner.done
+	agentSpinner.stop, agentSpinner.done = nil, nil
+}
+
 // agentBox draws rows in a rounded box of the given inner width, or the
 // widest row's when width is 0, its edge in the given color.
 func agentBox(rows []string, width int, edge string) []string {
@@ -212,6 +255,8 @@ type agentTUISession struct {
 const agentPageMargin = "  "
 
 func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, error) {
+	// A new page ends the last one's wait.
+	stopAgentSpinner()
 	file, ok := stdin.(*os.File)
 	if !ok {
 		return nil, errors.New("interactive onboarding requires a terminal")
@@ -577,6 +622,9 @@ type agentChoiceOption struct {
 	details []string
 	// boxed draws a rounded box around the option and its details.
 	boxed bool
+	// busy is a spinner frame shown in place of the number while the
+	// option's action runs.
+	busy string
 }
 
 // runAgentChoiceTUI asks one question, with optional detail lines between the
@@ -650,6 +698,17 @@ func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, summar
 	if err == nil && options[choice].done != "" {
 		agentStep(stderr, options[choice].done)
 	}
+	// While what was chosen runs, a spinner stands in for its number, until
+	// the next page draws or the screen is given back.
+	if err == nil && agentScreen.held {
+		startAgentSpinner(func(frame string) {
+			session.renderLayout("Setting up your coding agent", func(width int) []string {
+				busy := slices.Clone(options)
+				busy[choice].busy = frame
+				return agentChoiceLines(prompt, summary, details, busy, choice, escHint, width)
+			})
+		})
+	}
 	return choice, err
 }
 
@@ -703,6 +762,10 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 		}
 		// The number under the cursor takes the cursor's color.
 		number := fmt.Sprintf("[%d]", index+1)
+		numberWidth := len(number)
+		if option.busy != "" {
+			number = strings.Repeat(" ", (numberWidth-1)/2) + option.busy + strings.Repeat(" ", numberWidth/2)
+		}
 		label := number + " " + option.label
 		if index == cursor {
 			label = ansiCoral + number + ansiReset + " " + ansiBold + option.label + ansiReset
@@ -714,7 +777,7 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 			if index == cursor {
 				edge = ansiCoral
 			}
-			indent := strings.Repeat(" ", len(number)+1)
+			indent := strings.Repeat(" ", numberWidth+1)
 			// What wraps of the first row continues under the label, not the number.
 			first := wrapColumns(label, fit(boxWidth))
 			rows := []string{first[0]}
@@ -919,7 +982,7 @@ func runAgentTextInputTUI(stdin io.Reader, stderr io.Writer, title string, detai
 	input := agentCodeInputState{}
 	status := ""
 	buf := make([]byte, 4096)
-	for {
+	page := func(cursor string) []string {
 		lines := append([]string{agentPromptLine(title)}, details...)
 		if len(details) > 0 {
 			lines = append(lines, "")
@@ -928,11 +991,14 @@ func runAgentTextInputTUI(stdin io.Reader, stderr io.Writer, title string, detai
 		if placeholder != "" {
 			display = inputDisplay(input.value, session.width, placeholder)
 		}
-		lines = append(lines, agentCursor(true)+display)
+		lines = append(lines, cursor+display)
 		if status != "" {
 			lines = append(lines, "  "+ansiRed+status+ansiReset)
 		}
-		session.render(append(lines, agentHintLine("enter save", "esc back")))
+		return append(lines, "", agentHintLine("enter save", "esc back"))
+	}
+	for {
+		session.render(page(agentCursor(true)))
 		n, readErr := session.file.Read(buf)
 		// A lone escape byte is the esc key; arrows and other keys arrive as
 		// longer sequences in one read.
@@ -949,7 +1015,12 @@ func runAgentTextInputTUI(stdin io.Reader, stderr io.Writer, title string, detai
 				status = "Enter a value, or press esc to go back."
 				continue
 			}
-			if err := submit(value); err != nil {
+			// A spinner stands in for the cursor while the value is saved.
+			status = ""
+			startAgentSpinner(func(frame string) { session.render(page(ansiCoral + frame + " " + ansiReset)) })
+			err := submit(value)
+			stopAgentSpinner()
+			if err != nil {
 				status = err.Error()
 				continue
 			}

@@ -509,16 +509,26 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			})
 		}
 		if resettable {
-			label := "Use banked resets when every " + provider.name + " subscription is exhausted"
+			// The setting shows its state, and changing it asks first, so a
+			// stray number key changes nothing.
+			state, turn, keep := ansiGray+"Off"+ansiReset, "Turn on", "Keep off"
 			if subscription.AutoRedeemResets {
-				label = "Stop using banked resets"
+				state, turn, keep = ansiGreen+"On"+ansiReset, "Turn off", "Keep on"
 			}
-			// Resets are listed first; how Dari spends them follows them.
-			toggle := agentChoiceOption{label: label}
+			toggle := agentChoiceOption{label: "Use automatically: " + state}
 			if len(resets) == 0 {
 				toggle.heading = "Banked Resets"
 			}
 			add(toggle, func() (bool, error) {
+				explain := []string{
+					"  " + ansiGray + "When every " + provider.name + " subscription is at its limit, Dari spends one" + ansiReset,
+					"  " + ansiGray + "banked reset so requests keep going. Now: " + ansiReset + state,
+					"",
+				}
+				confirm, err := runAgentChoiceTUI(stdin, stderr, "Use banked resets automatically?", explain, []agentChoiceOption{{label: keep}, {label: turn}})
+				if err != nil || confirm == 0 {
+					return false, err
+				}
 				var updated map[string]any
 				return true, api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
 			})
@@ -535,7 +545,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			})
 		}
 		add(agentChoiceOption{label: "Rename"}, func() (bool, error) {
-			return runAgentTextInputTUI(stdin, stderr, "Rename "+name, []string{"  " + ansiGray + "Leave empty to show the account email." + ansiReset, ""}, name, func(label string) error {
+			return runAgentTextInputTUI(stdin, stderr, "Rename "+name, []string{"  " + ansiGray + "Leave empty to show the account email." + ansiReset}, name, func(label string) error {
 				var updated map[string]any
 				return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/label", map[string]string{"label": strings.TrimSpace(label)}, &updated))
 			})

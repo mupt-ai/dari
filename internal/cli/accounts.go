@@ -205,7 +205,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 			}
 		}
 		if i := slices.IndexFunc(subscriptions, func(c subscriptionCredential) bool { return c.Name == reopen }); i >= 0 {
-			outcome, err := page.manageSubscription(ctx, subscriptions[i], resets[reopen], stdin, stderr)
+			outcome, err := page.manageSubscription(ctx, subscriptions[i], subscriptions, resets[reopen], stdin, stderr)
 			if err != nil {
 				return result, err
 			}
@@ -285,7 +285,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 			// A blank line between subscriptions keeps each one's meters with it.
 			option.gap = i > 0
 			add(option, func() (bool, error) {
-				outcome, err := page.manageSubscription(ctx, subscription, resets[subscription.Name], stdin, stderr)
+				outcome, err := page.manageSubscription(ctx, subscription, subscriptions, resets[subscription.Name], stdin, stderr)
 				changed = outcome != subscriptionPageBack
 				if outcome == subscriptionPageActed {
 					reopen = subscription.Name
@@ -436,7 +436,7 @@ func (page accountsPage) addSubscription(ctx context.Context, subscriptions []su
 // manageSubscription is one subscription's page: its usage in a box like the
 // list's, its banked resets to use, and its settings. It shows itself again
 // after anything that changed nothing, and otherwise reports how it was left.
-func (page accountsPage) manageSubscription(ctx context.Context, subscription subscriptionCredential, prefetched *resetsFetch, stdin io.Reader, stderr io.Writer) (subscriptionPageOutcome, error) {
+func (page accountsPage) manageSubscription(ctx context.Context, subscription subscriptionCredential, all []subscriptionCredential, prefetched *resetsFetch, stdin io.Reader, stderr io.Writer) (subscriptionPageOutcome, error) {
 	name := subscriptionName(subscription)
 	provider := subscriptionProviderFor(subscription.OAuthProvider)
 	path := "/v1/organizations/current/credentials/" + url.PathEscape(subscription.Name)
@@ -449,12 +449,25 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 		}
 		resets, resetsErr = prefetched.wait()
 	}
-	columns := subscriptionColumnsFor([]subscriptionCredential{subscription})
-	rows := []string{subscriptionLabel(subscription, true, columns)}
-	// Without a number before the name, the meters start where it does.
-	for _, detail := range subscriptionDetailLines(subscription, columns) {
-		rows = append(rows, strings.TrimPrefix(detail, "  "))
+	// Every subscription's page lays out its box the same: the list's columns,
+	// and the width of the widest subscription's box.
+	columns := subscriptionColumnsFor(all)
+	summary := func(subscription subscriptionCredential) []string {
+		rows := []string{subscriptionLabel(subscription, true, columns)}
+		// Without a number before the name, the meters start where it does.
+		for _, detail := range subscriptionDetailLines(subscription, columns) {
+			rows = append(rows, strings.TrimPrefix(detail, "  "))
+		}
+		return rows
 	}
+	boxWidth := 0
+	for _, other := range all {
+		for _, row := range summary(other) {
+			boxWidth = max(boxWidth, ansiVisibleWidth(row))
+		}
+	}
+	rows := summary(subscription)
+	rows[0] += strings.Repeat(" ", max(0, boxWidth-ansiVisibleWidth(rows[0])))
 	details := []string{}
 	if resettable && resetsErr != nil {
 		details = append(details, "", "  "+ansiGray+"Couldn't read banked resets: "+resetsErr.Error()+ansiReset)

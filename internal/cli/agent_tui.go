@@ -436,8 +436,8 @@ func (session *agentTUISession) draw() {
 		page = besidePanel(lines, pageWidth, gap, titlePanel(panel, height, session.subtitle))
 	} else if header := pageHeader(session.width, session.subtitle); session.panel && (rows <= 0 || rows-len(header) >= 10) {
 		page = append(header, fit(lines, rows-len(header))...)
-	} else if header := pageHeader(session.width, session.subtitle); agentSetupHeader && (rows <= 0 || rows-len(header) >= 10) {
-		// Setup's pages keep the small title.
+	} else if header := pageHeader(session.width, session.subtitle); agentSetupHeader && (rows <= 0 || rows-len(header) >= len(lines)) {
+		// Setup's pages keep the small title when the whole page fits under it.
 		page = append(header, fit(lines, rows-len(header))...)
 	} else {
 		// Pages past the first carry no title, nor does a first page with

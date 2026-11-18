@@ -460,9 +460,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 	for _, detail := range subscriptionDetailLines(subscription, columns) {
 		rows = append(rows, strings.TrimPrefix(detail, "  "))
 	}
-	// The box's left edge lines up with the sections' ◆, its text with their
-	// titles.
-	details := agentBox(rows, 0, ansiGray)
+	details := []string{}
 	if resettable && resetsErr != nil {
 		details = append(details, "", "  "+ansiGray+"Couldn't read banked resets: "+resetsErr.Error()+ansiReset)
 	} else if resettable && len(resets) == 0 {
@@ -544,7 +542,9 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 		options[settings].heading = "Settings"
 		options = append(options, agentChoiceOption{label: "Back"})
 
-		choice, err := runAgentChoiceTUI(stdin, stderr, "", details, options)
+		// The summary box's left edge lines up with the sections' ◆, its text
+		// with their titles.
+		choice, err := runAgentSummaryChoiceTUI(stdin, stderr, rows, details, options)
 		if errors.Is(err, errAgentChoiceCanceled) || (err == nil && choice == len(actions)) {
 			return subscriptionPageBack, nil
 		}

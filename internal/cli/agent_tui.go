@@ -111,10 +111,18 @@ func agentHintLine(hints ...string) string {
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
 // agentBox draws rows in a rounded box of the given inner width, or the
-// widest row's when wider, its edge in the given color.
+// widest row's when width is 0, its edge in the given color.
 func agentBox(rows []string, width int, edge string) []string {
-	for _, row := range rows {
-		width = max(width, ansiVisibleWidth(row))
+	if width <= 0 {
+		for _, row := range rows {
+			width = max(width, ansiVisibleWidth(row))
+		}
+	}
+	// A row too long for the box ends in an ellipsis.
+	for i, row := range rows {
+		if ansiVisibleWidth(row) > width {
+			rows[i] = clipANSI(row, max(width-1, 0)) + ansiReset + ansiGray + "…" + ansiReset
+		}
 	}
 	border := strings.Repeat("─", width+2)
 	lines := []string{edge + "╭" + border + "╮" + ansiReset}
@@ -140,8 +148,10 @@ type agentTUISession struct {
 	// The last page drawn, drawn again when the terminal is resized.
 	mu       sync.Mutex
 	subtitle string
-	lines    []string
+	build    func(width int) []string
 	resized  chan os.Signal
+	// panel draws the title beside the page, on a command's first page only.
+	panel bool
 }
 
 // agentPageMargin indents every page, under a header, from the terminal's
@@ -227,8 +237,14 @@ func (session *agentTUISession) render(lines []string) {
 
 // renderPage draws a page under the dari.dev title and its subtitle.
 func (session *agentTUISession) renderPage(subtitle string, lines []string) {
+	session.renderLayout(subtitle, func(int) []string { return lines })
+}
+
+// renderLayout draws a page that lays itself out for a width, again whenever
+// the terminal is resized.
+func (session *agentTUISession) renderLayout(subtitle string, build func(width int) []string) {
 	session.mu.Lock()
-	session.subtitle, session.lines = subtitle, lines
+	session.subtitle, session.build = subtitle, build
 	session.mu.Unlock()
 	session.draw()
 }
@@ -242,19 +258,22 @@ const sidePanelMinWidth = 36
 func (session *agentTUISession) draw() {
 	session.mu.Lock()
 	defer session.mu.Unlock()
-	if session.lines == nil {
+	if session.build == nil {
 		return
 	}
+	lines := session.build(session.width)
 	pageWidth := 0
-	for _, line := range session.lines {
+	for _, line := range lines {
 		pageWidth = max(pageWidth, ansiVisibleWidth(line))
 	}
 	const gap = 4
 	var page []string
-	if panel := min(session.width-pageWidth-gap-1, 72); panel >= sidePanelMinWidth {
-		page = besidePanel(session.lines, pageWidth, gap, titlePanel(panel, max(len(session.lines), 9), session.subtitle))
+	if panel := min(session.width-pageWidth-gap-1, 72); session.panel && panel >= sidePanelMinWidth {
+		// Taller than the page when the terminal has room, so the wordmark fits.
+		height := max(len(lines), min(len(dariLogo)+len(dariWordmark)+7, session.height+4))
+		page = besidePanel(lines, pageWidth, gap, titlePanel(panel, height, session.subtitle))
 	} else {
-		page = append(pageHeader(session.width, session.subtitle), session.lines...)
+		page = append(pageHeader(session.width, session.subtitle), lines...)
 	}
 	var frame strings.Builder
 	frame.WriteString("\033[H\033[K\r\n")
@@ -265,24 +284,30 @@ func (session *agentTUISession) draw() {
 	_, _ = session.stderr.Write([]byte(frame.String()))
 }
 
-// titlePanel is a rounded panel of the given size with the dari.dev title
-// and subtitle at its center.
+// titlePanel is a rounded panel of the given size with Dari's mark, the
+// dari.dev wordmark, and the subtitle at its center: as much of them as fits.
 func titlePanel(width, height int, subtitle string) []string {
 	inner := width - 2
 	title := ansiCoral + "⑂" + ansiReset + " " + ansiBold + "dari.dev" + ansiReset
+	content := []string{title, ansiGray + subtitle + ansiReset}
+	logoWidth := ansiVisibleWidth(dariLogo[0])
+	switch {
+	case inner >= logoWidth+4 && height-2 >= len(dariLogo)+len(dariWordmark)+5:
+		content = append(append(append([]string{}, dariLogo...), ""), dariWordmark...)
+		content = append(content, "", ansiGray+subtitle+ansiReset)
+	case inner >= logoWidth+4 && height-2 >= len(dariLogo)+5:
+		content = append(append(append([]string{}, dariLogo...), ""), ansiBold+"dari.dev"+ansiReset, ansiGray+subtitle+ansiReset)
+	}
 	center := func(text string) string {
-		pad := inner - ansiVisibleWidth(text)
+		pad := max(inner-ansiVisibleWidth(text), 0)
 		return ansiGray + "│" + ansiReset + strings.Repeat(" ", pad/2) + text + strings.Repeat(" ", pad-pad/2) + ansiGray + "│" + ansiReset
 	}
 	lines := []string{ansiGray + "╭" + strings.Repeat("─", inner) + "╮" + ansiReset}
-	top := (height-2-2)/2
+	top := (height - 2 - len(content)) / 2
 	for row := 0; row < height-2; row++ {
-		switch row {
-		case top:
-			lines = append(lines, center(title))
-		case top + 1:
-			lines = append(lines, center(ansiGray+subtitle+ansiReset))
-		default:
+		if i := row - top; i >= 0 && i < len(content) {
+			lines = append(lines, center(content[i]))
+		} else {
 			lines = append(lines, center(""))
 		}
 	}
@@ -443,21 +468,27 @@ type agentChoiceOption struct {
 // runAgentChoiceTUI is a page nested in another: esc goes back to it, which
 // the caller sees as errAgentChoiceCanceled.
 func runAgentChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption) (int, error) {
-	return runAgentChoicePage(stdin, stderr, prompt, details, options, "esc back")
+	return runAgentChoicePage(stdin, stderr, prompt, nil, details, options, "esc back")
 }
 
 // runAgentRootChoiceTUI is a command's first page, which esc closes.
 func runAgentRootChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption) (int, error) {
-	return runAgentChoicePage(stdin, stderr, prompt, details, options, "esc close")
+	return runAgentChoicePage(stdin, stderr, prompt, nil, details, options, "esc close")
 }
 
 // runAgentChoicePageClosing is a setup step that esc leaves setup from,
 // labeled so.
 func runAgentChoicePageClosing(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption) (int, error) {
-	return runAgentChoicePage(stdin, stderr, prompt, details, options, "esc close")
+	return runAgentChoicePage(stdin, stderr, prompt, nil, details, options, "esc close")
 }
 
-func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption, escHint string) (int, error) {
+// runAgentSummaryChoiceTUI is a nested page that opens with summary rows in a
+// box sized to the terminal.
+func runAgentSummaryChoiceTUI(stdin io.Reader, stderr io.Writer, summary, details []string, options []agentChoiceOption) (int, error) {
+	return runAgentChoicePage(stdin, stderr, "", summary, details, options, "esc back")
+}
+
+func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, summary, details []string, options []agentChoiceOption, escHint string) (int, error) {
 	if len(options) == 0 {
 		return 0, errors.New("interactive selection has no options")
 	}
@@ -470,7 +501,11 @@ func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, detail
 		cursor := 0
 		buf := make([]byte, 256)
 		for {
-			session.render(agentChoiceLines(prompt, details, options, cursor, escHint))
+			at := cursor
+			session.panel = escHint == "esc close"
+			session.renderLayout("Setting up your coding agent", func(width int) []string {
+				return agentChoiceLines(prompt, summary, details, options, at, escHint, width)
+			})
 			n, readErr := session.file.Read(buf)
 			for _, key := range parseAgentPickerKeys(buf[:n]) {
 				switch key {
@@ -501,11 +536,25 @@ func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, detail
 	return choice, err
 }
 
-func agentChoiceLines(prompt string, details []string, options []agentChoiceOption, cursor int, escHint string) []string {
+func agentChoiceLines(prompt string, summary, details []string, options []agentChoiceOption, cursor int, escHint string, width int) []string {
 	// A page whose options are grouped under headings may have no title.
 	lines := []string{}
 	if prompt != "" {
 		lines = append(lines, agentPromptLine(prompt))
+	}
+	// Boxes shrink to fit a narrow terminal: 4 cells go to their edges.
+	fit := func(inner int) int {
+		if width > 0 {
+			return max(min(inner, width-4), 8)
+		}
+		return inner
+	}
+	if len(summary) > 0 {
+		inner := 0
+		for _, row := range summary {
+			inner = max(inner, ansiVisibleWidth(row))
+		}
+		lines = append(lines, agentBox(slices.Clone(summary), fit(inner), ansiGray)...)
 	}
 	lines = append(lines, details...)
 	headings := []int{}
@@ -549,7 +598,7 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 			for _, detail := range option.details {
 				rows = append(rows, indent+strings.TrimPrefix(detail, "  "))
 			}
-			lines = append(lines, agentBox(rows, boxWidth, edge)...)
+			lines = append(lines, agentBox(rows, fit(boxWidth), edge)...)
 			continue
 		}
 		line := agentCursor(index == cursor) + label
@@ -565,15 +614,18 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 		}
 	}
 	// Each heading's rule runs to the right edge of the widest line.
-	width := 0
+	ruleEnd := 0
 	for i, line := range lines {
 		if !slices.Contains(headings, i) {
-			width = max(width, ansiVisibleWidth(line))
+			ruleEnd = max(ruleEnd, ansiVisibleWidth(line))
 		}
+	}
+	if width > 0 {
+		ruleEnd = min(ruleEnd, width)
 	}
 	for _, i := range headings {
 		title := agentPromptLine(lines[i])
-		lines[i] = title + " " + ansiGray + strings.Repeat("─", max(3, width-ansiVisibleWidth(title)-1)) + ansiReset
+		lines[i] = title + " " + ansiGray + strings.Repeat("─", max(3, ruleEnd-ansiVisibleWidth(title)-1)) + ansiReset
 	}
 	return append(lines, "", agentHintLine("↑↓ move", "enter confirm", escHint))
 }

@@ -67,24 +67,35 @@ func agentSubscriptionProviders(agent string) []agentSubscriptionProvider {
 // subscriptionLines is one subscription: its provider, name, and plan, then
 // a line for each quota window, each model at its own limit, and its renewal.
 func subscriptionLines(subscription subscriptionCredential, showProvider bool) []string {
-	lines := []string{"  " + ansiGray + "•" + ansiReset + " " + subscriptionLabel(subscription, showProvider)}
+	lines := []string{"  " + ansiGray + "•" + ansiReset + " " + subscriptionLabel(subscription, showProvider, 0)}
 	for _, detail := range subscriptionDetailLines(subscription) {
 		lines = append(lines, "  "+detail)
 	}
 	return lines
 }
 
-// subscriptionLabel is a subscription's provider, name, and plan on one line.
-func subscriptionLabel(subscription subscriptionCredential, showProvider bool) string {
-	label := ""
-	if showProvider {
-		label += subscriptionProviderFor(subscription.OAuthProvider).name + "  "
+// subscriptionLabel is a subscription's provider and plan, padded to width so
+// the names of a list line up, then its name.
+func subscriptionLabel(subscription subscriptionCredential, showProvider bool, width int) string {
+	if !showProvider {
+		label := subscriptionName(subscription)
+		if plan := subscription.SafeMetadata["plan"]; plan != "" {
+			label += " " + ansiGray + "(" + plan + ")" + ansiReset
+		}
+		return label
 	}
-	label += subscriptionName(subscription)
+	kind := subscriptionKind(subscription)
+	pad := strings.Repeat(" ", max(0, width-len([]rune(kind))))
+	return kind + pad + "  " + subscriptionName(subscription)
+}
+
+// subscriptionKind is a subscription's provider with its plan, "ChatGPT (Pro)".
+func subscriptionKind(subscription subscriptionCredential) string {
+	kind := subscriptionProviderFor(subscription.OAuthProvider).name
 	if plan := subscription.SafeMetadata["plan"]; plan != "" {
-		label += "  " + ansiGray + plan + ansiReset
+		kind += " (" + plan + ")"
 	}
-	return label
+	return kind
 }
 
 // subscriptionDetailLines are a subscription's quota windows and models at

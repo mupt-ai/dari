@@ -386,7 +386,7 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 			lines = append(lines, "    "+detail)
 		}
 	}
-	return append(lines, agentHintLine("↑↓ move", "enter confirm", escHint))
+	return append(lines, "", agentHintLine("↑↓ move", "enter confirm", escHint))
 }
 
 func agentOpenedLine(provider agentSubscriptionProvider, opened bool) string {

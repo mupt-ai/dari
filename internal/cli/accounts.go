@@ -244,10 +244,15 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				finish = agentChoiceOption{label: "Use Dari managed billing", done: "Using Dari managed billing"}
 			}
 		}
-		// The accounts themselves come first, each numbered where it is shown.
+		// The accounts themselves come first, each numbered where it is shown,
+		// their names lined up after the widest provider and plan.
+		kindWidth := 0
+		for _, subscription := range subscriptions {
+			kindWidth = max(kindWidth, len([]rune(subscriptionKind(subscription))))
+		}
 		for i, subscription := range subscriptions {
 			option := agentChoiceOption{
-				label:   subscriptionLabel(subscription, len(page.providers) > 1),
+				label:   subscriptionLabel(subscription, len(page.providers) > 1, kindWidth),
 				details: subscriptionDetailLines(subscription),
 			}
 			if i == 0 {

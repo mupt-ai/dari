@@ -274,7 +274,7 @@ func TestAgentChoiceLinesNumberGroupedAccounts(t *testing.T) {
 	resets := time.Now().Add(2 * time.Hour)
 	claude := subscriptionCredential{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, Usage: &subscriptionUsage{Windows: []subscriptionUsageWindow{{Label: "5 Hour", Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339)}}}}
 	lines := agentChoiceLines("", nil, []agentChoiceOption{
-		{heading: "Subscriptions", label: subscriptionLabel(claude, true), details: subscriptionDetailLines(claude)},
+		{heading: "Subscriptions", label: subscriptionLabel(claude, true, 0), details: subscriptionDetailLines(claude)},
 		{heading: "API Keys", label: "Vercel AI Gateway"},
 		{heading: "Settings", label: "Done"},
 		{label: "Add a subscription"},
@@ -287,7 +287,7 @@ func TestAgentChoiceLinesNumberGroupedAccounts(t *testing.T) {
 		"  [2] Vercel AI Gateway\n" +
 		"\n◆ Settings " + strings.Repeat("─", 36) + "\n\n" +
 		"❯ [3] Done\n" +
-		"  [4] Add a subscription\n" +
+		"  [4] Add a subscription\n\n" +
 		"  ↑↓ move · enter confirm · esc close"
 	if got != want {
 		t.Fatalf("lines:\n%s\nwant:\n%s", got, want)
@@ -301,7 +301,7 @@ func TestSubscriptionLinesMarkEveryLimitReached(t *testing.T) {
 		SafeMetadata:  map[string]string{"account_email": "you@example.com", "plan": "Max"},
 		ModelHolds:    []subscriptionModelHold{{Model: "anthropic/claude-fable-5", DisplayName: "Claude Fable 5", UnavailableUntil: resets.Format(time.RFC3339)}},
 	}, false)
-	if len(lines) != 2 || stripANSI(lines[0]) != "  • you@example.com  Max" {
+	if len(lines) != 2 || stripANSI(lines[0]) != "  • you@example.com (Max)" {
 		t.Fatalf("lines = %q", lines)
 	}
 	if !strings.Contains(lines[1], ansiRed+"Limit reached") {

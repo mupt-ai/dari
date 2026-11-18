@@ -205,11 +205,20 @@ func EnsureRunning(ctx context.Context, settings Settings, cliVersion string, pr
 	if err := Start(settings); err != nil {
 		return err
 	}
+	pid := 0
+	if raw, err := os.ReadFile(p.pid); err == nil {
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(raw)))
+	}
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		if Healthy(ctx) {
 			progress("Local gateway running at " + LocalURL())
 			return nil
+		}
+		// A gateway that refuses its config exits at once; say why without
+		// waiting out the deadline.
+		if pid > 0 && !gatewayRunning(pid, p.binary) {
+			break
 		}
 		select {
 		case <-ctx.Done():
@@ -217,7 +226,29 @@ func EnsureRunning(ctx context.Context, settings Settings, cliVersion string, pr
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
+	if reason := startFailure(p.log); reason != "" {
+		return fmt.Errorf("the local gateway did not start: %s (log: %s)", reason, p.log)
+	}
 	return fmt.Errorf("the local gateway did not start; see %s", p.log)
+}
+
+// startFailure is the reason the gateway gave for not starting: the last
+// line it logged as itself without details, such as "Provider API keys were
+// rejected: anthropic (401). Fix or unset each key before starting the
+// gateway." It never holds a key.
+func startFailure(logPath string) string {
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	for i := len(lines) - 1; i >= 0 && i >= len(lines)-20; i-- {
+		line := strings.TrimSpace(lines[i])
+		if reason, ok := strings.CutPrefix(line, "dari-gateway: "); ok && !strings.Contains(reason, "{") {
+			return reason
+		}
+	}
+	return ""
 }
 
 // command returns the local gateway process for settings, logging to out.

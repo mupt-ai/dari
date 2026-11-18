@@ -303,11 +303,23 @@ var allSubscriptionProviders = []agentSubscriptionProvider{claudeSubscription, c
 // saveLocalGateway saves a local gateway's settings and restarts it to serve
 // them.
 func saveLocalGateway(ctx context.Context, gw *gatewayConfig, stderr io.Writer) error {
+	previous, saved, err := gateway.Load()
+	if err != nil {
+		return err
+	}
 	if err := gateway.Save(gw.settings); err != nil {
 		return err
 	}
 	if err := gateway.Restart(ctx, gw.settings, cliVersion); err != nil {
-		return err
+		// A change the gateway refuses, such as a rejected API key, is not
+		// kept: the settings before it are restored and served again.
+		if saved {
+			if restoreErr := gateway.Save(previous); restoreErr == nil {
+				gw.settings = previous
+				_ = gateway.Restart(ctx, previous, cliVersion)
+			}
+		}
+		return fmt.Errorf("not saved: %w", err)
 	}
 	return gw.ensure(ctx, stderr)
 }

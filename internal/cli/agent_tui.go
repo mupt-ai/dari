@@ -1368,10 +1368,18 @@ func agentPayingLines(p *agentPickerState) []string {
 	lines := []string{agentPromptLine("How should each model be paid for?")}
 	items := p.items()
 	focus := items[min(max(p.cursor, 0), len(items)-1)]
-	nameWidth := 0
+	// Choices line up in columns across the models.
+	nameWidth, choiceWidths := 0, []int{}
 	for _, it := range items {
-		if it.kind == "source" {
-			nameWidth = max(nameWidth, len([]rune(p.rows[it.row].model.DisplayName)))
+		if it.kind != "source" {
+			continue
+		}
+		nameWidth = max(nameWidth, len([]rune(p.rows[it.row].model.DisplayName)))
+		for j, source := range p.rows[it.row].sources {
+			if j == len(choiceWidths) {
+				choiceWidths = append(choiceWidths, 0)
+			}
+			choiceWidths[j] = max(choiceWidths[j], len([]rune(source.label)))
 		}
 	}
 	provider := ""
@@ -1391,9 +1399,10 @@ func agentPayingLines(p *agentPickerState) []string {
 		}
 		choices := []string{}
 		for j, source := range row.sources {
-			dot := ansiGray + "○ " + source.label + ansiReset
+			label := padRight(source.label, choiceWidths[j])
+			dot := ansiGray + "○ " + label + ansiReset
 			if j == row.source {
-				dot = ansiCoral + "●" + ansiReset + " " + source.label
+				dot = ansiCoral + "●" + ansiReset + " " + label
 			}
 			choices = append(choices, dot)
 		}

@@ -28,7 +28,7 @@ func init() {
 			Long: "With no subcommand, opens the Accounts page wherever coding agents route, which needs a terminal.\n" +
 				"The subcommands work without one, for scripts and agents, and print JSON. `subscription`\n" +
 				"works hosted or on a gateway; `provider` and `list` manage organization credentials on hosted Dari;\n" +
-				"`auto-routing` sets the local gateway's Dari API key.",
+				"`auto-routing` and `key` set the local gateway's Dari API key and provider API keys.",
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				return runAccounts(cmd.Context(), gf, cmd.InOrStdin(), cmd.ErrOrStderr())
@@ -39,6 +39,7 @@ func init() {
 			newProviderCredentialsCmd(gf),
 			newCredentialsListCmd(gf),
 			newAccountsAutoRoutingCmd(),
+			newAccountsLocalKeyCmd(),
 		)
 		root.AddCommand(cmd)
 	})
@@ -63,6 +64,60 @@ func newAccountsAutoRoutingCmd() *cobra.Command {
 				gw.settings.AutoRoutingKey = ""
 			}
 			return saveLocalGateway(cmd.Context(), gw, cmd.ErrOrStderr())
+		},
+	}
+}
+
+// newAccountsLocalKeyCmd lists, saves, and removes the local gateway's
+// provider API keys, as the Accounts page does.
+func newAccountsLocalKeyCmd() *cobra.Command {
+	names := []string{}
+	for _, key := range localProviderKeys {
+		names = append(names, strings.ToLower(strings.ReplaceAll(key.name, " ", "-")))
+	}
+	return &cobra.Command{
+		Use:   "key [PROVIDER <api-key|off>]",
+		Short: "Local gateway only: list provider API keys, or save or remove one",
+		Long: "With no arguments, lists the providers and whether each has a key saved (never the key itself).\n" +
+			"With a provider and a key, saves it; with `off`, removes it. Providers: " + strings.Join(names, ", ") + ".\n" +
+			"Hosted Dari keeps provider keys as organization credentials: use `dari accounts provider`.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 0 && len(args) != 2 {
+				return errors.New("expected no arguments, or a provider and an API key (or off)")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			gw, err := localGateway()
+			if err != nil {
+				return err
+			}
+			if len(args) == 2 {
+				want := strings.ToLower(strings.TrimSpace(args[0]))
+				index := slices.IndexFunc(localProviderKeys, func(key struct{ name, article, env string }) bool {
+					return want == strings.ToLower(strings.ReplaceAll(key.name, " ", "-")) || want == strings.ToLower(key.name) || want == strings.ToLower(key.env)
+				})
+				if index < 0 {
+					return fmt.Errorf("unknown provider %q: expected one of %s", args[0], strings.Join(names, ", "))
+				}
+				env, value := localProviderKeys[index].env, strings.TrimSpace(args[1])
+				if strings.EqualFold(value, "off") {
+					delete(gw.settings.ProviderKeys, env)
+				} else {
+					if gw.settings.ProviderKeys == nil {
+						gw.settings.ProviderKeys = map[string]string{}
+					}
+					gw.settings.ProviderKeys[env] = value
+				}
+				if err := saveLocalGateway(cmd.Context(), gw, cmd.ErrOrStderr()); err != nil {
+					return err
+				}
+			}
+			keys := []map[string]any{}
+			for i, key := range localProviderKeys {
+				keys = append(keys, map[string]any{"provider": names[i], "name": key.name, "saved": gw.settings.ProviderKeys[key.env] != ""})
+			}
+			return printJSON(map[string]any{"keys": keys})
 		},
 	}
 }
@@ -171,6 +226,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 	var raw json.RawMessage
 	stale, routing := true, true
 	resets := map[string]*resetsFetch{}
+	showAgentLoading(stderr, "Loading accounts")
 	for {
 		if stale {
 			// OpenCode Go reports plan usage only when asked.
@@ -563,7 +619,8 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 		})
 		disconnected := false
 		add(agentChoiceOption{label: "Disconnect"}, func() (bool, error) {
-			confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", nil, []agentChoiceOption{{label: "Keep it"}, {label: "Disconnect", done: name + " disconnected"}})
+			details := []string{"  " + ansiGray + "Routing stops using this subscription. You can connect it again later." + ansiReset, ""}
+			confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", details, []agentChoiceOption{{label: "Keep it"}, {label: "Disconnect", done: name + " disconnected"}})
 			if err != nil || confirm == 0 {
 				return false, err
 			}
@@ -804,13 +861,20 @@ func resetResultText(result string) string {
 // manageAPIKey is one API key's page, which can remove it. It reports
 // whether it did.
 func manageAPIKey(stdin io.Reader, stderr io.Writer, name string, remove func() error) (bool, error) {
-	choice, err := runAgentChoiceTUI(stdin, stderr, name, nil, []agentChoiceOption{{label: "Remove"}, {label: "Back"}})
-	if err != nil || choice == 1 {
-		return false, err
+	for {
+		choice, err := runAgentChoiceTUI(stdin, stderr, name, nil, []agentChoiceOption{{label: "Remove"}, {label: "Back", gap: true}})
+		if err != nil || choice == 1 {
+			return false, err
+		}
+		details := []string{"  " + ansiGray + "Routers stop using this key. You can add it again later." + ansiReset, ""}
+		confirm, err := runAgentChoiceTUI(stdin, stderr, "Remove "+name+"?", details, []agentChoiceOption{{label: "Keep it"}, {label: "Remove", done: name + " removed"}})
+		// Esc or Keep it comes back to the key's page.
+		if errors.Is(err, errAgentChoiceCanceled) || (err == nil && confirm == 0) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		return true, remove()
 	}
-	confirm, err := runAgentChoiceTUI(stdin, stderr, "Remove "+name+"?", nil, []agentChoiceOption{{label: "Keep it"}, {label: "Remove", done: name + " removed"}})
-	if err != nil || confirm == 0 {
-		return false, err
-	}
-	return true, remove()
 }

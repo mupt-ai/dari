@@ -388,3 +388,46 @@ func TestSubscriptionDetailsShowEachWindowAsTheAPINamesIt(t *testing.T) {
 		t.Fatalf("full Fable details = %q, want last %q", got, want)
 	}
 }
+
+// With no one to press Enter, as when an agent runs the command, connecting
+// waits for the approval by itself.
+func TestDeviceCodeSubscriptionWaitsForApprovalWithoutATerminal(t *testing.T) {
+	useTestAPIKey(t)
+	completions := 0
+	server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/organizations/current/credentials/oauth/sessions":
+			_ = json.NewEncoder(w).Encode(agentSubscriptionOAuthStart{SessionToken: "session", AuthorizationURL: "https://auth.meta.com/oauth/device/?code=BLXG-CHNZ", UserCode: "BLXG-CHNZ"})
+		case "POST /v1/organizations/current/credentials/oauth/sessions/complete":
+			completions++
+			if completions < 3 {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"detail": "Meta approval is still pending. Enter the code at Meta, finish approval, then try again."})
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	var output strings.Builder
+	original, poll := openAgentBrowser, agentApprovalPoll
+	openAgentBrowser, agentApprovalPoll = func(string) bool { return false }, time.Millisecond
+	t.Cleanup(func() { openAgentBrowser, agentApprovalPoll = original, poll })
+	// Empty stdin: the wait for Enter ends at once.
+	if err := connectAgentPersonalSubscription(context.Background(), museSubscription, api.New(server.URL), strings.NewReader(""), &output, ""); err != nil {
+		t.Fatal(err)
+	}
+	if completions != 3 || !strings.Contains(output.String(), "Waiting for the approval at Meta") {
+		t.Fatalf("completions = %d, output: %s", completions, output.String())
+	}
+}
+
+func TestAgentChoiceLinesShowASpinnerForTheBusyOption(t *testing.T) {
+	lines := agentChoiceLines("", nil, nil, []agentChoiceOption{{label: "One"}, {label: "Two", busy: "⠋"}}, 1, "esc back", 0)
+	got := stripANSI(strings.Join(lines, "\n"))
+	if !strings.Contains(got, "  [1] One\n❯  ⠋  Two") {
+		t.Fatalf("lines:\n%s", got)
+	}
+}

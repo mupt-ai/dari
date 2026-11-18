@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/auth"
@@ -184,6 +185,13 @@ type agentRouterSubscriptionUpdateRequest struct {
 type agentCredential struct {
 	OAuthProvider string `json:"oauth_provider"`
 }
+
+// How long, and how often, a device-code approval is awaited when no one is
+// at the terminal to say it is done.
+var (
+	agentApprovalWait = 10 * time.Minute
+	agentApprovalPoll = 3 * time.Second
+)
 
 type agentSubscriptionOAuthStart struct {
 	SessionToken     string `json:"session_token"`
@@ -635,7 +643,27 @@ func connectAgentDeviceCodeSubscription(
 	for {
 		fmt.Fprintln(stderr, "After approving access, press Enter here to finish connecting.")
 		if _, err := readAgentLine(stdin); err != nil {
-			return fmt.Errorf("read %s approval: %w", provider.name, err)
+			if !errors.Is(err, io.EOF) {
+				return fmt.Errorf("read %s approval: %w", provider.name, err)
+			}
+			// No one is here to press Enter (an agent or a script): wait for
+			// the approval instead.
+			fmt.Fprintf(stderr, "Waiting for the approval at %s (up to %s).\n", provider.vendor, agentApprovalWait)
+			deadline := time.Now().Add(agentApprovalWait)
+			for {
+				err := complete()
+				if !pending(err) {
+					return err
+				}
+				if time.Now().After(deadline) {
+					return fmt.Errorf("%s approval did not arrive in %s; run the command again", provider.vendor, agentApprovalWait)
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(agentApprovalPoll):
+				}
+			}
 		}
 		err := complete()
 		if pending(err) {

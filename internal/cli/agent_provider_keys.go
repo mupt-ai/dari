@@ -101,30 +101,35 @@ func connectAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader
 	type keyProvider struct{ provider, name string }
 	offered := []keyProvider{}
 	options := []agentChoiceOption{}
-	offer := func(provider, name, note string) {
+	// Gateways, where one key serves most models, then the providers' own keys.
+	offer := func(provider, name, heading string) {
 		if _, ok := connected[provider]; ok || slices.ContainsFunc(offered, func(p keyProvider) bool { return p.provider == provider }) {
 			return
 		}
+		option := agentChoiceOption{label: name}
+		if !slices.ContainsFunc(options, func(o agentChoiceOption) bool { return o.heading == heading }) {
+			option.heading = heading
+		}
 		offered = append(offered, keyProvider{provider, name})
-		options = append(options, agentChoiceOption{label: name, note: note})
+		options = append(options, option)
 	}
 	for _, gateway := range agentKeyGateways {
-		offer(gateway.provider, gateway.name, "")
+		offer(gateway.provider, gateway.name, "Gateways")
 	}
 	for _, group := range catalog.Groups {
 		if group.Provider != "" && !slices.Contains(agentKeyCredentialsPageOnly, group.Provider) {
-			offer(group.Provider, cmp.Or(group.ProviderLabel, group.Provider), "")
+			offer(group.Provider, cmp.Or(group.ProviderLabel, group.Provider), "Providers")
 		}
 	}
 	// Credentials that need more than one key are added in the web app.
 	webApp := agentWebAppURL(ctx, client, "/credentials")
 	options = append(options,
-		agentChoiceOption{label: "AWS Bedrock, Microsoft Azure, or other " + ansiGray + "(opens the Dari web app)" + ansiReset},
+		agentChoiceOption{label: "AWS Bedrock, Microsoft Azure, or other " + ansiGray + "(opens the Dari web app)" + ansiReset, heading: "More"},
 		agentChoiceOption{label: "Back", gap: true},
 	)
 	// Esc on the key's input comes back to this list.
 	for {
-		choice, err := runAgentChoiceTUI(stdin, stderr, "Which API key?", nil, options)
+		choice, err := runAgentChoiceTUI(stdin, stderr, "", nil, options)
 		if err != nil || choice == len(offered)+1 {
 			return false, err
 		}

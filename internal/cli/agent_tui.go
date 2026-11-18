@@ -157,6 +157,19 @@ func stopAgentSpinner() {
 	agentSpinner.stop, agentSpinner.done = nil, nil
 }
 
+// showAgentLoading draws a spinner and what is loading on the held screen
+// before a command's first page, which then draws over it.
+func showAgentLoading(stderr io.Writer, text string) {
+	if !agentScreen.held || agentScreen.active {
+		return
+	}
+	fmt.Fprint(stderr, "\033[?1049h\033[?1007h\033[?25l")
+	agentScreen.active, agentScreen.stderr = true, stderr
+	startAgentSpinner(func(frame string) {
+		fmt.Fprint(stderr, "\033[H\033[K\r\n"+agentPageMargin+ansiCoral+frame+ansiReset+" "+ansiGray+text+ansiReset+"\033[K\r\n\033[J")
+	})
+}
+
 // agentBox draws rows in a rounded box of the given inner width, or the
 // widest row's when width is 0, its edge in the given color.
 func agentBox(rows []string, width int, edge string) []string {
@@ -679,6 +692,7 @@ func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, summar
 	choice, err := func() (int, error) {
 		defer session.Close()
 		cursor := 0
+		wrap := escHint != "esc close"
 		buf := make([]byte, 256)
 		for {
 			at := cursor
@@ -689,10 +703,20 @@ func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, summar
 			n, readErr := session.file.Read(buf)
 			for _, key := range parseAgentPickerKeys(buf[:n]) {
 				switch key {
+				// A command's first page stops at its ends: it is the tall one,
+				// and jumping from one end to the other is hard to follow.
 				case "up", "k":
-					cursor = (cursor - 1 + len(options)) % len(options)
+					if cursor > 0 {
+						cursor--
+					} else if wrap {
+						cursor = len(options) - 1
+					}
 				case "down", "j":
-					cursor = (cursor + 1) % len(options)
+					if cursor < len(options)-1 {
+						cursor++
+					} else if wrap {
+						cursor = 0
+					}
 				case "enter":
 					return cursor, nil
 				case "esc":

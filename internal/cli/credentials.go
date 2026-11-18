@@ -388,6 +388,8 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 					"last_used_at":       subscription.LastUsedAt,
 					"usage":              subscription.Usage,
 					"auto_redeem_resets": subscription.AutoRedeemResets,
+					// Where the plan itself is managed, at its vendor.
+					"manage_url": subscriptionProviderFor(subscription.OAuthProvider).billingURL,
 				})
 			}
 			return printJSON(map[string]any{"subscriptions": rows})
@@ -527,7 +529,8 @@ func listSubscriptionCredentials(cmd *cobra.Command, gf *globalFlags) ([]subscri
 	var resp struct {
 		Credentials []subscriptionCredential `json:"credentials"`
 	}
-	if err := subscriptionRequest(cmd, gf, http.MethodGet, "/v1/organizations/current/credentials", nil, &resp); err != nil {
+	// As the Accounts page does: usage that is read only on request is read again when stale.
+	if err := subscriptionRequest(cmd, gf, http.MethodGet, "/v1/organizations/current/credentials?refresh_usage=true", nil, &resp); err != nil {
 		return nil, err
 	}
 	return personalSubscriptions(resp.Credentials), nil

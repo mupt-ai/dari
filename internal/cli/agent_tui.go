@@ -376,6 +376,7 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 		lines = append(lines, agentPromptLine(prompt))
 	}
 	lines = append(lines, details...)
+	headings := []int{}
 	// Boxed options share one width, the widest of them.
 	boxWidth := 0
 	for index, option := range options {
@@ -388,11 +389,12 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 	}
 	for index, option := range options {
 		if option.heading != "" {
-			rule := strings.Repeat("─", max(3, 44-len([]rune(option.heading))))
 			if len(lines) > 0 {
 				lines = append(lines, "")
 			}
-			lines = append(lines, agentPromptLine(option.heading)+" "+ansiGray+rule+ansiReset, "")
+			// The rule is drawn once the page's width is known.
+			headings = append(headings, len(lines))
+			lines = append(lines, option.heading, "")
 		} else if option.gap {
 			lines = append(lines, "")
 		}
@@ -431,6 +433,17 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 		for _, detail := range option.details {
 			lines = append(lines, "    "+detail)
 		}
+	}
+	// Each heading's rule runs to the right edge of the widest line.
+	width := 0
+	for i, line := range lines {
+		if !slices.Contains(headings, i) {
+			width = max(width, ansiVisibleWidth(line))
+		}
+	}
+	for _, i := range headings {
+		title := agentPromptLine(lines[i])
+		lines[i] = title + " " + ansiGray + strings.Repeat("─", max(3, width-ansiVisibleWidth(title)-1)) + ansiReset
 	}
 	return append(lines, "", agentHintLine("↑↓ move", "enter confirm", escHint))
 }

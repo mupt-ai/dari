@@ -280,12 +280,17 @@ func TestAgentChoiceLinesNumberGroupedAccounts(t *testing.T) {
 		{label: "Add a subscription"},
 	}, 2, "esc close")
 	got := stripANSI(strings.Join(lines, "\n"))
-	want := "◆ Subscriptions " + strings.Repeat("─", 31) + "\n\n" +
+	meter := "      5 Hour  ▰▰▰▰▱▱▱▱▱▱  40% used       resets " + usageResetTime(resets)
+	// Every rule ends where the widest line does.
+	rule := func(heading string) string {
+		return "◆ " + heading + " " + strings.Repeat("─", len([]rune(meter))-len([]rune(heading))-3)
+	}
+	want := rule("Subscriptions") + "\n\n" +
 		"  [1] Claude Code         CLAUDE\n" +
-		"      5 Hour  ▰▰▰▰▱▱▱▱▱▱  40% used       resets " + usageResetTime(resets) + "\n" +
-		"\n◆ API Keys " + strings.Repeat("─", 36) + "\n\n" +
+		meter + "\n" +
+		"\n" + rule("API Keys") + "\n\n" +
 		"  [2] Vercel AI Gateway\n" +
-		"\n◆ Settings " + strings.Repeat("─", 36) + "\n\n" +
+		"\n" + rule("Settings") + "\n\n" +
 		"❯ [3] Done\n" +
 		"  [4] Add a subscription\n\n" +
 		"  ↑↓ move · enter confirm · esc close"

@@ -338,8 +338,6 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 			if i == 0 {
 				option.heading = "Subscriptions"
 			}
-			// A blank line between subscriptions keeps each one's meters with it.
-			option.gap = i > 0
 			add(option, func() (bool, error) {
 				outcome, err := page.manageSubscription(ctx, subscription, subscriptions, resets[subscription.Name], stdin, stderr)
 				changed = outcome != subscriptionPageBack

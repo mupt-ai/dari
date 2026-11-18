@@ -304,15 +304,8 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				return false, err
 			})
 		}
-		finish.heading = "Settings"
-		if !page.onboarding || connected {
-			add(finish, leave)
-		}
-		addSubscription := agentChoiceOption{label: "Add a subscription"}
-		if page.onboarding && !connected {
-			addSubscription.heading = "Settings"
-		}
-		add(addSubscription, func() (bool, error) {
+		// Done closes the Settings section, after what can still be added.
+		add(agentChoiceOption{label: "Add a subscription", heading: "Settings"}, func() (bool, error) {
 			provider, ok, err := page.addSubscription(ctx, subscriptions, stdin, stderr)
 			changed = ok
 			if ok && !slices.Contains(result.added, provider) {
@@ -352,9 +345,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				return false, err
 			})
 		}
-		if page.onboarding && !connected {
-			add(finish, leave)
-		}
+		add(finish, leave)
 
 		// The page is a command's first page, which esc closes; in onboarding
 		// it is a step of setup, which esc leaves.
@@ -535,8 +526,8 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 				return true, api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
 			})
 		}
-		// The connection's own actions sit together.
-		add(agentChoiceOption{label: "Reconnect", gap: true}, func() (bool, error) {
+		// Reconnect and Disconnect, the connection's own actions, sit together.
+		add(agentChoiceOption{label: "Reconnect"}, func() (bool, error) {
 			err := connectAgentPersonalSubscription(ctx, provider, page.client, stdin, stderr, subscription.Name)
 			return err == nil, err
 		})

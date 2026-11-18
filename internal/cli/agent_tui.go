@@ -7,10 +7,12 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	"golang.org/x/term"
@@ -118,12 +120,13 @@ func agentBox(rows []string, width int, edge string) []string {
 			width = max(width, ansiVisibleWidth(row))
 		}
 	}
-	// A row too long for the box ends in an ellipsis.
-	for i, row := range rows {
-		if ansiVisibleWidth(row) > width {
-			rows[i] = clipANSI(row, max(width-1, 0)) + ansiReset + ansiGray + "…" + ansiReset
-		}
+	// A row too long for the box continues on the next lines, broken where
+	// its columns are; only a column too long by itself ends in an ellipsis.
+	wrapped := []string{}
+	for _, row := range rows {
+		wrapped = append(wrapped, wrapColumns(row, width)...)
 	}
+	rows = wrapped
 	border := strings.Repeat("─", width+2)
 	lines := []string{edge + "╭" + border + "╮" + ansiReset}
 	for _, row := range rows {
@@ -131,6 +134,40 @@ func agentBox(rows []string, width int, edge string) []string {
 	}
 	return append(lines, edge+"╰"+border+"╯"+ansiReset)
 }
+
+// wrapColumns breaks a row that is wider than width at its column gaps (two
+// or more spaces), each later line indented like the row.
+func wrapColumns(row string, width int) []string {
+	if ansiVisibleWidth(row) <= width {
+		return []string{row}
+	}
+	body := strings.TrimLeft(row, " ")
+	indent := row[:len(row)-len(body)]
+	clip := func(text string) string {
+		if ansiVisibleWidth(text) <= width {
+			return text
+		}
+		return clipANSI(text, max(width-1, 0)) + ansiReset + ansiGray + "…" + ansiReset
+	}
+	lines, line := []string{}, ""
+	for _, column := range columnGaps.Split(body, -1) {
+		if column == "" || ansiVisibleWidth(column) == 0 && line != "" {
+			line += column
+			continue
+		}
+		if line == "" {
+			line = indent + column
+		} else if ansiVisibleWidth(line+"  "+column) <= width {
+			line += "  " + column
+		} else {
+			lines = append(lines, clip(line))
+			line = indent + column
+		}
+	}
+	return append(lines, clip(line))
+}
+
+var columnGaps = regexp.MustCompile(` {2,}`)
 
 func agentCursor(active bool) string {
 	if active {
@@ -143,7 +180,7 @@ type agentTUISession struct {
 	file     *os.File
 	stderr   io.Writer
 	oldState *term.State
-	// width and height are what remains inside the page margin.
+	// width and height are what remains inside the page margins, left and right.
 	width, height int
 	// The last page drawn, drawn again when the terminal is resized.
 	mu       sync.Mutex
@@ -171,7 +208,7 @@ func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, 
 	discardAgentInput(fd)
 	session := &agentTUISession{file: file, stderr: stderr, oldState: oldState}
 	if w, h, err := term.GetSize(fd); err == nil {
-		session.width, session.height = w-len(agentPageMargin), h-6
+		session.width, session.height = w-2*len(agentPageMargin), h-6
 	}
 	if !agentScreen.active {
 		fmt.Fprint(stderr, "\033[?1049h")
@@ -183,11 +220,19 @@ func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, 
 	signal.Notify(session.resized, syscall.SIGWINCH)
 	go func() {
 		for range session.resized {
-			if w, h, err := term.GetSize(fd); err == nil {
-				session.mu.Lock()
-				session.width, session.height = w-len(agentPageMargin), h-6
-				session.mu.Unlock()
-				session.draw()
+			// The size can settle a moment after the signal, so look again
+			// briefly and draw for each new size.
+			for range 6 {
+				if w, h, err := term.GetSize(fd); err == nil {
+					session.mu.Lock()
+					changed := session.width != w-2*len(agentPageMargin) || session.height != h-6
+					session.width, session.height = w-2*len(agentPageMargin), h-6
+					session.mu.Unlock()
+					if changed {
+						session.draw()
+					}
+				}
+				time.Sleep(50 * time.Millisecond)
 			}
 		}
 	}()
@@ -606,7 +651,12 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 				edge = ansiCoral
 			}
 			indent := strings.Repeat(" ", len(number)+1)
-			rows := []string{label}
+			// What wraps of the first row continues under the label, not the number.
+			first := wrapColumns(label, fit(boxWidth))
+			rows := []string{first[0]}
+			for _, more := range first[1:] {
+				rows = append(rows, indent+more)
+			}
 			for _, detail := range option.details {
 				rows = append(rows, indent+strings.TrimPrefix(detail, "  "))
 			}

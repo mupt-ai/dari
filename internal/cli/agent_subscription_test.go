@@ -274,14 +274,14 @@ func TestAgentChoiceLinesNumberGroupedAccounts(t *testing.T) {
 	resets := time.Now().Add(2 * time.Hour)
 	claude := subscriptionCredential{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, Usage: &subscriptionUsage{Windows: []subscriptionUsageWindow{{Label: "5 Hour", Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339)}}}}
 	lines := agentChoiceLines("", nil, []agentChoiceOption{
-		{heading: "Subscriptions", label: subscriptionLabel(claude, true, 0), details: subscriptionDetailLines(claude)},
+		{heading: "Subscriptions", label: subscriptionLabel(claude, true, subscriptionColumnsFor([]subscriptionCredential{claude})), details: subscriptionDetailLines(claude, subscriptionColumnsFor([]subscriptionCredential{claude}))},
 		{heading: "API Keys", label: "Vercel AI Gateway"},
 		{heading: "Settings", label: "Done"},
 		{label: "Add a subscription"},
 	}, 2, "esc close")
 	got := stripANSI(strings.Join(lines, "\n"))
 	want := "◆ Subscriptions " + strings.Repeat("─", 31) + "\n\n" +
-		"  [1] Claude Code  CLAUDE\n" +
+		"  [1] Claude Code         CLAUDE\n" +
 		"      5 Hour  ▰▰▰▰▱▱▱▱▱▱  40% used       resets " + usageResetTime(resets) + "\n" +
 		"\n◆ API Keys " + strings.Repeat("─", 36) + "\n\n" +
 		"  [2] Vercel AI Gateway\n" +

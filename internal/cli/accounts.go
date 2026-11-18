@@ -245,15 +245,12 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 			}
 		}
 		// The accounts themselves come first, each numbered where it is shown,
-		// their names lined up after the widest provider and plan.
-		kindWidth := 0
-		for _, subscription := range subscriptions {
-			kindWidth = max(kindWidth, len([]rune(subscriptionKind(subscription))))
-		}
+		// in columns shared by the whole list.
+		columns := subscriptionColumnsFor(subscriptions)
 		for i, subscription := range subscriptions {
 			option := agentChoiceOption{
-				label:   subscriptionLabel(subscription, len(page.providers) > 1, kindWidth),
-				details: subscriptionDetailLines(subscription),
+				label:   subscriptionLabel(subscription, len(page.providers) > 1, columns),
+				details: subscriptionDetailLines(subscription, columns),
 			}
 			if i == 0 {
 				option.heading = "Subscriptions"

@@ -157,6 +157,12 @@ type accountsResult struct {
 }
 
 func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Writer) (accountsResult, error) {
+	// One alternate screen for every page, so going back never shows the
+	// shell while the next page loads.
+	if !agentScreen.held {
+		holdAgentScreen()
+		defer releaseAgentScreen()
+	}
 	result := accountsResult{}
 	for {
 		var raw json.RawMessage

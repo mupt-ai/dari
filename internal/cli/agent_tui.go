@@ -50,6 +50,24 @@ func agentStep(stderr io.Writer, text string) {
 	agentPrintln(stderr, text)
 }
 
+// dropAgentStep takes back the last summary line held for the normal screen
+// when it starts with prefix, for a step that was gone back over.
+func dropAgentStep(prefix string) {
+	for i := len(agentScreen.lines) - 1; i >= 0; i-- {
+		if strings.Contains(stripAgentANSI(agentScreen.lines[i]), prefix) {
+			agentScreen.lines = slices.Delete(agentScreen.lines, i, i+1)
+			return
+		}
+	}
+}
+
+// stripAgentANSI drops color codes from a line.
+func stripAgentANSI(line string) string {
+	return ansiSGR.ReplaceAllString(line, "")
+}
+
+var ansiSGR = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
 // agentScreen keeps onboarding on the alternate screen from its first page to
 // its last once held, so answering one prompt never flashes the normal
 // screen before the next page draws. Lines printed meanwhile wait until the

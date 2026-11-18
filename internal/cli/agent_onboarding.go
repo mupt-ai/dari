@@ -419,7 +419,9 @@ func ensureAgentRouter(
 		}
 		sessionPinning, err = chooseAgentSessionPinning(stdin, stderr, pinningDefault)
 		if errors.Is(err, errAgentChoiceCanceled) {
-			// Back to the models, as they were just chosen.
+			// Back to the models, as they were just chosen, which are no
+			// longer settled.
+			dropAgentStep("Models: ")
 			defaultIDs, currentLevels = nil, map[string][]string{}
 			for _, choice := range choices {
 				defaultIDs = append(defaultIDs, choice.ID)

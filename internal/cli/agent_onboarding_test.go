@@ -1808,3 +1808,13 @@ func TestAgentPickerEscGoesBackAndQuitLeaves(t *testing.T) {
 		t.Fatalf("quit: canceled=%v quit=%v", canceled, p.quit)
 	}
 }
+
+func TestDropAgentStepTakesBackTheLastMatchingLine(t *testing.T) {
+	held := agentScreen.lines
+	t.Cleanup(func() { agentScreen.lines = held })
+	agentScreen.lines = []string{"✓ Accounts: 2 connected", ansiGreen + "✓" + ansiReset + " Models: A, B", "other"}
+	dropAgentStep("Models: ")
+	if len(agentScreen.lines) != 2 || agentScreen.lines[1] != "other" {
+		t.Fatalf("lines = %q", agentScreen.lines)
+	}
+}

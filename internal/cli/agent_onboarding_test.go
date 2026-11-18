@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"regexp"
@@ -104,6 +103,12 @@ func TestSelectAgentModelsByNumberPreservesCurrentLevels(t *testing.T) {
 	}
 }
 
+// pickerContinue moves to Continue and presses enter.
+func pickerContinue(p *agentPickerState) (done, canceled bool) {
+	p.cursor = len(p.items()) - 1
+	return p.handleKey("enter")
+}
+
 func TestAgentPickerTogglesModelsAndEditsLevels(t *testing.T) {
 	models := testAgentModels()
 	models[2].SupportedLevels = []string{"off", "low", "medium", "high", "xhigh", "max"}
@@ -117,30 +122,30 @@ func TestAgentPickerTogglesModelsAndEditsLevels(t *testing.T) {
 		t.Fatal("Sol does not report using the recommended set")
 	}
 
-	// Move down to Sol, enable then disable it.
+	// Move down to Sol; enter selects it, enter again deselects it.
 	p.handleKey("down")
 	p.handleKey("down")
 	if p.cursor != 2 {
 		t.Fatalf("cursor = %d, want 2", p.cursor)
 	}
-	p.handleKey(" ")
+	p.handleKey("enter")
 	if !p.rows[2].selected {
-		t.Fatal("Sol is not selected after space")
+		t.Fatal("Sol is not selected after enter")
 	}
-	p.handleKey(" ")
+	p.handleKey("enter")
 	if p.rows[2].selected {
-		t.Fatal("Sol is still selected after second space")
+		t.Fatal("Sol is still selected after second enter")
 	}
 
-	// Open level editing: cursor starts on the first checked level.
+	// → opens Sol's thinking levels beneath it; check high.
 	p.handleKey("right")
-	if !p.editing || p.levelCursor != 2 {
-		t.Fatalf("editing = %v levelCursor = %d, want true 2 (medium)", p.editing, p.levelCursor)
+	if p.open != 2 {
+		t.Fatalf("open = %d, want 2", p.open)
 	}
-
-	// Check an extra level: medium -> down -> high -> space.
-	p.handleKey("down")
-	p.handleKey(" ")
+	for range 4 { // off, low, medium, high
+		p.handleKey("down")
+	}
+	p.handleKey("enter")
 	if got := p.rows[2].checkedLevels(); !slices.Equal(got, []string{"medium", "high", "xhigh"}) {
 		t.Fatalf("levels = %q, want [medium high xhigh]", got)
 	}
@@ -148,14 +153,14 @@ func TestAgentPickerTogglesModelsAndEditsLevels(t *testing.T) {
 		t.Fatal("mixed levels still marked as recommended")
 	}
 
-	// Back on the model list, confirm.
+	// ← closes it and returns to Sol's line; Continue finishes.
 	p.handleKey("left")
-	if p.editing {
-		t.Fatal("still editing after left")
+	if p.open != -1 || p.cursor != 2 {
+		t.Fatalf("open = %d cursor = %d after left", p.open, p.cursor)
 	}
-	done, canceled := p.handleKey("enter")
+	done, canceled := pickerContinue(p)
 	if !done || canceled {
-		t.Fatalf("enter = done %v canceled %v", done, canceled)
+		t.Fatalf("continue = done %v canceled %v", done, canceled)
 	}
 	choices := p.choices()
 	if len(choices) != 2 {
@@ -163,6 +168,13 @@ func TestAgentPickerTogglesModelsAndEditsLevels(t *testing.T) {
 	}
 	if !slices.Equal(choices[0].Levels, []string{"high"}) {
 		t.Fatalf("Fable levels = %q", choices[0].Levels)
+	}
+}
+
+func TestAgentPickerContinueNeedsAModel(t *testing.T) {
+	p := newAgentPickerState(testAgentModels(), nil, nil, nil, nil)
+	if done, _ := pickerContinue(p); done || p.warning == "" {
+		t.Fatalf("continued with nothing chosen: done=%v warning=%q", done, p.warning)
 	}
 }
 
@@ -212,18 +224,17 @@ func TestAgentPickerLevelEditingRestoresRecommendedWhenEmptied(t *testing.T) {
 	p.handleKey("down")
 	p.handleKey("down")
 	p.handleKey("right")
-	p.handleKey(" ")    // uncheck medium
-	p.handleKey("down") // high
-	p.handleKey("down") // xhigh
-	p.handleKey(" ")    // uncheck xhigh
+	for _, key := range []string{"down", "down", "down", "enter", "down", "down", "enter"} { // medium, xhigh
+		p.handleKey(key)
+	}
 	if got := p.rows[2].checkedLevels(); len(got) != 0 {
 		t.Fatalf("levels = %q, want none", got)
 	}
 
-	// Leaving level editing falls back to the recommended set.
+	// Closing falls back to the recommended set.
 	p.handleKey("left")
 	if got := p.rows[2].checkedLevels(); !slices.Equal(got, []string{"medium", "xhigh"}) {
-		t.Fatalf("levels after exit = %q, want recommended [medium xhigh]", got)
+		t.Fatalf("levels after close = %q, want recommended [medium xhigh]", got)
 	}
 }
 
@@ -1396,12 +1407,15 @@ func TestPickerLevelOnlyChangeProducesUpdate(t *testing.T) {
 	}
 	p := newAgentPickerState(models, current.EnabledModels, current.ModelThinkingLevels, current.ModelThinkingLevels, nil)
 
-	// Open Fable's levels: cursor on high (index 1). Move to max, check it,
-	// move back to high, uncheck it, then leave editing.
-	for _, key := range []string{"right", "down", " ", "up", " ", "left", "enter"} {
+	// Open Fable's levels (low, high, max): check max, uncheck high, close,
+	// then continue.
+	for _, key := range []string{"right", "down", "down", "down", "enter", "up", "enter", "left"} {
 		if _, canceled := p.handleKey(key); canceled {
 			t.Fatal("picker canceled")
 		}
+	}
+	if done, _ := pickerContinue(p); !done {
+		t.Fatal("did not continue")
 	}
 	choices := p.choices()
 	if len(choices) != 1 || choices[0].ID != "anthropic/claude-fable-5" {
@@ -1433,28 +1447,27 @@ func TestAgentRouterNeedsUpdateIgnoresModelOrder(t *testing.T) {
 	}
 }
 
-func TestAgentPickerLinesAlignAndScroll(t *testing.T) {
+func TestAgentPickerLinesGroupByProviderAndAlign(t *testing.T) {
 	models := testAgentModels()
 	models[0].DisplayName = "A Very Long Model Name Indeed"
 	p := newAgentPickerState(models, []string{"anthropic/claude-fable-5"}, nil, testRecommendedLevels(), nil)
-	p.handleKey("down")
+	plain := stripANSI(strings.Join(agentPickerLines("Choose models", []string{"note one", "note two"}, p), "\n"))
 
+	// Each provider heads its models; Continue and the keys, one to a line, follow.
+	for _, want := range []string{"  note one\n  note two\n\n  Anthropic\n", "\n  Fireworks\n", "\n  OpenAI\n", "Continue →\n\n  ↑↓ move\n  enter select\n"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("missing %q in:\n%s", want, plain)
+		}
+	}
 	// The thinking column lines up across rows regardless of name length.
 	levelCols := map[int]bool{}
-	for _, line := range agentPickerLines("Choose models", []string{"note"}, p, len(models))[2 : len(models)+2] {
-		plain := stripANSI(line)
-		trimmed := strings.TrimRight(strings.TrimSuffix(plain, "recommended"), " ")
-		levelCols[len([]rune(trimmed[:strings.LastIndex(trimmed, "  ")]))] = true
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, "○ ") || strings.Contains(line, "◉ ") {
+			levelCols[slices.Index([]rune(line), '›')] = true
+		}
 	}
 	if len(levelCols) != 1 {
-		t.Fatalf("level column positions = %v, want one", levelCols)
-	}
-
-	// Only the visible window renders, with counts for what is hidden.
-	p.cursor = len(models) - 1
-	plain := stripANSI(strings.Join(agentPickerLines("Choose models", []string{"note"}, p, 2), "\n"))
-	if !strings.Contains(plain, fmt.Sprintf("↑ %d more", len(models)-2)) || strings.Count(plain, " more") != 1 {
-		t.Fatalf("scrolled picker:\n%s", plain)
+		t.Fatalf("level column positions = %v, want one:\n%s", levelCols, plain)
 	}
 }
 
@@ -1496,9 +1509,10 @@ func TestAgentPickerNeverSubmitsEmptyLevels(t *testing.T) {
 		t.Fatalf("initial levels = %q, want first supported [low]", got)
 	}
 
-	// Emptying the level checklist and leaving restores a usable set too.
+	// Emptying the level checklist and closing restores a usable set too.
 	p.handleKey("right")
-	p.handleKey(" ") // uncheck low
+	p.handleKey("down")
+	p.handleKey("enter") // uncheck low
 	if got := p.rows[0].checkedLevels(); len(got) != 0 {
 		t.Fatalf("levels = %q, want none", got)
 	}
@@ -1507,7 +1521,7 @@ func TestAgentPickerNeverSubmitsEmptyLevels(t *testing.T) {
 		t.Fatalf("levels after exit = %q, want fallback [low]", got)
 	}
 
-	done, canceled := p.handleKey("enter")
+	done, canceled := pickerContinue(p)
 	if !done || canceled {
 		t.Fatalf("enter = done %v canceled %v", done, canceled)
 	}
@@ -1768,39 +1782,42 @@ func TestChatGPTForCodexDoesNotSetUpClaudeCode(t *testing.T) {
 	}
 }
 
-func TestAgentPickerPaymentFollowsTheProviderExceptGateways(t *testing.T) {
+func TestAgentPickerPaymentIsChosenPerModel(t *testing.T) {
 	native := func(kind, provider, label string) agentModelSource {
 		return agentModelSource{kind: kind, provider: provider, modelProvider: provider, label: label}
 	}
-	vercel := agentModelSource{kind: "key", provider: "vercel-ai-gateway", modelProvider: "anthropic", credentialID: "cred_v", label: "Vercel AI Gateway key"}
-	anthropic := []agentModelSource{native("subscription", "anthropic", "Claude Code subscription"), vercel, native("managed", "anthropic", "Dari credits")}
-	models := []agentModel{{ID: "anthropic/opus", Provider: "anthropic"}, {ID: "anthropic/sonnet", Provider: "anthropic"}}
+	anthropic := []agentModelSource{native("subscription", "anthropic", "Claude Code subscription"), native("managed", "anthropic", "Dari credits")}
+	models := []agentModel{{ID: "anthropic/opus", Provider: "anthropic", SupportedLevels: []string{"high"}}, {ID: "anthropic/sonnet", Provider: "anthropic"}}
 	p := newAgentPickerState(models, []string{"anthropic/opus", "anthropic/sonnet"}, nil, nil, map[string][]agentModelSource{
 		"anthropic/opus": anthropic, "anthropic/sonnet": anthropic,
 	})
-
-	// A gateway key is per model.
-	p.handleKey("s")
-	if got := []string{p.rows[0].sources[p.rows[0].source].label, p.rows[1].sources[p.rows[1].source].label}; !slices.Equal(got, []string{"Vercel AI Gateway key", "Claude Code subscription"}) {
-		t.Fatalf("after gateway: %q", got)
+	// Open Opus: its thinking level, then how it is paid for; choose credits.
+	for _, key := range []string{"right", "down", "down", "down", "enter", "left"} {
+		p.handleKey(key)
 	}
-	// Credits apply to the provider, so Sonnet follows Opus off the subscription.
-	p.handleKey("s")
 	choices := p.choices()
-	if choices[0].Source.kind != "managed" || choices[1].Source.kind != "managed" {
-		t.Fatalf("after credits: %+v", choices)
+	if choices[0].Source.kind != "managed" || choices[1].Source.kind != "subscription" {
+		t.Fatalf("Opus should be on credits and Sonnet still on the subscription: %+v", choices)
+	}
+	// The router is told which models the subscription serves.
+	keys := agentKeyContext{}.keys(choices)
+	if !slices.Equal(keys.subscriptionProviders, []string{"anthropic"}) || !slices.Equal(keys.subscriptionModels, []string{"anthropic/sonnet"}) {
+		t.Fatalf("providers %q models %q", keys.subscriptionProviders, keys.subscriptionModels)
+	}
+	// All of a provider's models on its subscription name no models.
+	if keys := (agentKeyContext{}).keys([]agentModelChoice{{ID: "anthropic/opus", Source: anthropic[0]}, {ID: "anthropic/sonnet", Source: anthropic[0]}}); keys.subscriptionModels != nil {
+		t.Fatalf("subscription models = %q, want none", keys.subscriptionModels)
 	}
 }
 
-func TestAgentPickerKeysIncludePaymentCycling(t *testing.T) {
-	if got := parseAgentPickerKeys([]byte("\x1b[Bs\r")); !slices.Equal(got, []string{"down", "s", "enter"}) {
+func TestAgentPickerKeyParsing2(t *testing.T) {
+	if got := parseAgentPickerKeys([]byte("\x1b[B\x1b[C\r")); !slices.Equal(got, []string{"down", "right", "enter"}) {
 		t.Fatalf("keys = %q", got)
 	}
 }
 
-// Esc on the model picker goes back a step; q leaves the command.
 func TestAgentPickerEscGoesBackAndQuitLeaves(t *testing.T) {
-	p := &agentPickerState{rows: []agentPickerRow{{selected: true}}}
+	p := &agentPickerState{rows: []agentPickerRow{{selected: true}}, open: -1}
 	if _, canceled := p.handleKey("esc"); !canceled || p.quit {
 		t.Fatalf("esc: canceled=%v quit=%v", canceled, p.quit)
 	}

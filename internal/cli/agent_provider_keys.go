@@ -34,6 +34,10 @@ type agentProviderKeys struct {
 	// subscriptionProviders are the providers whose models run on the user's
 	// subscription.
 	subscriptionProviders []string
+	// subscriptionModels are the models the subscription serves, set only
+	// when other models of a subscription's provider are paid for another
+	// way, so the choice is made per model.
+	subscriptionModels []string
 }
 
 // fallbackModels adds the models that fall back to the user's key to the
@@ -247,6 +251,21 @@ func (c agentKeyContext) keys(choices []agentModelChoice) agentProviderKeys {
 			keys.modelProviders[choice.ID] = source.provider
 			keys.credentialIDs[source.provider] = source.credentialID
 		}
+	}
+	// A subscription chosen for only some of its provider's models names them.
+	onSubscription, mixed := []string{}, false
+	for _, choice := range choices {
+		if !slices.Contains(keys.subscriptionProviders, choice.Source.modelProvider) {
+			continue
+		}
+		if choice.Source.kind == "subscription" {
+			onSubscription = append(onSubscription, choice.ID)
+		} else {
+			mixed = true
+		}
+	}
+	if mixed {
+		keys.subscriptionModels = onSubscription
 	}
 	return keys
 }

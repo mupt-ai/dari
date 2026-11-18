@@ -133,6 +133,10 @@ func agentHintLine(hints ...string) string {
 
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
+// agentSetupHeader puts the small dari.dev title on every page while an
+// agent is being set up.
+var agentSetupHeader bool
+
 // agentSpinnerFrames spin while something the user started is still running:
 // three dots turning in the middle two rows of the Braille cell, so the
 // spinner sits level with the text beside it. (The usual frames use the top
@@ -431,6 +435,9 @@ func (session *agentTUISession) draw() {
 		}
 		page = besidePanel(lines, pageWidth, gap, titlePanel(panel, height, session.subtitle))
 	} else if header := pageHeader(session.width, session.subtitle); session.panel && (rows <= 0 || rows-len(header) >= 10) {
+		page = append(header, fit(lines, rows-len(header))...)
+	} else if header := pageHeader(session.width, session.subtitle); agentSetupHeader && (rows <= 0 || rows-len(header) >= 10) {
+		// Setup's pages keep the small title.
 		page = append(header, fit(lines, rows-len(header))...)
 	} else {
 		// Pages past the first carry no title, nor does a first page with
@@ -1198,10 +1205,10 @@ func runAgentPicker(
 		defer session.Close()
 		buf := make([]byte, 256)
 		for {
-			session.render(agentPickerLines(title, note, p, agentPickerVisibleRows(session.height)))
+			session.render(agentPickerLines(title, note, p))
 			n, readErr := session.file.Read(buf)
 			for _, key := range parseAgentPickerKeys(buf[:n]) {
-				if key == "a" && offerAutorouting && !p.editing {
+				if key == "a" && offerAutorouting {
 					return nil, errAgentWantsAutorouting
 				}
 				done, canceled := p.handleKey(key)
@@ -1230,13 +1237,6 @@ func runAgentPicker(
 }
 
 // agentPickerVisibleRows leaves room for the prompt, hints, and a level list.
-func agentPickerVisibleRows(height int) int {
-	if height <= 0 {
-		return 12
-	}
-	return max(height-12, 5)
-}
-
 func agentPickerSummary(p *agentPickerState) string {
 	names := []string{}
 	for _, row := range p.rows {
@@ -1250,80 +1250,125 @@ func agentPickerSummary(p *agentPickerState) string {
 	return strings.Join(names, ", ")
 }
 
-func agentPickerLines(title string, note []string, p *agentPickerState, visible int) []string {
+// agentProviderNames name the providers the model picker groups by.
+var agentProviderNames = map[string]string{
+	"anthropic": "Anthropic", "openai": "OpenAI", "google": "Google", "xai": "xAI", "meta": "Meta",
+	"deepseek": "DeepSeek", "fireworks": "Fireworks", "mistral": "Mistral", "moonshotai": "Moonshot AI",
+	"zai-org": "Z.ai", "qwen": "Qwen", "opencode": "OpenCode",
+}
+
+// agentPickerLines draws the model picker: each provider's models under its
+// name, an open model's thinking levels and payment beneath it, Continue at
+// the end, and the keys, one to a line.
+func agentPickerLines(title string, note []string, p *agentPickerState) []string {
 	lines := []string{agentPromptLine(title)}
 	for _, line := range note {
 		lines = append(lines, "  "+ansiGray+line+ansiReset)
 	}
-	if p.cursor < p.offset {
-		p.offset = p.cursor
-	}
-	if p.cursor >= p.offset+visible {
-		p.offset = p.cursor - visible + 1
-	}
-	end := min(p.offset+visible, len(p.rows))
-	nameWidth, levelWidth := 0, 0
+	items := p.items()
+	focus := items[min(max(p.cursor, 0), len(items)-1)]
+	nameWidth, levelWidth, sourceWidth := 0, 0, 0
 	for _, row := range p.rows {
-		nameWidth = max(nameWidth, len(row.model.DisplayName))
+		nameWidth = max(nameWidth, len([]rune(row.model.DisplayName)))
 		levelWidth = max(levelWidth, len(cmp.Or(strings.Join(row.checkedLevels(), ", "), "default")))
+		if len(row.sources) > 0 {
+			sourceWidth = max(sourceWidth, len([]rune(row.sources[row.source].label)))
+		}
 	}
-	if p.offset > 0 {
-		lines = append(lines, "  "+ansiGray+fmt.Sprintf("↑ %d more", p.offset)+ansiReset)
+	at := func(item agentPickerItem) bool { return item == focus }
+	mark := func(line string, focused bool) string {
+		if focused {
+			return line + agentFocusMark
+		}
+		return line
 	}
-	for i := p.offset; i < end; i++ {
-		row := p.rows[i]
-		active := i == p.cursor && !p.editing
-		name := fmt.Sprintf("%-*s", nameWidth, row.model.DisplayName)
+	provider := ""
+	for i, row := range p.rows {
+		if row.model.Provider != provider {
+			provider = row.model.Provider
+			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset)
+		}
+		focused := at(agentPickerItem{kind: "model", row: i})
+		name := padRight(row.model.DisplayName, nameWidth)
 		switch {
-		case active:
+		case focused:
 			name = ansiBold + name + ansiReset
 		case !row.selected:
 			name = ansiGray + name + ansiReset
 		}
-		levels := strings.Join(row.checkedLevels(), ", ")
-		if levels == "" {
-			levels = "default"
-		}
-		levels = fmt.Sprintf("%-*s", levelWidth, levels)
+		levels := padRight(cmp.Or(strings.Join(row.checkedLevels(), ", "), "default"), levelWidth)
 		source := ""
-		if len(row.sources) > 0 {
-			source = "  " + row.sources[row.source].label
-			if !row.selected {
-				source = "  " + ansiGray + row.sources[row.source].label + ansiReset
+		if sourceWidth > 0 {
+			label := ""
+			if len(row.sources) > 0 {
+				label = row.sources[row.source].label
+			}
+			source = "  " + ansiGray + padRight(label, sourceWidth) + ansiReset
+			if row.selected {
+				source = "  " + padRight(label, sourceWidth)
 			}
 		}
-		note := ""
+		recommended := ""
 		if row.usesRecommended() {
-			note = "  " + ansiGreen + "recommended" + ansiReset
+			recommended = "  " + ansiGreen + "recommended" + ansiReset
 		}
-		lines = append(lines, agentCursor(active)+agentCheckbox(row.selected)+" "+name+"  "+ansiCyan+levels+ansiReset+source+note)
-		if p.editing && i == p.cursor {
+		open := " "
+		if len(row.levelOpts) > 0 || len(row.sources) > 1 {
+			open = ansiGray + "›" + ansiReset
+			if i == p.open {
+				open = ansiGray + "⌄" + ansiReset
+			}
+		}
+		lines = append(lines, mark(agentCursor(focused)+agentCheckbox(row.selected)+" "+name+" "+open+" "+ansiCyan+levels+ansiReset+source+recommended, focused))
+		if i != p.open {
+			continue
+		}
+		if len(row.levelOpts) > 0 {
+			lines = append(lines, "      "+ansiGray+"Thinking"+ansiReset)
 			for j, level := range row.levelOpts {
+				focused := at(agentPickerItem{kind: "level", row: i, index: j})
+				label := level
+				if focused {
+					label = ansiBold + label + ansiReset
+				}
 				rec := ""
 				if row.recommended[level] {
 					rec = "  " + ansiGreen + "recommended" + ansiReset
 				}
-				label := level
-				if j == p.levelCursor {
+				lines = append(lines, mark("    "+agentCursor(focused)+agentCheckbox(row.checked[level])+" "+label+rec, focused))
+			}
+		}
+		if len(row.sources) > 1 {
+			lines = append(lines, "      "+ansiGray+"Pay with"+ansiReset)
+			for j, source := range row.sources {
+				focused := at(agentPickerItem{kind: "source", row: i, index: j})
+				dot := ansiGray + "○" + ansiReset
+				if j == row.source {
+					dot = ansiCoral + "●" + ansiReset
+				}
+				label := source.label
+				if focused {
 					label = ansiBold + label + ansiReset
 				}
-				lines = append(lines, "    "+agentCursor(j == p.levelCursor)+agentCheckbox(row.checked[level])+" "+label+rec)
+				lines = append(lines, mark("    "+agentCursor(focused)+dot+" "+label, focused))
 			}
 		}
 	}
-	if end < len(p.rows) {
-		lines = append(lines, "  "+ansiGray+fmt.Sprintf("↓ %d more", len(p.rows)-end)+ansiReset)
+	focused := focus.kind == "continue"
+	button := "Continue →"
+	if focused {
+		button = ansiBold + button + ansiReset
 	}
-	if p.editing {
-		return append(lines, agentHintLine("↑↓ move", "space toggle thinking level", "← done"))
+	lines = append(lines, "", mark(agentCursor(focused)+button, focused))
+	if p.warning != "" {
+		lines = append(lines, "  "+ansiRed+p.warning+ansiReset)
 	}
-	hints := []string{"↑↓ move", "space toggle", "→ thinking levels", "s payment", "enter confirm", "esc back"}
-	// Payment is chosen per model only where a model has more than one
-	// source, never on a gateway.
-	if !slices.ContainsFunc(p.rows, func(row agentPickerRow) bool { return len(row.sources) > 0 }) {
-		hints = slices.Delete(hints, 3, 4)
+	legend := []string{"↑↓ move", "enter select", "→ thinking levels and payment", "← close", "esc back"}
+	lines = append(lines, "")
+	for _, hint := range legend {
+		lines = append(lines, "  "+ansiGray+hint+ansiReset)
 	}
-	return append(lines, agentHintLine(hints...))
+	return lines
 }
 
 func agentCheckbox(checked bool) string {

@@ -157,7 +157,11 @@ type agentRouterCreateRequest struct {
 	PrimaryRetries                int                 `json:"primary_retries"`
 	SubscriptionProviders         []string            `json:"subscription_providers"`
 	SubscriptionAPIFallbackModels []string            `json:"subscription_api_fallback_models"`
-	EvalScoreImputation           bool                `json:"eval_score_imputation"`
+	// The models a subscription serves, sent only when some models of a
+	// subscription's provider are paid for another way; omitted, the
+	// subscription serves all of them.
+	SubscriptionModels  []string `json:"subscription_models,omitempty"`
+	EvalScoreImputation bool     `json:"eval_score_imputation"`
 }
 
 type agentRouterUpdateRequest struct {
@@ -239,6 +243,8 @@ func ensureAgentRouter(
 	if !ok {
 		return "default", nil
 	}
+	agentSetupHeader = true
+	defer func() { agentSetupHeader = false }()
 
 	client, err := auth.OrgKeyClient(access.apiURL)
 	if err != nil {
@@ -388,13 +394,13 @@ func ensureAgentRouter(
 		if err != nil {
 			return "", err
 		}
-		note := []string{"The checked models are recommended. Auto-routing picks the best of these for each request."}
+		note := []string{"The checked models are recommended.", "Auto-routing picks the best of these for each request."}
 		if !routing {
 			offer := "Run `dari accounts` to get auto-routing ($20/mo) and have Dari pick for you."
 			if agentInputIsTerminal(stdin) {
 				offer = "Press a to get auto-routing ($20/mo) and have Dari pick for you."
 			}
-			note = []string{"The checked models are recommended. Switch between them with /model.", offer}
+			note = []string{"The checked models are recommended.", "Switch between them with /model.", offer}
 		}
 		choices, err = selectAgentModels(stdin, stderr, title, note, !routing, models, defaultIDs, currentLevels, recommendedLevels, sources)
 		if errors.Is(err, errAgentWantsAutorouting) {
@@ -461,6 +467,7 @@ func ensureAgentRouter(
 		keys.apply(body.ModelProviders, body.ProviderKeySources)
 		body.ProviderCredentialIDs = keys.credentialIDs
 		body.SubscriptionProviders = keys.subscriptionProviders
+		body.SubscriptionModels = keys.subscriptionModels
 		if fallback := keys.fallbackModels(nil, body.EnabledModels); fallback != nil {
 			body.SubscriptionAPIFallbackModels = fallback
 		}
@@ -1065,14 +1072,74 @@ func (row *agentPickerRow) usesRecommended() bool {
 }
 
 type agentPickerState struct {
-	rows        []agentPickerRow
-	cursor      int
-	offset      int
-	editing     bool
-	levelCursor int
+	rows []agentPickerRow
+	// cursor indexes items(): the models, an open model's thinking levels
+	// and payment, then Continue.
+	cursor int
+	// open is the model whose thinking levels and payment show beneath it,
+	// or -1.
+	open int
+	// warning shows by Continue when there is nothing to continue with.
+	warning string
 	// quit is set when the picker was left with q or ctrl+c, which leaves the
 	// command, rather than with esc, which goes back.
 	quit bool
+}
+
+// agentPickerItem is one line the cursor can rest on.
+type agentPickerItem struct {
+	kind  string // "model", "level", "source", or "continue"
+	row   int
+	index int
+}
+
+func (p *agentPickerState) items() []agentPickerItem {
+	items := []agentPickerItem{}
+	for i, row := range p.rows {
+		items = append(items, agentPickerItem{kind: "model", row: i})
+		if i != p.open {
+			continue
+		}
+		for j := range row.levelOpts {
+			items = append(items, agentPickerItem{kind: "level", row: i, index: j})
+		}
+		if len(row.sources) > 1 {
+			for j := range row.sources {
+				items = append(items, agentPickerItem{kind: "source", row: i, index: j})
+			}
+		}
+	}
+	return append(items, agentPickerItem{kind: "continue", row: -1})
+}
+
+// cursorOn moves the cursor to row's model line.
+func (p *agentPickerState) cursorOn(row int) {
+	p.cursor = slices.IndexFunc(p.items(), func(item agentPickerItem) bool { return item.kind == "model" && item.row == row })
+}
+
+// openRow shows a model's thinking levels and payment beneath it.
+func (p *agentPickerState) openRow(row int) {
+	p.closeRow()
+	p.open = row
+	p.cursorOn(row)
+}
+
+// closeRow hides the open model's details, giving it its default levels
+// back if none were left checked.
+func (p *agentPickerState) closeRow() {
+	if p.open < 0 {
+		return
+	}
+	row := &p.rows[p.open]
+	if len(row.levelOpts) > 0 && len(row.checkedLevels()) == 0 {
+		row.checked = map[string]bool{}
+		for _, level := range defaultLevelsFor(row.model, nil, row.recommendedLevels()) {
+			row.checked[level] = true
+		}
+	}
+	closed := p.open
+	p.open = -1
+	p.cursorOn(closed)
 }
 
 func newAgentPickerState(
@@ -1082,13 +1149,24 @@ func newAgentPickerState(
 	recommendedLevels map[string][]string,
 	sources map[string][]agentModelSource,
 ) *agentPickerState {
-	state := &agentPickerState{rows: make([]agentPickerRow, 0, len(models))}
+	state := &agentPickerState{rows: make([]agentPickerRow, 0, len(models)), open: -1}
 	for _, model := range models {
 		row := newAgentPickerRow(model, currentLevels[model.ID], recommendedLevels[model.ID])
 		row.selected = slices.Contains(defaults, model.ID)
 		row.sources = sources[model.ID]
 		state.rows = append(state.rows, row)
 	}
+	// Models are shown under their provider, providers in the order they
+	// first appear.
+	order := []string{}
+	for _, row := range state.rows {
+		if !slices.Contains(order, row.model.Provider) {
+			order = append(order, row.model.Provider)
+		}
+	}
+	slices.SortStableFunc(state.rows, func(a, b agentPickerRow) int {
+		return slices.Index(order, a.model.Provider) - slices.Index(order, b.model.Provider)
+	})
 	return state
 }
 
@@ -1139,102 +1217,57 @@ func (p *agentPickerState) choices() []agentModelChoice {
 	return choices
 }
 
-// cycleSource moves a model to its next source. A subscription, the
-// provider's own key, and credits apply per provider on a router, so models of
-// the same provider that use one of those follow; gateway keys stay per model.
-func (p *agentPickerState) cycleSource() {
-	row := &p.rows[p.cursor]
-	if len(row.sources) < 2 {
-		return
-	}
-	row.source = (row.source + 1) % len(row.sources)
-	chosen := row.sources[row.source]
-	if !chosen.native() {
-		return
-	}
-	for i := range p.rows {
-		other := &p.rows[i]
-		if i == p.cursor || len(other.sources) == 0 || other.sources[other.source].modelProvider != chosen.modelProvider || !other.sources[other.source].native() {
-			continue
-		}
-		if index := slices.IndexFunc(other.sources, func(source agentModelSource) bool {
-			return source.kind == chosen.kind && source.provider == chosen.provider
-		}); index >= 0 {
-			other.source = index
-		}
-	}
-}
-
+// handleKey moves the cursor or acts on the line under it: enter (or space)
+// chooses a model, a thinking level, or how a model is paid for, and on
+// Continue finishes; → opens a model's details and ← closes them.
 func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
-	if p.editing {
-		return p.handleLevelKey(key)
-	}
-	row := &p.rows[p.cursor]
+	items := p.items()
+	p.cursor = min(max(p.cursor, 0), len(items)-1)
+	item := items[p.cursor]
 	switch key {
 	case "up", "k":
-		p.cursor = (p.cursor - 1 + len(p.rows)) % len(p.rows)
+		p.cursor = max(p.cursor-1, 0)
 	case "down", "j":
-		p.cursor = (p.cursor + 1) % len(p.rows)
-	case " ":
-		row.selected = !row.selected
-	case "s":
-		p.cycleSource()
+		p.cursor = min(p.cursor+1, len(items)-1)
 	case "right", "l":
-		if len(row.levelOpts) > 0 {
-			p.editing = true
-			p.levelCursor = firstCheckedIndex(row)
+		if item.kind == "model" && item.row != p.open {
+			if row := p.rows[item.row]; len(row.levelOpts) > 0 || len(row.sources) > 1 {
+				p.openRow(item.row)
+			}
 		}
-	case "enter":
-		if p.selectedCount() == 0 {
+	case "left", "h":
+		p.closeRow()
+	case "enter", " ":
+		p.warning = ""
+		switch item.kind {
+		case "model":
+			p.rows[item.row].selected = !p.rows[item.row].selected
+		case "level":
+			row := &p.rows[item.row]
+			level := row.levelOpts[item.index]
+			row.checked[level] = !row.checked[level]
+		case "source":
+			// Each model is paid for on its own, even within one provider.
+			p.rows[item.row].source = item.index
+		case "continue":
+			if p.selectedCount() == 0 {
+				p.warning = "Choose at least one model."
+				return false, false
+			}
+			p.closeRow()
+			return true, false
+		}
+	case "esc":
+		if p.open >= 0 {
+			p.closeRow()
 			return false, false
 		}
-		return true, false
-	case "esc":
 		return false, true
 	case "quit":
 		p.quit = true
 		return false, true
 	}
 	return false, false
-}
-
-func (p *agentPickerState) handleLevelKey(key string) (done, canceled bool) {
-	row := &p.rows[p.cursor]
-	switch key {
-	case "up", "k":
-		p.levelCursor = (p.levelCursor - 1 + len(row.levelOpts)) % len(row.levelOpts)
-	case "down", "j":
-		p.levelCursor = (p.levelCursor + 1) % len(row.levelOpts)
-	case " ":
-		level := row.levelOpts[p.levelCursor]
-		row.checked[level] = !row.checked[level]
-	case "left", "h", "esc", "enter":
-		p.exitEditing()
-	case "quit":
-		p.quit = true
-		return false, true
-	}
-	return false, false
-}
-
-func firstCheckedIndex(row *agentPickerRow) int {
-	for i, level := range row.levelOpts {
-		if row.checked[level] {
-			return i
-		}
-	}
-	return 0
-}
-
-func (p *agentPickerState) exitEditing() {
-	row := &p.rows[p.cursor]
-	if len(row.checkedLevels()) == 0 {
-		row.checked = map[string]bool{}
-		for _, level := range defaultLevelsFor(row.model, nil, row.recommendedLevels()) {
-			row.checked[level] = true
-		}
-	}
-	p.editing = false
 }
 
 func modelIDs(models []agentModel) []string {
@@ -1433,7 +1466,7 @@ func chooseAgentSessionPinning(stdin io.Reader, stderr io.Writer, current bool) 
 		return current, nil
 	}
 	choice, err := runAgentChoiceTUI(stdin, stderr, "When should Dari pick the model?", nil, []agentChoiceOption{
-		{label: "Every turn (default)", description: "Dari picks the best model for each request.", done: "Routing every turn"},
+		{label: "Every turn " + ansiGreen + "(default)" + ansiReset, description: "Dari picks the best model for each request.", done: "Routing every turn"},
 		{label: "Once per session", description: "Dari picks when a session starts and keeps that model. Each subagent gets its own pick, then keeps it.", done: "Routing once per session"},
 	})
 	if err != nil {

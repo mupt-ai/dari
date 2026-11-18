@@ -627,12 +627,28 @@ func resolveCredentialValue(name string, explicit *string, useStdin bool) (strin
 	}
 }
 
+// requireHostedResets refuses the banked-reset commands on a gateway, which
+// does not serve them.
+func requireHostedResets() error {
+	gateway, err := currentGateway()
+	if err != nil {
+		return err
+	}
+	if gateway != nil {
+		return errors.New("banked resets are only available on the hosted Dari API; they are not supported with a gateway")
+	}
+	return nil
+}
+
 func newSubscriptionResetsCmd(gf *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "resets <codex|claude-code|NAME>",
 		Short: "List a ChatGPT or Claude Code subscription's banked limit resets, the soonest to expire first",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireHostedResets(); err != nil {
+				return err
+			}
 			name, err := resolveSubscriptionName(cmd, gf, args[0])
 			if err != nil {
 				return err
@@ -656,6 +672,9 @@ func newSubscriptionUseResetCmd(gf *globalFlags) *cobra.Command {
 			"usually kept (for example \"nothing_to_reset\" when the plan is not at a limit).",
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireHostedResets(); err != nil {
+				return err
+			}
 			name, err := resolveSubscriptionName(cmd, gf, args[0])
 			if err != nil {
 				return err

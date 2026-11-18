@@ -31,13 +31,14 @@ The gateway is the runtime behind Dari's hosted routing service, packaged to run
 - **Failover.** A provider failure retries the router's next model.
 - **Prompt-cache aware.** Conversations keep their identity and serving model across turns, so provider caches stay warm. Responses carry `X-Dari-Selected-Model`, `X-Dari-Thinking-Level`, and `X-Dari-Conversation-Id` headers for status lines.
 - **Coding agents.** `dari claude`, `dari codex`, `dari opencode`, and `dari pi` from the [Dari CLI](https://github.com/mupt-ai/dari) launch straight against your gateway.
+- **Activity.** Every request's model, tokens, cost, conversation, and tool and skill use is kept in the gateway database and read at `GET /v1/organizations/current/routing/activity/...` (overview, series, models, people-keys, conversations, tools-skills, and the rest) with a gateway key, or with `dari activity`. It is the same code that serves Activity on hosted Dari.
 
 Dari Auto Routing (choosing among a router's models with Dari's trained policy) is optional and needs a Dari API key; without it, `dari/routing` serves the router's first available model.
 
 ## Run
 
 > [!IMPORTANT]
-> **Observability needs hosted Dari.** Requests through your own gateway never reach Dari, so there is no Activity dashboard, per-request cost, or usage analytics. Use hosted mode (`dari gateway setup --mode hosted`) if you want them.
+> **Activity stays on your gateway.** Requests through your own gateway never reach Dari. The gateway keeps their Activity itself, read with `dari activity` or the Activity API; the Activity dashboard and billing are hosted only (`dari gateway setup --mode hosted`).
 
 The easiest way to run it on your own machine is the [Dari CLI](https://github.com/mupt-ai/dari): choose **Fully local** in `dari gateway setup` (or on your first `dari claude`), and it installs this gateway's standalone binary, runs it in the background, and connects your agents.
 
@@ -63,7 +64,7 @@ docker run -p 8080:8080 \
 | --- | --- |
 | `DARI_GATEWAY_KEYS` | Required. Comma-separated bearer keys clients authenticate with. |
 | `DARI_GATEWAY_CONFIG` | Router config file. Default `dari-gateway.yaml`. |
-| `DARI_GATEWAY_DB` | SQLite database for subscriptions, Dari Link grants, model lists saved with `dari gateway models`, and conversation state. Default `dari-gateway.db`. Without `DARI_GATEWAY_ENCRYPTION_KEY` it stores subscription tokens in plaintext; protect it like a secret either way. |
+| `DARI_GATEWAY_DB` | SQLite database for subscriptions, Dari Link grants, model lists saved with `dari gateway models`, conversation state, and Activity (each request's log row and, outside ZDR routers, its request and response bodies). Default `dari-gateway.db`. Without `DARI_GATEWAY_ENCRYPTION_KEY` it stores subscription tokens in plaintext; protect it like a secret either way. |
 | `DARI_GATEWAY_ENCRYPTION_KEY` | Encrypts the subscription tokens, pending sign-ins, and API keys in the database: a 32-byte key in base64 (`openssl rand -base64 32`). Each value is sealed with AES-256-GCM and bound to its own row, so a copied database, or a token moved into another row, is useless without the key. Keep the key outside the database's storage and backups (a secret manager, not the same disk). To rotate, list the new key first and the old one after a comma, start the gateway once (it re-encrypts everything under the first), then drop the old one. Required for Dari Link: without it the approval page takes nobody's subscriptions or keys. Losing the key loses the stored subscriptions; users connect again. |
 | `DARI_LINK_SESSION_SECRET` | Signs the cookie that remembers the user of Dari Link's approval and connections pages. Unset, each gateway process makes its own, so a restart forgets who connected which plans. Set it on any gateway that serves Dari Link. |
 | `DARI_AUTO_ROUTING_API_KEY` | Optional. Select among a router's models with Dari Auto Routing. |
@@ -116,7 +117,7 @@ dari accounts subscription connect claude-code   # or codex or muse-code; repeat
 dari claude
 ```
 
-In gateway mode the CLI makes no calls to Dari's hosted API, and `dari activity` is unavailable.
+In gateway mode the CLI makes no calls to Dari's hosted API; `dari activity` reads the gateway's own Activity.
 
 ## Dari Link
 

@@ -233,9 +233,16 @@ func CurrentStatus(apiURL string) (Status, error) {
 // If DARI_API_KEY is set it takes precedence: the key is used as the bearer,
 // the JWT refresh dance is skipped entirely, and no state is written.
 func DoAuthenticated(ctx context.Context, apiURL, method, path string, body, out any) (*state.CliState, error) {
+	return DoAuthenticatedOn(ctx, apiURL, apiURL, method, path, body, out)
+}
+
+// DoAuthenticatedOn is DoAuthenticated for a request to another Dari service
+// (serviceURL) that accepts the session of the API at apiURL.
+func DoAuthenticatedOn(ctx context.Context, apiURL, serviceURL, method, path string, body, out any) (*state.CliState, error) {
 	apiURL = api.NormalizeURL(apiURL)
+	serviceURL = api.NormalizeURL(serviceURL)
 	if key := EnvAPIKeyValue(); key != "" {
-		err := api.New(apiURL).WithBearer(key).Do(ctx, method, path, body, out)
+		err := api.New(serviceURL).WithBearer(key).Do(ctx, method, path, body, out)
 		return nil, translateAuthError(err)
 	}
 	s, err := state.Load()
@@ -256,7 +263,7 @@ func DoAuthenticated(ctx context.Context, apiURL, method, path string, body, out
 	}
 
 	accessToken := s.SupabaseSession.AccessToken
-	client := api.New(apiURL).WithBearer(accessToken)
+	client := api.New(serviceURL).WithBearer(accessToken)
 	err = client.Do(ctx, method, path, body, out)
 	if err == nil {
 		return s, nil
@@ -266,7 +273,7 @@ func DoAuthenticated(ctx context.Context, apiURL, method, path string, body, out
 		if err != nil {
 			return nil, err
 		}
-		client = api.New(apiURL).WithBearer(s.SupabaseSession.AccessToken)
+		client = api.New(serviceURL).WithBearer(s.SupabaseSession.AccessToken)
 		err = client.Do(ctx, method, path, body, out)
 	}
 	return s, translateAuthError(err)

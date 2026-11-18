@@ -11,6 +11,7 @@ import { RouterModelStore } from "./router_models.js";
 import { SessionPinStore } from "./session_pin_store.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 import { tokens } from "./subscriptions/test_support.js";
+import { ActivityStore } from "./activity_store.js";
 
 // A Claude Code plan serves Anthropic models only to Claude Code, so a model
 // list for Claude Code (named by the Dari CLI's launcher) includes them, and
@@ -24,6 +25,7 @@ test("the model list counts a Claude Code plan only for Claude Code", async () =
     config: parseGatewayConfig({
       routers: { default: { models: ["anthropic/claude-sonnet-5-5", "openai/gpt-6.1-sol"] } },
     }),
+    activity: new ActivityStore(db),
     routerModels: new RouterModelStore(db),
     gatewayKeys: ["k"],
     subscriptions,

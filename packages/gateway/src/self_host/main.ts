@@ -10,12 +10,18 @@ import { installShutdownHandlers, startServer } from "../http/serve.js";
 import { createAutoRoutingSelectorBackend } from "../strategies/auto_routing_selector.js";
 import { createPrioritySelectorBackend } from "../strategies/priority_selector.js";
 import type { SelectorBackend } from "../strategies/routing.js";
+import { ActivityStore } from "./activity_store.js";
 import { createSelfHostedPlatform } from "./platform.js";
 import { providerForModel } from "@mupt-ai/dari-router/policy-engine";
 import { checkProviderKey } from "../providers/key_check.js";
 import { CANONICAL_MODELS } from "../models/canonical.js";
 import { allRouterModels, loadGatewayConfig, type GatewayConfig, type RouterConfig } from "./config.js";
-import { configuredProviderApiKey, gatewayKeyIndex, providersWithoutCredentials } from "./resolve.js";
+import {
+  configuredProviderApiKey,
+  gatewayKeyIndex,
+  providersWithoutCredentials,
+  SELF_HOSTED_ORGANIZATION_ID,
+} from "./resolve.js";
 import { SqliteLinkStore } from "../link/sqlite_store.js";
 import { secretBoxFromEnv } from "./secret_box.js";
 import { PrefixStore } from "./prefix_store.js";
@@ -34,8 +40,9 @@ const CANONICAL_MODELS_ROUTE = "/v1/canonical-models";
  * - `DARI_GATEWAY_CONFIG`: router config file. Unset, `dari-gateway.yaml`
  *   serves when present, and otherwise the default router.
  * - `DARI_GATEWAY_DB`: SQLite database for subscriptions, Dari Link grants,
- *   saved model lists, and prefix-cache state (default `dari-gateway.db`). It
- *   holds subscription tokens.
+ *   saved model lists, prefix-cache state, and Activity: each request's log
+ *   row and, outside ZDR routers, its request and response bodies (default
+ *   `dari-gateway.db`). It holds subscription tokens.
  * - `DARI_GATEWAY_ENCRYPTION_KEY`: encrypts the subscription tokens and API
  *   keys in the database (`openssl rand -base64 32`; see secret_box.ts for
  *   rotation). Unset, they are stored as they are, and the Dari Link approval
@@ -73,6 +80,12 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   const sessionPins = new SessionPinStore(db);
   const routerModels = new RouterModelStore(db);
   const links = new SqliteLinkStore(db, secrets);
+  const activity = new ActivityStore(db);
+  activity.syncDirectory(
+    SELF_HOSTED_ORGANIZATION_ID,
+    Object.entries(config.routers).map(([id, router]) => ({ id, zdr: router.zdr })),
+    gatewayKeys.length,
+  );
   // Pi's provider auth reads each provider's standard key variable, such as
   // OPENAI_API_KEY, from this environment only.
   const piModels = builtinModels({
@@ -82,6 +95,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   const providerApiKey = async (provider: string) => (await piModels.getAuth(provider))?.auth.apiKey;
   const autoRoutingKey = env.DARI_AUTO_ROUTING_API_KEY?.trim();
   const platform = createSelfHostedPlatform({
+    activity,
     config,
     routerModels,
     gatewayKeys,

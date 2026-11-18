@@ -310,7 +310,7 @@ func runAgentChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details
 				case "enter":
 					return cursor, nil
 				case "quit", "esc":
-					return 0, errors.New("agent onboarding canceled")
+					return 0, errAgentChoiceCanceled
 				default:
 					if index := int(key[0] - '1'); len(key) == 1 && index >= 0 && index < len(options) {
 						return index, nil
@@ -612,6 +612,10 @@ func inputDisplay(input string, width int, placeholder string) string {
 // errAgentWantsAutorouting is the model picker's answer when the user asks
 // for the Autorouting plan instead of choosing.
 var errAgentWantsAutorouting = errors.New("autorouting requested")
+
+// errAgentChoiceCanceled is Esc on a choice; a page nested in another treats
+// it as going back.
+var errAgentChoiceCanceled = errors.New("agent onboarding canceled")
 
 func runAgentPicker(
 	stdin io.Reader,

@@ -164,6 +164,8 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		defer releaseAgentScreen()
 	}
 	result := accountsResult{}
+	// reopen is the subscription whose page to show again once the list reloads.
+	reopen := ""
 	for {
 		var raw json.RawMessage
 		// OpenCode Go reports plan usage only when asked.
@@ -179,6 +181,16 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		subscriptions := slices.DeleteFunc(personalSubscriptions(listed.Credentials), func(c subscriptionCredential) bool {
 			return !slices.ContainsFunc(page.providers, func(p agentSubscriptionProvider) bool { return p.id == c.OAuthProvider })
 		})
+		if i := slices.IndexFunc(subscriptions, func(c subscriptionCredential) bool { return c.Name == reopen }); i >= 0 {
+			stay, err := page.manageSubscription(ctx, subscriptions[i], stdin, stderr)
+			if err != nil {
+				return result, err
+			}
+			if stay {
+				continue
+			}
+		}
+		reopen = ""
 		keys := map[string]agentProviderCredential{}
 		if page.hosted {
 			var listedKeys struct {
@@ -222,7 +234,11 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		}
 		for _, subscription := range subscriptions {
 			add(agentChoiceOption{label: subscriptionName(subscription)}, func() (bool, error) {
-				return false, page.manageSubscription(ctx, subscription, stdin, stderr)
+				stay, err := page.manageSubscription(ctx, subscription, stdin, stderr)
+				if stay {
+					reopen = subscription.Name
+				}
+				return false, err
 			})
 		}
 		add(agentChoiceOption{label: "Add a subscription"}, func() (bool, error) {
@@ -331,8 +347,10 @@ func (page accountsPage) addSubscription(ctx context.Context, subscriptions []su
 }
 
 // manageSubscription is one subscription's page: its plan at the vendor, its
-// name, its connection, a usage-limit hold, and banked limit resets.
-func (page accountsPage) manageSubscription(ctx context.Context, subscription subscriptionCredential, stdin io.Reader, stderr io.Writer) error {
+// name, its connection, a usage-limit hold, and banked limit resets. It
+// reports whether to show the page again, reloaded: after any action but
+// Back and a disconnect. Esc in a dialog it opens returns to the page.
+func (page accountsPage) manageSubscription(ctx context.Context, subscription subscriptionCredential, stdin io.Reader, stderr io.Writer) (bool, error) {
 	name := subscriptionName(subscription)
 	provider := subscriptionProviderFor(subscription.OAuthProvider)
 	path := "/v1/organizations/current/credentials/" + url.PathEscape(subscription.Name)
@@ -372,10 +390,9 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 	if page.hosted && (provider == codexSubscription || provider == claudeSubscription) {
 		resets, err := listSubscriptionResets(ctx, page.client, subscription.Name)
 		lines = append(lines, subscriptionResetLines(resets, err)...)
-		if usable := slices.IndexFunc(resets, func(r subscriptionReset) bool { return r.Usable }); usable >= 0 {
-			reset := resets[usable]
+		if slices.ContainsFunc(resets, func(r subscriptionReset) bool { return r.Usable }) {
 			add("Use a reset now", func() error {
-				return page.useReset(ctx, subscription, reset, stdin, stderr)
+				return page.useReset(ctx, subscription, resets, stdin, stderr)
 			})
 		}
 		label := "Use banked resets when every " + provider.name + " subscription is exhausted"
@@ -387,19 +404,27 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
 		})
 	}
+	disconnected := false
 	add("Disconnect", func() error {
 		confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", nil, []agentChoiceOption{{label: "Keep it"}, {label: "Disconnect", done: name + " disconnected"}})
 		if err != nil || confirm == 0 {
 			return err
 		}
+		disconnected = true
 		return api.HumanError(page.client.Do(ctx, http.MethodDelete, path+"?scope=user", nil, nil))
 	})
 	options = append(options, agentChoiceOption{label: "Back"})
 	choice, err := runAgentChoiceTUI(stdin, stderr, name, lines, options)
-	if err != nil || choice == len(actions) {
-		return err
+	if errors.Is(err, errAgentChoiceCanceled) || (err == nil && choice == len(actions)) {
+		return false, nil
 	}
-	return actions[choice]()
+	if err != nil {
+		return false, err
+	}
+	if err := actions[choice](); err != nil && !errors.Is(err, errAgentChoiceCanceled) {
+		return false, err
+	}
+	return !disconnected, nil
 }
 
 // addLocalKey saves a provider API key into the local gateway's settings.
@@ -512,12 +537,23 @@ func usageResetTime(resets time.Time) string {
 	return local.Format("Jan 2 3:04pm")
 }
 
-// useReset spends one banked reset after the user confirms, then shows what
-// the provider answered.
-func (page accountsPage) useReset(ctx context.Context, subscription subscriptionCredential, reset subscriptionReset, stdin io.Reader, stderr io.Writer) error {
+// useReset lets the user pick one usable banked reset and spends it after
+// they confirm, then shows what the provider answered.
+func (page accountsPage) useReset(ctx context.Context, subscription subscriptionCredential, resets []subscriptionReset, stdin io.Reader, stderr io.Writer) error {
 	name := subscriptionName(subscription)
+	usable := slices.DeleteFunc(slices.Clone(resets), func(r subscriptionReset) bool { return !r.Usable })
+	options := []agentChoiceOption{}
+	for _, reset := range usable {
+		options = append(options, agentChoiceOption{label: reset.Label + resetExpiry(reset)})
+	}
+	options = append(options, agentChoiceOption{label: "Back"})
+	picked, err := runAgentChoiceTUI(stdin, stderr, "Use a reset on "+name, nil, options)
+	if err != nil || picked == len(usable) {
+		return err
+	}
+	reset := usable[picked]
 	details := []string{"  " + ansiGray + "Spends " + reset.Label + resetExpiry(reset) + " to clear " + name + "'s usage limits now." + ansiReset, ""}
-	confirm, err := runAgentChoiceTUI(stdin, stderr, "Use a reset on "+name+"?", details, []agentChoiceOption{{label: "Keep it"}, {label: "Use it"}})
+	confirm, err := runAgentChoiceTUI(stdin, stderr, "Use this reset?", details, []agentChoiceOption{{label: "Keep it"}, {label: "Use it"}})
 	if err != nil || confirm == 0 {
 		return err
 	}

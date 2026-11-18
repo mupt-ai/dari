@@ -273,19 +273,19 @@ func TestMuseCodeSubscriptionRetriesWhileMetaApprovalIsPending(t *testing.T) {
 func TestAgentChoiceLinesNumberGroupedAccounts(t *testing.T) {
 	resets := time.Now().Add(2 * time.Hour)
 	claude := subscriptionCredential{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, Usage: &subscriptionUsage{Windows: []subscriptionUsageWindow{{Label: "5 Hour", Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339)}}}}
-	lines := agentChoiceLines("Accounts", nil, []agentChoiceOption{
+	lines := agentChoiceLines("", nil, []agentChoiceOption{
 		{heading: "Subscriptions", label: subscriptionLabel(claude, true), details: subscriptionDetailLines(claude)},
 		{heading: "API Keys", label: "Vercel AI Gateway"},
-		{gap: true, label: "Done"},
+		{heading: "Settings", label: "Done"},
 		{label: "Add a subscription"},
 	}, 2, "esc close")
-	got := stripANSI(strings.Join(lines[1:], "\n"))
-	want := "\n  Subscriptions " + strings.Repeat("─", 31) + "\n\n" +
+	got := stripANSI(strings.Join(lines, "\n"))
+	want := "◆ Subscriptions " + strings.Repeat("─", 31) + "\n\n" +
 		"  [1] Claude Code  CLAUDE\n" +
-		"      5 Hour  ▰▰▰▰▱▱▱▱▱▱   40% used · resets " + usageResetTime(resets) + "\n" +
-		"\n  API Keys " + strings.Repeat("─", 36) + "\n\n" +
+		"      5 Hour  ▰▰▰▰▱▱▱▱▱▱  40% used       resets " + usageResetTime(resets) + "\n" +
+		"\n◆ API Keys " + strings.Repeat("─", 36) + "\n\n" +
 		"  [2] Vercel AI Gateway\n" +
-		"\n" +
+		"\n◆ Settings " + strings.Repeat("─", 36) + "\n\n" +
 		"❯ [3] Done\n" +
 		"  [4] Add a subscription\n" +
 		"  ↑↓ move · enter confirm · esc close"

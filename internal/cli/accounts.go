@@ -272,11 +272,15 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				return false, manageAPIKey(stdin, stderr, key.name, key.remove)
 			})
 		}
-		finish.gap = connected
+		finish.heading = "Settings"
 		if !page.onboarding || connected {
 			add(finish, leave)
 		}
-		add(agentChoiceOption{label: "Add a subscription", gap: page.onboarding && !connected}, func() (bool, error) {
+		addSubscription := agentChoiceOption{label: "Add a subscription"}
+		if page.onboarding && !connected {
+			addSubscription.heading = "Settings"
+		}
+		add(addSubscription, func() (bool, error) {
 			provider, ok, err := page.addSubscription(ctx, subscriptions, stdin, stderr)
 			if ok && !slices.Contains(result.added, provider) {
 				result.added = append(result.added, provider)
@@ -328,7 +332,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		if page.onboarding {
 			choose = runAgentChoicePageClosing
 		}
-		choice, err := choose(stdin, stderr, "Accounts", lines, options)
+		choice, err := choose(stdin, stderr, "", lines, options)
 		if errors.Is(err, errAgentChoiceCanceled) && !page.onboarding {
 			return result, nil
 		}

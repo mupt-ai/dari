@@ -113,7 +113,8 @@ func subscriptionDetailLines(subscription subscriptionCredential) []string {
 		resets, _ := time.Parse(time.RFC3339Nano, hold.UnavailableUntil)
 		meters = append(meters, meter{cmp.Or(hold.DisplayName, hold.Model), 1, resets})
 	}
-	width := 0
+	// Every column starts at the same place: name, meter, use, reset.
+	width, statusWidth := 0, len(usageLimitReached)
 	for _, m := range meters {
 		width = max(width, len([]rune(m.label)))
 	}
@@ -122,15 +123,17 @@ func subscriptionDetailLines(subscription subscriptionCredential) []string {
 		label := m.label + strings.Repeat(" ", width-len([]rune(m.label)))
 		filled := min(usageMeterWidth, int(m.used*usageMeterWidth+0.5))
 		bar := ansiReset + strings.Repeat("▰", filled) + ansiGray + strings.Repeat("▱", usageMeterWidth-filled)
-		used := fmt.Sprintf("%3.0f%% used", m.used*100)
+		used := fmt.Sprintf("%.0f%% used", m.used*100)
+		used += strings.Repeat(" ", statusWidth-len(used))
 		if m.used >= 1 {
 			bar = ansiRed + strings.Repeat("▰", usageMeterWidth) + ansiGray
 			used = ansiRed + usageLimitReached + ansiGray
 		}
-		lines = append(lines, "  "+ansiGray+label+"  "+bar+"  "+used+" · resets "+usageResetTime(m.resets)+ansiReset)
+		lines = append(lines, "  "+ansiGray+label+"  "+bar+"  "+used+"  resets "+usageResetTime(m.resets)+ansiReset)
 	}
 	if renews, err := time.Parse(time.RFC3339, subscription.SafeMetadata["renews_at"]); err == nil && renews.After(now) {
-		lines = append(lines, "  "+ansiGray+"Renews "+renews.Local().Format("Jan 2")+ansiReset)
+		// The plan's billing renewal, apart from its usage windows' resets.
+		lines = append(lines, "  "+ansiGray+"Plan renews "+renews.Local().Format("Jan 2")+ansiReset)
 	}
 	return lines
 }

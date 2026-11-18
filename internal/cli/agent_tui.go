@@ -354,11 +354,19 @@ func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, detail
 }
 
 func agentChoiceLines(prompt string, details []string, options []agentChoiceOption, cursor int, escHint string) []string {
-	lines := append([]string{agentPromptLine(prompt)}, details...)
+	// A page whose options are grouped under headings may have no title.
+	lines := []string{}
+	if prompt != "" {
+		lines = append(lines, agentPromptLine(prompt))
+	}
+	lines = append(lines, details...)
 	for index, option := range options {
 		if option.heading != "" {
 			rule := strings.Repeat("─", max(3, 44-len([]rune(option.heading))))
-			lines = append(lines, "", "  "+ansiBold+option.heading+ansiReset+" "+ansiGray+rule+ansiReset, "")
+			if len(lines) > 0 {
+				lines = append(lines, "")
+			}
+			lines = append(lines, agentPromptLine(option.heading)+" "+ansiGray+rule+ansiReset, "")
 		} else if option.gap {
 			lines = append(lines, "")
 		}

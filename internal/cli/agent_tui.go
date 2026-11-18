@@ -287,6 +287,8 @@ type agentChoiceOption struct {
 	gap     bool
 	// details are lines shown under the option, such as a plan's usage.
 	details []string
+	// boxed draws a rounded box around the option and its details.
+	boxed bool
 }
 
 // runAgentChoiceTUI asks one question, with optional detail lines between the
@@ -360,6 +362,16 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 		lines = append(lines, agentPromptLine(prompt))
 	}
 	lines = append(lines, details...)
+	// Boxed options share one width, the widest of them.
+	boxWidth := 0
+	for index, option := range options {
+		if option.boxed {
+			boxWidth = max(boxWidth, ansiVisibleWidth(fmt.Sprintf("[%d] %s", index+1, option.label)))
+			for _, detail := range option.details {
+				boxWidth = max(boxWidth, ansiVisibleWidth("  "+detail))
+			}
+		}
+	}
 	for index, option := range options {
 		if option.heading != "" {
 			rule := strings.Repeat("─", max(3, 44-len([]rune(option.heading))))
@@ -373,6 +385,18 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 		label := fmt.Sprintf("[%d] %s", index+1, option.label)
 		if index == cursor {
 			label = ansiBold + label + ansiReset
+		}
+		if option.boxed {
+			row := func(text string) string {
+				return ansiGray + "│" + ansiReset + " " + text + strings.Repeat(" ", max(0, boxWidth-ansiVisibleWidth(text))) + " " + ansiGray + "│" + ansiReset
+			}
+			border := strings.Repeat("─", boxWidth+2)
+			lines = append(lines, "  "+ansiGray+"╭"+border+"╮"+ansiReset, agentCursor(index == cursor)+row(label))
+			for _, detail := range option.details {
+				lines = append(lines, "  "+row("  "+detail))
+			}
+			lines = append(lines, "  "+ansiGray+"╰"+border+"╯"+ansiReset)
+			continue
 		}
 		line := agentCursor(index == cursor) + label
 		if option.note != "" {

@@ -127,9 +127,23 @@ func agentPromptLine(prompt string) string {
 	return ansiCoral + "◆" + ansiReset + " " + ansiBold + prompt + ansiReset
 }
 
+// agentHintLine is a page's keys on one line, each key bright and what it
+// does gray.
 func agentHintLine(hints ...string) string {
-	return "  " + ansiGray + strings.Join(hints, " · ") + ansiReset
+	parts := make([]string, len(hints))
+	for i, hint := range hints {
+		key, what, ok := strings.Cut(hint, " ")
+		if ok && slices.Contains(agentHintKeys, key) {
+			parts[i] = ansiReset + ansiBold + key + ansiReset + ansiGray + " " + what
+		} else {
+			parts[i] = hint
+		}
+	}
+	return "  " + ansiGray + strings.Join(parts, " · ") + ansiReset
 }
+
+// agentHintKeys are the keys agentHintLine brightens.
+var agentHintKeys = []string{"↑↓", "←", "→", "enter", "esc", "space", "ctrl+c", "q", "a", "tab"}
 
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
@@ -1375,12 +1389,7 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 	if p.warning != "" {
 		lines = append(lines, "  "+ansiRed+p.warning+ansiReset)
 	}
-	legend := []string{"↑↓ move", "enter select", "→ thinking levels and payment", "← close", "esc back"}
-	lines = append(lines, "")
-	for _, hint := range legend {
-		lines = append(lines, "  "+ansiGray+hint+ansiReset)
-	}
-	return lines
+	return append(lines, "", agentHintLine("↑↓ move", "enter select", "→ levels and payment", "← close", "esc back"))
 }
 
 func agentCheckbox(checked bool) string {

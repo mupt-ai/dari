@@ -297,12 +297,20 @@ type subscriptionReset struct {
 	Usable bool `json:"usable"`
 }
 
-func listSubscriptionResets(ctx context.Context, client *api.Client, name string) ([]subscriptionReset, error) {
+// listSubscriptionResets lists a subscription's resets, and when they were
+// read when the provider refused to list them now and an earlier list stands
+// in ("" when they are live).
+func listSubscriptionResets(ctx context.Context, client *api.Client, name string) ([]subscriptionReset, string, error) {
 	var listed struct {
 		Resets []subscriptionReset `json:"resets"`
+		ReadAt *string             `json:"read_at"`
 	}
 	err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials/"+url.PathEscape(name)+"/resets", nil, &listed)
-	return listed.Resets, api.HumanError(err)
+	readAt := ""
+	if listed.ReadAt != nil {
+		readAt = *listed.ReadAt
+	}
+	return listed.Resets, readAt, api.HumanError(err)
 }
 
 func useSubscriptionReset(ctx context.Context, client *api.Client, name, resetID string) (string, error) {

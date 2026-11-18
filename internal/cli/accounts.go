@@ -443,11 +443,13 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 	resettable := page.hosted && (provider == codexSubscription || provider == claudeSubscription)
 	var resets []subscriptionReset
 	var resetsErr error
+	readAt := ""
 	if resettable {
 		if prefetched == nil {
 			prefetched = fetchSubscriptionResets(ctx, page.client, subscription.Name)
 		}
 		resets, resetsErr = prefetched.wait()
+		readAt = prefetched.readAt
 	}
 	// Every subscription's page lays out its box the same: the list's columns,
 	// and the width of the widest subscription's box.
@@ -496,6 +498,10 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			option := agentChoiceOption{label: padRight(reset.Label, labelWidth) + "  " + ansiGray + note + ansiReset}
 			if i == 0 {
 				option.heading = fmt.Sprintf("Banked Resets (%d)", len(resets))
+				// A list the provider would not give again now says how old it is.
+				if read, err := time.Parse(time.RFC3339Nano, readAt); err == nil {
+					option.heading += ansiReset + ansiGray + " · as of " + usageResetTime(read)
+				}
 			}
 			add(option, func() (bool, error) {
 				return page.useReset(ctx, subscription, reset, stdin, stderr)
@@ -597,6 +603,7 @@ const (
 type resetsFetch struct {
 	done   chan struct{}
 	resets []subscriptionReset
+	readAt string
 	err    error
 }
 
@@ -604,7 +611,7 @@ func fetchSubscriptionResets(ctx context.Context, client *api.Client, name strin
 	fetch := &resetsFetch{done: make(chan struct{})}
 	go func() {
 		defer close(fetch.done)
-		fetch.resets, fetch.err = listSubscriptionResets(ctx, client, name)
+		fetch.resets, fetch.readAt, fetch.err = listSubscriptionResets(ctx, client, name)
 	}()
 	return fetch
 }

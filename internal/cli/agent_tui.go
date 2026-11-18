@@ -1295,20 +1295,26 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 	}
 	items := p.items()
 	focus := items[min(max(p.cursor, 0), len(items)-1)]
-	// Several thinking levels stack in their column, one to a line, so the
-	// column keeps one width.
-	nameWidth, levelWidth := 0, len("default")
+	// Recommended has its own column before the thinking levels, which come
+	// last on the line so their length shifts nothing.
+	nameWidth, recWidth := 0, 0
 	for _, row := range p.rows {
 		nameWidth = max(nameWidth, len([]rune(row.model.DisplayName)))
-		for _, level := range row.levelOpts {
-			levelWidth = max(levelWidth, len(level))
+		if row.usesRecommended() {
+			recWidth = len("recommended")
 		}
+	}
+	// Where the thinking levels start, which an open model's level choices
+	// line up under.
+	levelColumn := 2 + 2 + nameWidth + 3
+	if recWidth > 0 {
+		levelColumn += recWidth + 2
 	}
 	provider := ""
 	for i, row := range p.rows {
 		if row.model.Provider != provider {
 			provider = row.model.Provider
-			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset)
+			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset, "")
 		}
 		focused := item(focus, "model", i, 0)
 		name := padRight(row.model.DisplayName, nameWidth)
@@ -1318,13 +1324,12 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 		case !row.selected:
 			name = ansiGray + name + ansiReset
 		}
-		levels := row.checkedLevels()
-		if len(levels) == 0 {
-			levels = []string{"default"}
-		}
 		recommended := ""
-		if row.usesRecommended() {
-			recommended = "  " + ansiGreen + "recommended" + ansiReset
+		if recWidth > 0 {
+			recommended = padRight("", recWidth) + "  "
+			if row.usesRecommended() {
+				recommended = ansiGreen + "recommended" + ansiReset + "  "
+			}
 		}
 		open := " "
 		if len(row.levelOpts) > 1 {
@@ -1333,15 +1338,12 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 				open = ansiGray + "⌄" + ansiReset
 			}
 		}
-		line := agentCursor(focused) + agentCheckbox(row.selected) + " " + name + " " + open + " " + ansiCyan + padRight(levels[0], levelWidth) + ansiReset + recommended
+		levels := cmp.Or(strings.Join(row.checkedLevels(), ", "), "default")
+		line := agentCursor(focused) + agentCheckbox(row.selected) + " " + name + " " + open + " " + recommended + ansiCyan + levels + ansiReset
 		lines = append(lines, agentFocused(line, focused))
-		for _, level := range levels[1:] {
-			lines = append(lines, strings.Repeat(" ", 4+nameWidth+3)+ansiCyan+level+ansiReset)
-		}
 		if i != p.open {
 			continue
 		}
-		lines = append(lines, "      "+ansiGray+"Thinking"+ansiReset)
 		for j, level := range row.levelOpts {
 			focused := item(focus, "level", i, j)
 			label := level
@@ -1352,14 +1354,10 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 			if row.recommended[level] {
 				rec = "  " + ansiGreen + "recommended" + ansiReset
 			}
-			lines = append(lines, agentFocused("    "+agentCursor(focused)+agentCheckbox(row.checked[level])+" "+label+rec, focused))
+			lines = append(lines, agentFocused(strings.Repeat(" ", levelColumn-4)+agentCursor(focused)+agentCheckbox(row.checked[level])+" "+label+rec, focused))
 		}
 	}
-	next := "Continue →"
-	if p.needsPaying() {
-		next = "Next: payment →"
-	}
-	return append(lines, agentPickerFooter(p, focus, next, "↑↓ move", "enter select", "→ thinking levels", "← close", "esc back")...)
+	return append(lines, agentPickerFooter(p, focus, "Continue →", "↑↓ move", "enter select", "→ thinking levels", "← close", "esc back")...)
 }
 
 // agentPayingLines is the picker's second page: each chosen model that can
@@ -1390,7 +1388,7 @@ func agentPayingLines(p *agentPickerState) []string {
 		row := p.rows[it.row]
 		if row.model.Provider != provider {
 			provider = row.model.Provider
-			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset)
+			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset, "")
 		}
 		focused := it == focus
 		name := padRight(row.model.DisplayName, nameWidth)
@@ -1413,9 +1411,11 @@ func agentPayingLines(p *agentPickerState) []string {
 
 // agentPickerFooter is the picker's Continue line, its warning, and its keys.
 func agentPickerFooter(p *agentPickerState, focus agentPickerItem, label string, hints ...string) []string {
+	// Continue reads as a button: bold, and in the cursor's color under it.
 	focused := focus.kind == "continue"
+	label = ansiBold + label + ansiReset
 	if focused {
-		label = ansiBold + label + ansiReset
+		label = ansiBold + ansiCoral + strings.TrimPrefix(label, ansiBold)
 	}
 	lines := []string{"", agentFocused(agentCursor(focused)+label, focused)}
 	if p.warning != "" {

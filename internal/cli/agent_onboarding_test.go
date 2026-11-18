@@ -1463,7 +1463,7 @@ func TestAgentPickerLinesGroupByProviderAndAlign(t *testing.T) {
 	levelCols := map[int]bool{}
 	for _, line := range strings.Split(plain, "\n") {
 		if strings.Contains(line, "○ ") || strings.Contains(line, "◉ ") {
-			levelCols[runeIndex(line, "high")+runeIndex(line, "medium")+1] = true
+			levelCols[runeIndex(line, "recommended")] = true
 		}
 	}
 	if len(levelCols) != 1 {
@@ -1840,26 +1840,31 @@ func TestDropAgentStepTakesBackTheLastMatchingLine(t *testing.T) {
 	}
 }
 
-func TestAgentPickerStacksThinkingLevelsAndEscLeavesPaymentPage(t *testing.T) {
+func TestAgentPickerLevelsLastAndOpenLevelsLineUp(t *testing.T) {
 	models := testAgentModels()
 	models[2].SupportedLevels = []string{"low", "medium", "high", "xhigh"}
 	p := newAgentPickerState(models, []string{"openai/gpt-5.6-sol"}, nil, testRecommendedLevels(), nil)
+	p.cursorOn(2)
+	p.handleKey("right")
 	plain := stripANSI(strings.Join(agentPickerLines("Choose models", nil, p), "\n"))
-	// Sol's two levels stack in one column: medium on its line, xhigh below it.
 	lines := strings.Split(plain, "\n")
+	// Recommended comes before the levels, which share one line.
 	i := slices.IndexFunc(lines, func(line string) bool { return strings.Contains(line, "Sol") })
-	if i < 0 || !strings.Contains(lines[i], "medium") || strings.Contains(lines[i], "xhigh") || strings.TrimSpace(lines[i+1]) != "xhigh" ||
-		runeIndex(lines[i], "medium") != runeIndex(lines[i+1], "xhigh") {
-		t.Fatalf("levels not stacked:\n%s", plain)
+	if i < 0 || !strings.Contains(lines[i], "recommended  medium, xhigh") {
+		t.Fatalf("Sol line:\n%s", plain)
+	}
+	// The open model's levels line up with its displayed levels.
+	if runeIndex(lines[i+1], "low") != runeIndex(lines[i], "medium") {
+		t.Fatalf("levels not lined up:\n%s", plain)
 	}
 	// Esc on the payment page comes back to the models.
+	p.closeRow()
 	p.paying = true
 	if _, canceled := p.handleKey("esc"); canceled || p.paying {
 		t.Fatalf("esc on payment: canceled=%v paying=%v", canceled, p.paying)
 	}
 }
 
-// runeIndex is strings.Index counted in runes, or -1.
 func runeIndex(s, sub string) int {
 	i := strings.Index(s, sub)
 	if i < 0 {

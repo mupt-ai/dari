@@ -1295,21 +1295,15 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 	}
 	items := p.items()
 	focus := items[min(max(p.cursor, 0), len(items)-1)]
-	// Recommended has its own column before the thinking levels, which come
-	// last on the line so their length shifts nothing.
-	nameWidth, recWidth := 0, 0
+	// A recommended model's circle is green; its thinking levels come last
+	// on its line, so their length shifts nothing.
+	nameWidth := 0
 	for _, row := range p.rows {
 		nameWidth = max(nameWidth, len([]rune(row.model.DisplayName)))
-		if row.usesRecommended() {
-			recWidth = len("recommended")
-		}
 	}
-	// Where the thinking levels start, which an open model's level choices
-	// line up under.
+	// Where the thinking levels start, which an open model's choices line up
+	// under.
 	levelColumn := 2 + 2 + nameWidth + 3
-	if recWidth > 0 {
-		levelColumn += recWidth + 2
-	}
 	provider := ""
 	for i, row := range p.rows {
 		if row.model.Provider != provider {
@@ -1324,13 +1318,6 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 		case !row.selected:
 			name = ansiGray + name + ansiReset
 		}
-		recommended := ""
-		if recWidth > 0 {
-			recommended = padRight("", recWidth) + "  "
-			if row.usesRecommended() {
-				recommended = ansiGreen + "recommended" + ansiReset + "  "
-			}
-		}
 		open := " "
 		if len(row.levelOpts) > 1 {
 			open = ansiGray + "›" + ansiReset
@@ -1339,23 +1326,27 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 			}
 		}
 		levels := cmp.Or(strings.Join(row.checkedLevels(), ", "), "default")
-		line := agentCursor(focused) + agentCheckbox(row.selected) + " " + name + " " + open + " " + recommended + ansiCyan + levels + ansiReset
+		line := agentCursor(focused) + agentPickerCircle(row.selected, row.usesRecommended()) + " " + name + " " + open + " " + ansiCyan + levels + ansiReset
 		lines = append(lines, agentFocused(line, focused))
 		if i != p.open {
 			continue
 		}
+		// The open model's levels, between two short rules under its own.
+		width := 0
+		for _, level := range row.levelOpts {
+			width = max(width, len(level))
+		}
+		rule := strings.Repeat(" ", levelColumn-2) + ansiGray + strings.Repeat("─", width+2) + ansiReset
+		lines = append(lines, rule)
 		for j, level := range row.levelOpts {
 			focused := item(focus, "level", i, j)
 			label := level
 			if focused {
 				label = ansiBold + label + ansiReset
 			}
-			rec := ""
-			if row.recommended[level] {
-				rec = "  " + ansiGreen + "recommended" + ansiReset
-			}
-			lines = append(lines, agentFocused(strings.Repeat(" ", levelColumn-4)+agentCursor(focused)+agentCheckbox(row.checked[level])+" "+label+rec, focused))
+			lines = append(lines, agentFocused(strings.Repeat(" ", levelColumn-4)+agentCursor(focused)+agentPickerCircle(row.checked[level], row.recommended[level])+" "+label, focused))
 		}
+		lines = append(lines, rule)
 	}
 	return append(lines, agentPickerFooter(p, focus, "Continue →", "↑↓ move", "enter select", "→ thinking levels", "← close", "esc back")...)
 }
@@ -1434,6 +1425,17 @@ func agentFocused(line string, focused bool) string {
 		return line + agentFocusMark
 	}
 	return line
+}
+
+// agentPickerCircle is agentCheckbox, green when it is a recommended choice.
+func agentPickerCircle(checked, recommended bool) string {
+	if !recommended {
+		return agentCheckbox(checked)
+	}
+	if checked {
+		return ansiGreen + "◉" + ansiReset
+	}
+	return ansiGreen + "○" + ansiReset
 }
 
 func agentCheckbox(checked bool) string {

@@ -394,13 +394,19 @@ func ensureAgentRouter(
 		if err != nil {
 			return "", err
 		}
-		note := []string{"The checked models are recommended.", "Auto-routing picks the best of these for each request."}
+		// Recommended models are green in the picker, and checked in the
+		// numbered list a script gets.
+		recommendedNote := "The checked models are recommended."
+		if agentInputIsTerminal(stdin) {
+			recommendedNote = "Green circles mark recommended models and levels."
+		}
+		note := []string{recommendedNote, "Auto-routing picks the best of the checked models for each request."}
 		if !routing {
 			offer := "Run `dari accounts` to get auto-routing ($20/mo) and have Dari pick for you."
 			if agentInputIsTerminal(stdin) {
 				offer = "Press a to get auto-routing ($20/mo) and have Dari pick for you."
 			}
-			note = []string{"The checked models are recommended.", "Switch between them with /model.", offer}
+			note = []string{recommendedNote, "Switch between the checked models with /model.", offer}
 		}
 		choices, err = selectAgentModels(stdin, stderr, title, note, !routing, models, defaultIDs, currentLevels, recommendedLevels, sources)
 		if errors.Is(err, errAgentWantsAutorouting) {

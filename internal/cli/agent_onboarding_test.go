@@ -1111,9 +1111,9 @@ func TestEnsureClaudeAgentRouterExplainsModelsByPlan(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Setup always asks; the note says how the models get used.
-		want := "Auto-routing picks the best of these"
+		want := "Auto-routing picks the best of the checked models"
 		if !allowed {
-			want = "Switch between them with /model.\nRun `dari accounts` to get auto-routing ($20/mo)"
+			want = "Switch between the checked models with /model.\nRun `dari accounts` to get auto-routing ($20/mo)"
 		}
 		if !strings.Contains(output.String(), "Choose models for Claude Code") || !strings.Contains(output.String(), want) {
 			t.Errorf("allowed=%v: output missing %q:\n%s", allowed, want, output.String())
@@ -1462,8 +1462,8 @@ func TestAgentPickerLinesGroupByProviderAndAlign(t *testing.T) {
 	// The thinking column lines up across rows regardless of name length.
 	levelCols := map[int]bool{}
 	for _, line := range strings.Split(plain, "\n") {
-		if strings.Contains(line, "○ ") || strings.Contains(line, "◉ ") {
-			levelCols[runeIndex(line, "recommended")] = true
+		if (strings.Contains(line, "○ ") || strings.Contains(line, "◉ ")) && !strings.Contains(line, "medium") {
+			levelCols[runeIndex(line, "high")] = true
 		}
 	}
 	if len(levelCols) != 1 {
@@ -1848,13 +1848,14 @@ func TestAgentPickerLevelsLastAndOpenLevelsLineUp(t *testing.T) {
 	p.handleKey("right")
 	plain := stripANSI(strings.Join(agentPickerLines("Choose models", nil, p), "\n"))
 	lines := strings.Split(plain, "\n")
-	// Recommended comes before the levels, which share one line.
+	// The levels share one line, after the name.
 	i := slices.IndexFunc(lines, func(line string) bool { return strings.Contains(line, "Sol") })
-	if i < 0 || !strings.Contains(lines[i], "recommended  medium, xhigh") {
+	if i < 0 || !strings.HasSuffix(lines[i], "medium, xhigh") {
 		t.Fatalf("Sol line:\n%s", plain)
 	}
-	// The open model's levels line up with its displayed levels.
-	if runeIndex(lines[i+1], "low") != runeIndex(lines[i], "medium") {
+	// The open model's levels sit between two rules and line up with its
+	// displayed levels.
+	if !strings.Contains(lines[i+1], "──") || !strings.Contains(lines[i+6], "──") || runeIndex(lines[i+2], "low") != runeIndex(lines[i], "medium") {
 		t.Fatalf("levels not lined up:\n%s", plain)
 	}
 	// Esc on the payment page comes back to the models.

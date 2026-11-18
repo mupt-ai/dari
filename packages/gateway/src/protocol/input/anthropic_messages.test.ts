@@ -173,6 +173,30 @@ test("Anthropic Messages ingress preserves Claude Code interactive system messag
   ]);
 });
 
+test("Anthropic Messages ingress keeps Claude Code's tool additions on their system message", () => {
+  const definition = { name: "mcp__linear__list_issues", description: "List issues.", input_schema: { type: "object", properties: {} } };
+  const request = anthropicMessagesToInteraction({
+    model: "dari/routing",
+    max_tokens: 4096,
+    messages: [
+      { role: "user", content: "List the issues." },
+      { role: "system", content: [{ type: "tool_addition", tool: { type: "tool_definition", definition } }] },
+    ],
+  });
+  expect(request.items[1]).toEqual({
+    type: "message",
+    role: "system",
+    content: [],
+    contentShape: "parts",
+    toolsAdded: [{ kind: "function", name: "mcp__linear__list_issues", description: "List issues.", parameters: definition.input_schema, strict: undefined, deferLoading: undefined }],
+  });
+  expect(() => anthropicMessagesToInteraction({
+    model: "dari/routing",
+    max_tokens: 4096,
+    messages: [{ role: "user", content: [{ type: "tool_addition", tool: { type: "tool_definition", definition } }] }],
+  })).toThrow("tool_addition blocks require the system role.");
+});
+
 test("Anthropic Messages ingress accepts an empty content array, as Anthropic does after Claude Code compaction", () => {
   const request = anthropicMessagesToInteraction({
     model: "dari/routing",

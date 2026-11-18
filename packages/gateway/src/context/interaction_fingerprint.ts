@@ -336,6 +336,7 @@ function fingerprintChatInputSteps(
         ...(item.role === "assistant" && pendingReasoning.length > 0
           ? { reasoning: pendingReasoning }
           : {}),
+        ...(item.toolsAdded?.length ? { toolsAdded: item.toolsAdded } : {}),
       });
       pendingReasoning = [];
       pendingReasoningItemIndex = -1;
@@ -487,6 +488,7 @@ function fingerprintSteps(
       resultCallId: null,
       ...(policy.includeItemIds && item.id ? { itemId: item.id } : {}),
       ...(policy.includePhase && item.phase ? { phase: item.phase } : {}),
+      ...(item.toolsAdded?.length ? { toolsAdded: item.toolsAdded } : {}),
     });
   }
   return steps;
@@ -606,19 +608,23 @@ function conversationFingerprintSteps(
     if (!sawConversationStep) continue;
 
     const text = fingerprintReadableText(step.content);
-    if (!text) continue;
+    // Tools a system message adds stay where they were added, as Pi sends them.
+    const added = step.toolsAdded ?? [];
+    if (!text && added.length === 0) continue;
     const previous = positional.at(-1);
     if (previous?.actor === "user" || previous?.actor === "tool") {
-      previous.content = appendPositionalFingerprintText(previous.content, text);
+      if (text) previous.content = appendPositionalFingerprintText(previous.content, text);
+      if (added.length > 0) previous.toolsAdded = [...(previous.toolsAdded ?? []), ...added];
       previous.itemIndex = step.itemIndex;
       continue;
     }
     positional.push({
       actor: "user",
-      content: [{ type: "text", text }],
+      content: text ? [{ type: "text", text }] : [],
       calls: [],
       resultCallId: null,
       itemIndex: step.itemIndex,
+      ...(added.length > 0 ? { toolsAdded: added } : {}),
     });
   }
   return positional;

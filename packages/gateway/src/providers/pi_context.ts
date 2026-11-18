@@ -48,6 +48,7 @@ export function buildContext(
   target: ProviderIdentity,
 ): PiContext {
   const systemParts: string[] = request.instructions ? [request.instructions] : [];
+  const leadingTools: Array<Exclude<InteractionTool, { kind: "hosted" }>> = [];
   const messages: Array<Record<string, unknown>> = [];
   const toolCalls = new Map<string, { id: string; name: string }>();
   const timestamp = Date.now();
@@ -87,11 +88,12 @@ export function buildContext(
     if (item.type === "message" && (item.role === "system" || item.role === "developer")) {
       flushAssistant();
       const text = readableContent(item.content);
-      if (!text) continue;
+      const added = (item.toolsAdded ?? []).filter((tool) => isSentTool(tool, target));
       if (!sawConversationItem) {
         // Leading preamble is identical on every request, so folding it into
         // the system prompt keeps the provider payload prefix stable.
-        systemParts.push(text);
+        if (text) systemParts.push(text);
+        leadingTools.push(...added);
         continue;
       }
       // Mid-conversation system/developer notes arrive between turns (Claude
@@ -99,7 +101,11 @@ export function buildContext(
       // Folding them into the system prompt mutates the front of the provider
       // payload, so prefix-matching prompt caches miss and re-write the whole
       // conversation at cache-write prices. Keep them positional instead.
-      appendPositionalNote(messages, text, timestamp);
+      if (text) appendPositionalNote(messages, text, timestamp);
+      // Tools added mid-conversation stay in place, as Claude Code's `tool_addition` blocks do.
+      if (added.length > 0) {
+        messages.push({ role: "system", content: "", toolsAdded: added.map((tool) => toolToPi(tool, target.api)), timestamp });
+      }
       continue;
     }
     sawConversationItem = true;
@@ -271,12 +277,13 @@ export function buildContext(
 
   const context: PiContext = { messages };
   if (systemParts.length > 0) context.systemPrompt = systemParts.join("\n\n");
-  const clientTools = request.tools.filter(
-    (tool): tool is Exclude<InteractionTool, { kind: "hosted" }> =>
-      tool.kind !== "hosted" && (tool.kind !== "server_tool" || target.api === "anthropic-messages")
-  );
+  const clientTools = [...request.tools.filter((tool) => isSentTool(tool, target)), ...leadingTools];
   if (clientTools.length > 0) context.tools = clientTools.map((tool) => toolToPi(tool, target.api));
   return context;
+}
+
+function isSentTool(tool: InteractionTool, target: ProviderIdentity): tool is Exclude<InteractionTool, { kind: "hosted" }> {
+  return tool.kind !== "hosted" && (tool.kind !== "server_tool" || target.api === "anthropic-messages");
 }
 
 function thinkingContent(

@@ -400,7 +400,7 @@ export function buildModel(
     throw new HttpError(502, `No base URL is configured for provider ${provider}.`, "provider_configuration_error");
   }
   const contextWindow = contextWindowForModel(modelId, registered, config) ?? 128000;
-  const compat = gatewayRuntimeCompat(api, runtimeCompat(provider, registered, modelId));
+  const compat = gatewayRuntimeCompat(api, runtimeCompat(provider, registered, modelId), provider, nativeId);
   return {
     ...(registered ?? {}),
     ...(compat !== undefined ? { compat } : {}),
@@ -496,16 +496,35 @@ function contextWindowForModel(
 // keeps tools at the request level until that native tool-change path is validated.
 const RESPONSES_APIS: ReadonlySet<string> = new Set(["openai-responses", "azure-openai-responses", "openai-codex-responses"]);
 
-function gatewayRuntimeCompat(api: unknown, compat: unknown): unknown {
+// Compat the gateway adds where Pi's own table has no entry. A rule applies when
+// its provider and model match, and a value Pi already set wins. Remove a rule
+// once the pinned pi-ai sets the same value.
+const COMPAT_RULES: ReadonlyArray<{ provider: string; model: RegExp; compat: Record<string, unknown> }> = [
+  { provider: "anthropic", model: /^claude-haiku-(4-5|5-5)(-|$)/, compat: { supportsToolReferences: true } },
+];
+
+function gatewayRuntimeCompat(api: unknown, compat: unknown, provider: string, modelId: string): unknown {
   // Pi 1.5 enables server-side message threads whenever sessionId is set.
   // Gateway sessions serve affinity, not permission to retain a conversation
   // remotely; keep full-history requests, including on ZDR routes.
   if (api === "anthropic-messages") {
-    return { ...(isRecord(compat) ? compat : {}), supportsMessageThreads: false };
+    const base = isRecord(compat) ? compat : {};
+    return { ...base, ...gatewayCompatDefaults(provider, modelId, base), supportsMessageThreads: false };
   }
   if (typeof api !== "string" || !RESPONSES_APIS.has(api)) return compat;
   if (!isRecord(compat) || compat.supportsMidConvoSystemMessages !== true) return compat;
   return { ...compat, supportsMidConvoSystemMessages: false };
+}
+
+function gatewayCompatDefaults(provider: string, modelId: string, base: Record<string, unknown>): Record<string, unknown> {
+  const defaults: Record<string, unknown> = {};
+  for (const rule of COMPAT_RULES) {
+    if (rule.provider !== provider || !rule.model.test(modelId)) continue;
+    for (const [key, value] of Object.entries(rule.compat)) {
+      if (base[key] === undefined) defaults[key] = value;
+    }
+  }
+  return defaults;
 }
 
 function modelPricingFromConfig(config: ResolvedRouterModelConfig | undefined): ModelPricing | null {

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/signal"
 	"regexp"
@@ -32,7 +31,9 @@ const (
 	ansiCyan  = "\033[38;5;117m"
 	ansiGreen = "\033[38;5;114m"
 	ansiGray  = "\033[38;5;245m"
-	ansiRed   = "\033[38;5;203m"
+	// ansiSilver is a lighter gray, for Dari's mark.
+	ansiSilver = "\033[38;5;250m"
+	ansiRed    = "\033[38;5;203m"
 )
 
 func agentInputIsTerminal(stream any) bool {
@@ -113,12 +114,6 @@ func agentHintLine(hints ...string) string {
 
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
-// glowColor blends the cursor's coral (t 0) into the gray (t 1).
-func glowColor(t float64) string {
-	mix := func(a, b float64) int { return int(a + (b-a)*t + 0.5) }
-	return fmt.Sprintf("\033[38;2;%d;%d;%dm", mix(255, 138), mix(135, 138), mix(95, 138))
-}
-
 // agentBox draws rows in a rounded box of the given inner width, or the
 // widest row's when width is 0, its edge in the given color.
 func agentBox(rows []string, width int, edge string) []string {
@@ -398,33 +393,22 @@ func scrollToFocus(page []string, rows int) []string {
 	return append(shown, below, hints)
 }
 
-// titlePanel is a rounded panel of the given size with Dari's mark, the
-// dari.dev wordmark, and the subtitle at its center: as much of them as fits.
+// titlePanel is a rounded panel of the given size with the dari.dev title and
+// subtitle at its center, under Dari's mark when there is room for it.
 func titlePanel(width, height int, subtitle string) []string {
 	inner := width - 2
 	title := ansiCoral + "⑂" + ansiReset + " " + ansiBold + "dari.dev" + ansiReset
 	content := []string{title, ansiGray + subtitle + ansiReset}
-	// The mark in the cursor's color, above the name in plain text.
-	for _, logo := range [][]string{dariLogo, dariLogoSmall} {
-		logoWidth := 0
-		for _, line := range logo {
-			logoWidth = max(logoWidth, ansiVisibleWidth(line))
-		}
-		if inner < logoWidth+4 || height-2 < len(logo)+5 {
-			continue
-		}
+	logoWidth := 0
+	for _, line := range dariLogo {
+		logoWidth = max(logoWidth, len([]rune(line)))
+	}
+	if inner >= logoWidth+4 && height-2 >= len(dariLogo)+5 {
 		content = []string{}
-		for _, line := range logo {
-			// Gray at the middle, warming to coral toward its ends.
-			var shaded strings.Builder
-			for x, r := range []rune(padRight(line, logoWidth)) {
-				t := math.Abs(float64(x)-float64(logoWidth-1)/2) / (float64(logoWidth-1) / 2)
-				shaded.WriteString(glowColor(1-t) + string(r))
-			}
-			content = append(content, shaded.String()+ansiReset)
+		for _, line := range dariLogo {
+			content = append(content, ansiSilver+padRight(line, logoWidth)+ansiReset)
 		}
 		content = append(content, "", ansiBold+"dari.dev"+ansiReset, ansiGray+subtitle+ansiReset)
-		break
 	}
 	center := func(text string) string {
 		pad := max(inner-ansiVisibleWidth(text), 0)

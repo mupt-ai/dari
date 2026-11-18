@@ -109,7 +109,7 @@ func connectAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader
 		options = append(options, agentChoiceOption{label: name, note: note})
 	}
 	for _, gateway := range agentKeyGateways {
-		offer(gateway.provider, gateway.name, "serves most models")
+		offer(gateway.provider, gateway.name, "")
 	}
 	for _, group := range catalog.Groups {
 		if group.Provider != "" && !slices.Contains(agentKeyCredentialsPageOnly, group.Provider) {
@@ -119,8 +119,8 @@ func connectAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader
 	// Credentials that need more than one key are added in the web app.
 	webApp := agentWebAppURL(ctx, client, "/credentials")
 	options = append(options,
-		agentChoiceOption{label: "AWS Bedrock, Microsoft Azure, or other", note: "opens the Dari web app", gap: true},
-		agentChoiceOption{label: "Back"},
+		agentChoiceOption{label: "AWS Bedrock, Microsoft Azure, or other", note: "opens the Dari web app"},
+		agentChoiceOption{label: "Back", gap: true},
 	)
 	// Esc on the key's input comes back to this list.
 	for {

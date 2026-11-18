@@ -741,11 +741,13 @@ func (page accountsPage) useReset(ctx context.Context, subscription subscription
 	if err != nil || confirm == 0 {
 		return false, err
 	}
+	// Whatever happened, the answer shows here and the page reloads after it.
 	result, err := useSubscriptionReset(ctx, page.client, subscription.Name, reset.ID)
+	text := resetResultText(result)
 	if err != nil {
-		return true, err
+		text = "Couldn't use that reset: " + err.Error()
 	}
-	_, err = runAgentChoiceTUI(stdin, stderr, resetResultText(result), nil, []agentChoiceOption{{label: "Back"}})
+	_, err = runAgentChoiceTUI(stdin, stderr, text, nil, []agentChoiceOption{{label: "Back"}})
 	if errors.Is(err, errAgentChoiceCanceled) {
 		err = nil
 	}
@@ -768,7 +770,9 @@ func resetResultText(result string) string {
 	case "nothing_to_reset", "not_limited":
 		return "Nothing to reset: the plan isn't at a limit, so the reset was kept"
 	case "no_credit", "already_used", "unavailable":
-		return "That reset is no longer available"
+		return "That reset is no longer available; it was used or expired"
+	case "not_usable":
+		return "That reset can't be used yet"
 	case "already_redeemed":
 		return "That reset was already used"
 	case "cooldown":

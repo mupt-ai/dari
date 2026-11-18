@@ -165,79 +165,93 @@ func runGatewaySetup(ctx context.Context, stdin io.Reader, stderr io.Writer) err
 	if !agentInputIsTerminal(stdin) {
 		return errors.New("gateway setup needs an interactive terminal; use `dari gateway setup --mode hosted|local|self-hosted` instead")
 	}
-	choice, err := runAgentChoiceTUI(stdin, stderr, "Where should your coding agents route?", nil, []agentChoiceOption{
-		gatewaySetupHosted: {
-			label:       "Hosted",
-			note:        "Recommended",
-			description: "Dari runs the gateway. Share it with your team, see Activity analytics, and use Dari billing.",
-			done:        gatewayModeDone[gateway.ModeHosted],
-		},
-		gatewaySetupLocal: {
-			label:       "Fully local",
-			description: "Runs on this machine; requests go straight to model providers. Only you can use it. No observability: Activity and analytics need Hosted.",
-			done:        gatewayModeDone[gateway.ModeLocal],
-		},
-		gatewaySetupSelfHosted: {
-			label:       "Self-hosted",
-			description: "Connect to a Dari Gateway your team runs on its own server, so everyone shares its accounts and routing. No observability: Activity and analytics need Hosted.",
-			done:        gatewayModeDone[gateway.ModeSelfHosted],
-		},
-	})
-	if err != nil {
-		return err
-	}
-	switch choice {
-	case gatewaySetupHosted:
-		return switchGatewayMode(ctx, gateway.Settings{Mode: gateway.ModeHosted}, stdin, stderr)
-	case gatewaySetupLocal:
-		settings := gateway.Settings{Mode: gateway.ModeLocal}
-		if previous, _, _ := gateway.Load(); previous.AutoRoutingKey == "" {
-			if settings.AutoRoutingKey, err = askAutoRoutingKey(stdin, stderr); err != nil {
-				return err
-			}
-		}
-		return switchGatewayMode(ctx, settings, stdin, stderr)
-	default:
-		settings := gateway.Settings{Mode: gateway.ModeSelfHosted}
-		// The gateway used before needs no typing again.
-		if previous, _, _ := gateway.Load(); previous.URL != "" && previous.Key != "" {
-			reuse, err := runAgentChoiceTUI(stdin, stderr, "Self-hosted gateway", nil, []agentChoiceOption{
-				{label: "Use " + previous.URL},
-				{label: "Use another gateway"},
+	// Esc on any later step comes back to the first page; esc there closes.
+	for {
+		err := func() error {
+			choice, err := runAgentRootChoiceTUI(stdin, stderr, "Where should your coding agents route?", nil, []agentChoiceOption{
+				gatewaySetupHosted: {
+					label:       "Hosted",
+					note:        "Recommended",
+					description: "Dari runs the gateway. Share it with your team, see Activity analytics, and use Dari billing.",
+					done:        gatewayModeDone[gateway.ModeHosted],
+				},
+				gatewaySetupLocal: {
+					label:       "Fully local",
+					description: "Runs on this machine; requests go straight to model providers. Only you can use it. No observability: Activity and analytics need Hosted.",
+					done:        gatewayModeDone[gateway.ModeLocal],
+				},
+				gatewaySetupSelfHosted: {
+					label:       "Self-hosted",
+					description: "Connect to a Dari Gateway your team runs on its own server, so everyone shares its accounts and routing. No observability: Activity and analytics need Hosted.",
+					done:        gatewayModeDone[gateway.ModeSelfHosted],
+				},
 			})
+			if errors.Is(err, errAgentChoiceCanceled) {
+				return errGatewaySetupClosed
+			}
 			if err != nil {
 				return err
 			}
-			if reuse == 0 {
-				if err := checkSelfHostedGateway(ctx, previous.URL, previous.Key); err != nil {
-					return err
+			switch choice {
+			case gatewaySetupHosted:
+				return switchGatewayMode(ctx, gateway.Settings{Mode: gateway.ModeHosted}, stdin, stderr)
+			case gatewaySetupLocal:
+				settings := gateway.Settings{Mode: gateway.ModeLocal}
+				if previous, _, _ := gateway.Load(); previous.AutoRoutingKey == "" {
+					if settings.AutoRoutingKey, err = askAutoRoutingKey(stdin, stderr); err != nil {
+						return err
+					}
 				}
-				settings.URL, settings.Key = previous.URL, previous.Key
+				return switchGatewayMode(ctx, settings, stdin, stderr)
+			default:
+				settings := gateway.Settings{Mode: gateway.ModeSelfHosted}
+				// The gateway used before needs no typing again.
+				if previous, _, _ := gateway.Load(); previous.URL != "" && previous.Key != "" {
+					reuse, err := runAgentChoiceTUI(stdin, stderr, "Self-hosted gateway", nil, []agentChoiceOption{
+						{label: "Use " + previous.URL},
+						{label: "Use another gateway"},
+					})
+					if err != nil {
+						return err
+					}
+					if reuse == 0 {
+						if err := checkSelfHostedGateway(ctx, previous.URL, previous.Key); err != nil {
+							return err
+						}
+						settings.URL, settings.Key = previous.URL, previous.Key
+						return switchGatewayMode(ctx, settings, stdin, stderr)
+					}
+				}
+				if ok, err := runAgentTextInputTUI(stdin, stderr, "Gateway URL", []string{
+					"  The URL your team's Dari Gateway serves on, such as https://gateway.example.com.",
+				}, "https://gateway.example.com", func(value string) error {
+					settings.URL, err = normalizeGatewayURL(value)
+					return err
+				}); err != nil || !ok {
+					return cmpErr(err, errAgentChoiceCanceled)
+				}
+				if ok, err := runAgentSecretInputTUI(stdin, stderr, "Gateway key", []string{
+					"  One of the keys the gateway's operator set in DARI_GATEWAY_KEYS.",
+				}, func(value string) error {
+					if err := checkSelfHostedGateway(ctx, settings.URL, value); err != nil {
+						return err
+					}
+					settings.Key = value
+					return nil
+				}); err != nil || !ok {
+					return cmpErr(err, errAgentChoiceCanceled)
+				}
 				return switchGatewayMode(ctx, settings, stdin, stderr)
 			}
+		}()
+		if errors.Is(err, errAgentChoiceCanceled) {
+			continue
 		}
-		if ok, err := runAgentTextInputTUI(stdin, stderr, "Gateway URL", []string{
-			"  The URL your team's Dari Gateway serves on, such as https://gateway.example.com.",
-		}, "https://gateway.example.com", func(value string) error {
-			settings.URL, err = normalizeGatewayURL(value)
-			return err
-		}); err != nil || !ok {
-			return cmpErr(err, errors.New("gateway setup canceled"))
-		}
-		if ok, err := runAgentSecretInputTUI(stdin, stderr, "Gateway key", []string{
-			"  One of the keys the gateway's operator set in DARI_GATEWAY_KEYS.",
-		}, func(value string) error {
-			if err := checkSelfHostedGateway(ctx, settings.URL, value); err != nil {
-				return err
-			}
-			settings.Key = value
-			return nil
-		}); err != nil || !ok {
-			return cmpErr(err, errors.New("gateway setup canceled"))
-		}
-		return switchGatewayMode(ctx, settings, stdin, stderr)
+		return err
 	}
 }
+
+var errGatewaySetupClosed = errors.New("gateway setup canceled")
 
 func cmpErr(err, fallback error) error {
 	if err != nil {

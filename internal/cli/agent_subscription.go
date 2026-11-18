@@ -61,44 +61,36 @@ func agentSubscriptionProviders(agent string) []agentSubscriptionProvider {
 	return agentSetups[agent].subscriptions
 }
 
-// agentAccountLines is the Accounts page's summary: a Subscriptions section,
-// in the order routing uses them, then an API Keys section, each shown only
-// when it has something.
-func agentAccountLines(subscriptions []subscriptionCredential, keys []string, showProvider bool) []string {
-	if len(subscriptions) == 0 && len(keys) == 0 {
-		return []string{"  " + ansiGray + "No accounts connected yet." + ansiReset, ""}
-	}
-	lines := []string{}
-	if len(subscriptions) > 0 {
-		lines = append(lines, "", "  "+ansiBold+"Subscriptions"+ansiReset)
-		for _, subscription := range subscriptions {
-			lines = append(lines, subscriptionLines(subscription, showProvider)...)
-		}
-	}
-	if len(keys) > 0 {
-		lines = append(lines, "", "  "+ansiBold+"API Keys"+ansiReset)
-		for _, key := range keys {
-			lines = append(lines, "  "+ansiGray+"•"+ansiReset+" "+key)
-		}
-	}
-	return append(lines, "")
-}
-
 // subscriptionLines is one subscription: its provider, name, and plan, then
 // a line for each quota window, each model at its own limit, and its renewal.
 func subscriptionLines(subscription subscriptionCredential, showProvider bool) []string {
-	header := "  " + ansiGray + "•" + ansiReset + " "
+	lines := []string{"  " + ansiGray + "•" + ansiReset + " " + subscriptionLabel(subscription, showProvider)}
+	for _, detail := range subscriptionDetailLines(subscription) {
+		lines = append(lines, "  "+detail)
+	}
+	return lines
+}
+
+// subscriptionLabel is a subscription's provider, name, and plan on one line.
+func subscriptionLabel(subscription subscriptionCredential, showProvider bool) string {
+	label := ""
 	if showProvider {
-		header += subscriptionProviderFor(subscription.OAuthProvider).name + "  "
+		label += subscriptionProviderFor(subscription.OAuthProvider).name + "  "
 	}
-	header += subscriptionName(subscription)
+	label += subscriptionName(subscription)
 	if plan := subscription.SafeMetadata["plan"]; plan != "" {
-		header += "  " + ansiGray + plan + ansiReset
+		label += "  " + ansiGray + plan + ansiReset
 	}
-	lines := []string{header}
+	return label
+}
+
+// subscriptionDetailLines are a subscription's usage, model limits, and
+// renewal, one gray line each.
+func subscriptionDetailLines(subscription subscriptionCredential) []string {
+	lines := []string{}
 	for _, detail := range subscriptionDetails(subscription) {
 		detail = strings.Replace(detail, usageLimitReached, ansiRed+usageLimitReached+ansiGray, 1)
-		lines = append(lines, "    "+ansiGray+"› "+detail+ansiReset)
+		lines = append(lines, "  "+ansiGray+"› "+detail+ansiReset)
 	}
 	return lines
 }

@@ -270,34 +270,27 @@ func TestMuseCodeSubscriptionRetriesWhileMetaApprovalIsPending(t *testing.T) {
 	}
 }
 
-func TestAgentAccountLinesListSubscriptionsInRoutingOrderThenKeys(t *testing.T) {
-	label := "Work"
+func TestAgentChoiceLinesNumberGroupedAccounts(t *testing.T) {
 	resets := time.Now().Add(2 * time.Hour)
-	lines := agentAccountLines(personalSubscriptions([]subscriptionCredential{
-		{Name: "CLAUDE_2", OAuthProvider: claudeSubscription.id, CredentialScope: "user", CreatedAt: "2026-02", Label: &label},
-		{Name: "CODEX", OAuthProvider: codexSubscription.id, CredentialScope: "user", CreatedAt: "2026-01", SubscriptionActive: true, SafeMetadata: map[string]string{"account_email": "me@example.test", "plan": "Plus"}},
-		{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, CredentialScope: "user", CreatedAt: "2026-01", Usage: &subscriptionUsage{Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339), Windows: []subscriptionUsageWindow{{Label: "5 Hour", Minutes: 300, Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339)}}}},
-		{Name: "TEAM", OAuthProvider: codexSubscription.id, CredentialScope: "organization"},
-		{Name: "MUSE", OAuthProvider: museSubscription.id, CredentialScope: "user", CreatedAt: "2026-03"},
-	}), []string{"Vercel AI Gateway"}, true)
-	got := stripANSI(strings.Join(lines, "\n"))
+	claude := subscriptionCredential{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, Usage: &subscriptionUsage{Windows: []subscriptionUsageWindow{{Label: "5 Hour", Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339)}}}}
+	lines := agentChoiceLines("Accounts", nil, []agentChoiceOption{
+		{heading: "Subscriptions", label: subscriptionLabel(claude, true), details: subscriptionDetailLines(claude)},
+		{heading: "API Keys", label: "Vercel AI Gateway"},
+		{gap: true, label: "Done"},
+		{label: "Add a subscription"},
+	}, 2, "esc close")
+	got := stripANSI(strings.Join(lines[1:], "\n"))
 	want := "\n  Subscriptions\n" +
-		"  • Claude Code  CLAUDE\n" +
-		"    › 5 Hour · 40% used · Resets " + usageResetTime(resets) + "\n" +
-		"  • Claude Code  Work\n" +
-		"  • Muse Code  MUSE\n" +
-		"  • ChatGPT  me@example.test  Plus\n" +
+		"  1. Claude Code  CLAUDE\n" +
+		"       › 5 Hour · 40% used · Resets " + usageResetTime(resets) + "\n" +
 		"\n  API Keys\n" +
-		"  • Vercel AI Gateway\n"
+		"  2. Vercel AI Gateway\n" +
+		"\n" +
+		"❯ 3. Done\n" +
+		"  4. Add a subscription\n" +
+		"  ↑↓ move · enter confirm · esc close"
 	if got != want {
 		t.Fatalf("lines:\n%s\nwant:\n%s", got, want)
-	}
-	// Only sections with something to show appear.
-	if keysOnly := stripANSI(strings.Join(agentAccountLines(nil, []string{"OpenAI"}, true), "\n")); strings.Contains(keysOnly, "Subscriptions") {
-		t.Fatalf("keys only: %q", keysOnly)
-	}
-	if empty := stripANSI(strings.Join(agentAccountLines(nil, nil, false), "\n")); !strings.Contains(empty, "No accounts connected yet.") {
-		t.Fatalf("empty list: %q", empty)
 	}
 }
 

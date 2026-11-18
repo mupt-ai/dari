@@ -281,12 +281,35 @@ type agentChoiceOption struct {
 	// done replaces the prompt once this option is chosen; empty prints
 	// nothing.
 	done string
+	// heading starts a group of options with a bold title; gap starts one
+	// with only a blank line.
+	heading string
+	gap     bool
+	// details are lines shown under the option, such as a plan's usage.
+	details []string
 }
 
 // runAgentChoiceTUI asks one question, with optional detail lines between the
 // prompt and its options. Arrow keys and Enter choose, as does typing an
 // option's number.
+// runAgentChoiceTUI is a page nested in another: esc goes back to it, which
+// the caller sees as errAgentChoiceCanceled.
 func runAgentChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption) (int, error) {
+	return runAgentChoicePage(stdin, stderr, prompt, details, options, "esc back")
+}
+
+// runAgentRootChoiceTUI is a command's first page, which esc closes.
+func runAgentRootChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption) (int, error) {
+	return runAgentChoicePage(stdin, stderr, prompt, details, options, "esc close")
+}
+
+// runAgentChoicePageClosing is a setup step that esc leaves setup from,
+// labeled so.
+func runAgentChoicePageClosing(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption) (int, error) {
+	return runAgentChoicePage(stdin, stderr, prompt, details, options, "esc close")
+}
+
+func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption, escHint string) (int, error) {
 	if len(options) == 0 {
 		return 0, errors.New("interactive selection has no options")
 	}
@@ -299,7 +322,7 @@ func runAgentChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details
 		cursor := 0
 		buf := make([]byte, 256)
 		for {
-			session.render(agentChoiceLines(prompt, details, options, cursor))
+			session.render(agentChoiceLines(prompt, details, options, cursor, escHint))
 			n, readErr := session.file.Read(buf)
 			for _, key := range parseAgentPickerKeys(buf[:n]) {
 				switch key {
@@ -309,8 +332,10 @@ func runAgentChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details
 					cursor = (cursor + 1) % len(options)
 				case "enter":
 					return cursor, nil
-				case "quit", "esc":
+				case "esc":
 					return 0, errAgentChoiceCanceled
+				case "quit":
+					return 0, errAgentQuit
 				default:
 					if index := int(key[0] - '1'); len(key) == 1 && index >= 0 && index < len(options) {
 						return index, nil
@@ -328,9 +353,14 @@ func runAgentChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details
 	return choice, err
 }
 
-func agentChoiceLines(prompt string, details []string, options []agentChoiceOption, cursor int) []string {
+func agentChoiceLines(prompt string, details []string, options []agentChoiceOption, cursor int, escHint string) []string {
 	lines := append([]string{agentPromptLine(prompt)}, details...)
 	for index, option := range options {
+		if option.heading != "" {
+			lines = append(lines, "", "  "+ansiBold+option.heading+ansiReset)
+		} else if option.gap {
+			lines = append(lines, "")
+		}
 		label := fmt.Sprintf("%d. %s", index+1, option.label)
 		if index == cursor {
 			label = ansiBold + label + ansiReset
@@ -343,8 +373,11 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 		if option.description != "" {
 			lines = append(lines, "     "+ansiGray+option.description+ansiReset)
 		}
+		for _, detail := range option.details {
+			lines = append(lines, "     "+detail)
+		}
 	}
-	return append(lines, agentHintLine("↑↓ move", "enter confirm", "esc cancel"))
+	return append(lines, agentHintLine("↑↓ move", "enter confirm", escHint))
 }
 
 func agentOpenedLine(provider agentSubscriptionProvider, opened bool) string {
@@ -396,7 +429,7 @@ func agentOAuthLines(provider agentSubscriptionProvider, authorizationURL string
 		"",
 		"  Paste the code "+provider.vendor+" shows after you approve:",
 		agentCursor(true)+inputDisplay(value, width, "code#state"),
-		agentHintLine("enter submit", "ctrl+c cancel"),
+		agentHintLine("enter submit", "esc back"),
 	)
 }
 
@@ -418,6 +451,9 @@ func runAgentCodeInputTUI(
 	for {
 		session.render(agentOAuthLines(provider, authorizationURL, opened, input.value, session.width))
 		n, readErr := session.file.Read(buf)
+		if n == 1 && buf[0] == 0x1b {
+			return "", errAgentChoiceCanceled
+		}
 		submitted, canceled := input.update(buf[:n])
 		if canceled {
 			return "", fmt.Errorf("%s authorization canceled", provider.name)
@@ -448,7 +484,7 @@ func runAgentDeviceCodeTUI(
 	}
 	defer session.Close()
 
-	status := agentHintLine("enter after approving", "ctrl+c cancel")
+	status := agentHintLine("enter after approving", "esc back")
 	buf := make([]byte, 256)
 	for {
 		lines := []string{agentPromptLine("Connect " + provider.name), agentOpenedLine(provider, opened)}
@@ -461,6 +497,8 @@ func runAgentDeviceCodeTUI(
 		n, readErr := session.file.Read(buf)
 		for _, key := range parseAgentPickerKeys(buf[:n]) {
 			switch key {
+			case "esc":
+				return errAgentChoiceCanceled
 			case "quit":
 				return fmt.Errorf("%s authorization canceled", provider.name)
 			case "enter":
@@ -468,7 +506,7 @@ func runAgentDeviceCodeTUI(
 				if !pending {
 					return err
 				}
-				status = agentHintLine("Still waiting for approval. Press enter to check again", "ctrl+c cancel")
+				status = agentHintLine("Still waiting for approval. Press enter to check again", "esc back")
 			}
 		}
 		if readErr != nil {
@@ -617,6 +655,9 @@ var errAgentWantsAutorouting = errors.New("autorouting requested")
 // it as going back.
 var errAgentChoiceCanceled = errors.New("agent onboarding canceled")
 
+// errAgentQuit is q or ctrl+c on a choice, which leaves the whole command.
+var errAgentQuit = errors.New("agent onboarding canceled")
+
 func runAgentPicker(
 	stdin io.Reader,
 	stderr io.Writer,
@@ -757,7 +798,7 @@ func agentPickerLines(title string, note []string, p *agentPickerState, visible 
 	if p.editing {
 		return append(lines, agentHintLine("↑↓ move", "space toggle thinking level", "← done"))
 	}
-	hints := []string{"↑↓ move", "space toggle", "→ thinking levels", "s payment", "enter confirm", "esc cancel"}
+	hints := []string{"↑↓ move", "space toggle", "→ thinking levels", "s payment", "enter confirm", "esc close"}
 	// Payment is chosen per model only where a model has more than one
 	// source, never on a gateway.
 	if !slices.ContainsFunc(p.rows, func(row agentPickerRow) bool { return len(row.sources) > 0 }) {

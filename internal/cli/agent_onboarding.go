@@ -387,7 +387,8 @@ func ensureAgentRouter(
 			}
 			break
 		}
-		if _, err := getAutorouting(ctx, client, stdin, stderr); err != nil {
+		// Esc on the auto-routing page comes back to the models.
+		if _, err := getAutorouting(ctx, client, stdin, stderr); err != nil && !errors.Is(err, errAgentChoiceCanceled) {
 			return "", err
 		}
 	}
@@ -1367,7 +1368,7 @@ func chooseAgentSessionPinning(stdin io.Reader, stderr io.Writer, current bool) 
 	if !agentInputIsTerminal(stdin) {
 		return current, nil
 	}
-	choice, err := runAgentChoiceTUI(stdin, stderr, "When should Dari pick the model?", nil, []agentChoiceOption{
+	choice, err := runAgentChoicePageClosing(stdin, stderr, "When should Dari pick the model?", nil, []agentChoiceOption{
 		{label: "Every turn (default)", description: "Dari picks the best model for each request.", done: "Routing every turn"},
 		{label: "Once per session", description: "Dari picks when a session starts and keeps that model. Each subagent gets its own pick, then keeps it.", done: "Routing once per session"},
 	})

@@ -201,19 +201,34 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 			}
 			keys = agentAPIKeys(listedKeys.Credentials)
 		}
-		keyNames := []string{}
+		// Each key is a page of its own: its name and how to remove it.
+		type accountKey struct {
+			name   string
+			remove func() error
+		}
+		accountKeys := []accountKey{}
 		for _, provider := range slices.Sorted(maps.Keys(keys)) {
-			keyNames = append(keyNames, cmp.Or(keys[provider].Label, keys[provider].Name, provider))
+			key := keys[provider]
+			accountKeys = append(accountKeys, accountKey{cmp.Or(key.Label, key.Name, provider), func() error {
+				return api.HumanError(page.client.Do(ctx, http.MethodDelete,
+					"/v1/organizations/current/credentials/provider-credentials/"+url.PathEscape(key.ID), nil, nil))
+			}})
 		}
 		if page.local() {
 			for _, key := range localProviderKeys {
 				if page.gw.settings.ProviderKeys[key.env] != "" {
-					keyNames = append(keyNames, key.name)
+					accountKeys = append(accountKeys, accountKey{key.name, func() error {
+						delete(page.gw.settings.ProviderKeys, key.env)
+						return saveLocalGateway(ctx, page.gw, stderr)
+					}})
 				}
 			}
 		}
-		lines := agentAccountLines(subscriptions, keyNames, len(page.providers) > 1)
-		connected := len(subscriptions) > 0 || len(keys) > 0
+		connected := len(subscriptions) > 0 || len(accountKeys) > 0
+		var lines []string
+		if len(subscriptions) == 0 && len(accountKeys) == 0 {
+			lines = []string{"  " + ansiGray + "No accounts connected yet." + ansiReset}
+		}
 
 		options := []agentChoiceOption{}
 		actions := []func() (bool, error){}
@@ -224,16 +239,21 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		leave := func() (bool, error) { return true, nil }
 		finish := agentChoiceOption{label: "Done"}
 		if page.onboarding {
-			finish = agentChoiceOption{label: "Continue", done: fmt.Sprintf("Accounts: %d connected", len(subscriptions)+len(keys))}
+			finish = agentChoiceOption{label: "Continue", done: fmt.Sprintf("Accounts: %d connected", len(subscriptions)+len(accountKeys))}
 			if !connected {
 				finish = agentChoiceOption{label: "Use Dari managed billing", done: "Using Dari managed billing"}
 			}
 		}
-		if !page.onboarding || connected {
-			add(finish, leave)
-		}
-		for _, subscription := range subscriptions {
-			add(agentChoiceOption{label: subscriptionName(subscription)}, func() (bool, error) {
+		// The accounts themselves come first, each numbered where it is shown.
+		for i, subscription := range subscriptions {
+			option := agentChoiceOption{
+				label:   subscriptionLabel(subscription, len(page.providers) > 1),
+				details: subscriptionDetailLines(subscription),
+			}
+			if i == 0 {
+				option.heading = "Subscriptions"
+			}
+			add(option, func() (bool, error) {
 				stay, err := page.manageSubscription(ctx, subscription, stdin, stderr)
 				if stay {
 					reopen = subscription.Name
@@ -241,7 +261,20 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				return false, err
 			})
 		}
-		add(agentChoiceOption{label: "Add a subscription"}, func() (bool, error) {
+		for i, key := range accountKeys {
+			option := agentChoiceOption{label: key.name}
+			if i == 0 {
+				option.heading = "API Keys"
+			}
+			add(option, func() (bool, error) {
+				return false, manageAPIKey(stdin, stderr, key.name, key.remove)
+			})
+		}
+		finish.gap = connected
+		if !page.onboarding || connected {
+			add(finish, leave)
+		}
+		add(agentChoiceOption{label: "Add a subscription", gap: page.onboarding && !connected}, func() (bool, error) {
 			provider, ok, err := page.addSubscription(ctx, subscriptions, stdin, stderr)
 			if ok && !slices.Contains(result.added, provider) {
 				result.added = append(result.added, provider)
@@ -287,11 +320,24 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 			add(finish, leave)
 		}
 
-		choice, err := runAgentChoiceTUI(stdin, stderr, "Accounts", lines, options)
+		// The page is a command's first page, which esc closes; in onboarding
+		// it is a step of setup, which esc leaves.
+		choose := runAgentRootChoiceTUI
+		if page.onboarding {
+			choose = runAgentChoicePageClosing
+		}
+		choice, err := choose(stdin, stderr, "Accounts", lines, options)
+		if errors.Is(err, errAgentChoiceCanceled) && !page.onboarding {
+			return result, nil
+		}
 		if err != nil {
 			return result, err
 		}
 		done, err := actions[choice]()
+		// Esc on a page this one opened comes back here.
+		if errors.Is(err, errAgentChoiceCanceled) {
+			continue
+		}
 		if done || err != nil {
 			return result, err
 		}
@@ -330,6 +376,9 @@ func (page accountsPage) addSubscription(ctx context.Context, subscriptions []su
 	}
 	options = append(options, agentChoiceOption{label: "Back"})
 	picked, err := runAgentChoiceTUI(stdin, stderr, "Add a subscription", nil, options)
+	if errors.Is(err, errAgentChoiceCanceled) {
+		return agentSubscriptionProvider{}, false, nil
+	}
 	if err != nil || picked == len(choices) {
 		return agentSubscriptionProvider{}, false, err
 	}
@@ -609,4 +658,17 @@ func resetResultText(result string) string {
 		return "This plan can't use that reset now"
 	}
 	return "Reset not confirmed: " + result
+}
+
+// manageAPIKey is one API key's page, which can remove it.
+func manageAPIKey(stdin io.Reader, stderr io.Writer, name string, remove func() error) error {
+	choice, err := runAgentChoiceTUI(stdin, stderr, name, nil, []agentChoiceOption{{label: "Remove"}, {label: "Back"}})
+	if err != nil || choice == 1 {
+		return err
+	}
+	confirm, err := runAgentChoiceTUI(stdin, stderr, "Remove "+name+"?", nil, []agentChoiceOption{{label: "Keep it"}, {label: "Remove", done: name + " removed"}})
+	if err != nil || confirm == 0 {
+		return err
+	}
+	return remove()
 }

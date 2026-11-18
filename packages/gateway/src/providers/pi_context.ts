@@ -102,9 +102,7 @@ export function buildContext(
       // payload, so prefix-matching prompt caches miss and re-write the whole
       // conversation at cache-write prices. Keep them positional instead.
       if (text) appendPositionalNote(messages, text, timestamp);
-      // Tools added mid-conversation stay in place for the same reason: Pi
-      // sends them as `tool_addition` blocks where the model accepts them, and
-      // otherwise adds them to the request's tool list.
+      // Tools added mid-conversation stay in place, as Claude Code's `tool_addition` blocks do.
       if (added.length > 0) {
         messages.push({ role: "system", content: "", toolsAdded: added.map((tool) => toolToPi(tool, target.api)), timestamp });
       }

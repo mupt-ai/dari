@@ -496,35 +496,35 @@ function contextWindowForModel(
 // keeps tools at the request level until that native tool-change path is validated.
 const RESPONSES_APIS: ReadonlySet<string> = new Set(["openai-responses", "azure-openai-responses", "openai-codex-responses"]);
 
+// Compat the gateway adds where Pi's own table has no entry. A rule applies when
+// its provider and model match, and a value Pi already set wins. Remove a rule
+// once the pinned pi-ai sets the same value.
+const COMPAT_RULES: ReadonlyArray<{ provider: string; model: RegExp; compat: Record<string, unknown> }> = [
+  { provider: "anthropic", model: /^claude-haiku-(4-5|5-5)(-|$)/, compat: { supportsToolReferences: true } },
+];
+
 function gatewayRuntimeCompat(api: unknown, compat: unknown, provider: string, modelId: string): unknown {
   // Pi 1.5 enables server-side message threads whenever sessionId is set.
   // Gateway sessions serve affinity, not permission to retain a conversation
   // remotely; keep full-history requests, including on ZDR routes.
   if (api === "anthropic-messages") {
     const base = isRecord(compat) ? compat : {};
-    return {
-      ...base,
-      supportsMessageThreads: false,
-      // Pi defers tools (`defer_loading`, loaded by `tool_reference`) only on
-      // Opus, Sonnet and Fable. Anthropic's API takes them on Haiku from 4.5
-      // on too, as Claude Code itself sends them (mupt-ai/pi#65), and a tool
-      // Claude Code loads mid-session must stay deferred: an ordinary tool
-      // changes the cached prefix.
-      ...(base.supportsToolReferences === undefined && provider === "anthropic" && isHaiku45OrLater(modelId)
-        ? { supportsToolReferences: true }
-        : {}),
-    };
+    return { ...base, ...gatewayCompatDefaults(provider, modelId, base), supportsMessageThreads: false };
   }
   if (typeof api !== "string" || !RESPONSES_APIS.has(api)) return compat;
   if (!isRecord(compat) || compat.supportsMidConvoSystemMessages !== true) return compat;
   return { ...compat, supportsMidConvoSystemMessages: false };
 }
 
-function isHaiku45OrLater(modelId: string): boolean {
-  const version = /^claude-haiku-(\d+)(?:[-.](\d)(?:[-.]|$)|[-.]|$)/.exec(modelId);
-  if (version === null) return false;
-  const major = Number(version[1]);
-  return major > 4 || (major === 4 && Number(version[2] ?? 0) >= 5);
+function gatewayCompatDefaults(provider: string, modelId: string, base: Record<string, unknown>): Record<string, unknown> {
+  const defaults: Record<string, unknown> = {};
+  for (const rule of COMPAT_RULES) {
+    if (rule.provider !== provider || !rule.model.test(modelId)) continue;
+    for (const [key, value] of Object.entries(rule.compat)) {
+      if (base[key] === undefined) defaults[key] = value;
+    }
+  }
+  return defaults;
 }
 
 function modelPricingFromConfig(config: ResolvedRouterModelConfig | undefined): ModelPricing | null {

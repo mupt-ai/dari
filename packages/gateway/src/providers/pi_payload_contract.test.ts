@@ -700,7 +700,6 @@ test("client-deferred tools stay deferred until a tool reference loads them", as
         "off",
       ),
     ],
-    // Pi's own list of models with tool references leaves out Haiku.
     [
       "anthropic/claude-haiku-5-5",
       modelConfig("anthropic", "claude-haiku-5-5", "anthropic-messages", 200_000, ["off", "low", "high"], "off"),

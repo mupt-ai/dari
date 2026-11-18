@@ -851,7 +851,7 @@ test("serves OpenCode Go models with Pi's registered compat and OpenCode's clien
   });
 });
 
-test("Haiku from 4.5 on keeps client-deferred tools deferred, on Anthropic's own API only", () => {
+test("Haiku 4.5 and 5.5 keep client-deferred tools deferred, on Anthropic's own API only", () => {
   const haiku = (provider: string, nativeId: string) => buildModel(pi, "anthropic/claude-haiku-5-5", null, {
     provider,
     native_model_id: nativeId,

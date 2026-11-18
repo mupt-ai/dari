@@ -87,7 +87,7 @@ func releaseAgentScreen() {
 		close(agentScreen.signals)
 	}
 	if agentScreen.active {
-		fmt.Fprint(agentScreen.stderr, "\033[?25h\033[?1049l")
+		fmt.Fprint(agentScreen.stderr, "\033[?25h\033[?1007l\033[?1049l")
 		for _, line := range agentScreen.lines {
 			fmt.Fprintln(agentScreen.stderr, line)
 		}
@@ -272,7 +272,9 @@ func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, 
 		session.width, session.height = w-2*len(agentPageMargin), h-6
 	}
 	if !agentScreen.active {
-		fmt.Fprint(stderr, "\033[?1049h")
+		// The alternate screen, with the mouse wheel sent as arrow keys so it
+		// moves the cursor, which scrolls a tall page.
+		fmt.Fprint(stderr, "\033[?1049h\033[?1007h")
 		agentScreen.active, agentScreen.stderr = true, stderr
 	}
 	fmt.Fprint(stderr, "\033[?25l")
@@ -372,21 +374,34 @@ func (session *agentTUISession) draw() {
 	for _, line := range lines {
 		pageWidth = max(pageWidth, ansiVisibleWidth(line))
 	}
+	// A page taller than the terminal scrolls by itself; the title beside or
+	// above it stays put. Unknown rows (the size can't be read): nothing scrolls.
+	rows := 0
+	if session.height > 0 {
+		rows = session.height + 6 - 2
+	}
+	fit := func(lines []string, rows int) []string {
+		if rows <= 0 {
+			return lines
+		}
+		return scrollToFocus(lines, rows)
+	}
 	const gap = 4
 	var page []string
 	if panel := min(session.width-pageWidth-gap-1, 72); session.panel && panel >= sidePanelMinWidth {
-		// Taller than the page when the terminal has room, so the wordmark fits.
-		height := max(len(lines), min(len(dariLogo)+7, session.height+4))
+		lines = fit(lines, rows)
+		// Taller than the page when the terminal has room, so the mark fits.
+		height := max(len(lines), len(dariLogo)+7)
+		if rows > 0 {
+			height = max(len(lines), min(height, rows))
+		}
 		page = besidePanel(lines, pageWidth, gap, titlePanel(panel, height, session.subtitle))
-	} else if session.panel {
-		page = append(pageHeader(session.width, session.subtitle), lines...)
+	} else if header := pageHeader(session.width, session.subtitle); session.panel && (rows <= 0 || rows-len(header) >= 10) {
+		page = append(header, fit(lines, rows-len(header))...)
 	} else {
-		// Pages past the first carry no title.
-		page = lines
-	}
-	// Unknown when the size can't be read: then nothing scrolls.
-	if session.height > 0 {
-		page = scrollToFocus(page, session.height+6-2)
+		// Pages past the first carry no title, nor does a first page with
+		// too few rows to spare for one.
+		page = fit(lines, rows)
 	}
 	var frame strings.Builder
 	frame.WriteString("\033[H\033[K\r\n")

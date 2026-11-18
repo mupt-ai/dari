@@ -1283,30 +1283,26 @@ var agentProviderNames = map[string]string{
 	"zai-org": "Z.ai", "qwen": "Qwen", "opencode": "OpenCode",
 }
 
-// agentPickerLines draws the model picker: each provider's models under its
-// name, an open model's thinking levels and payment beneath it, Continue at
-// the end, and the keys, one to a line.
+// agentPickerLines draws the model picker's page: the models and their
+// thinking levels, or how each chosen model is paid for.
 func agentPickerLines(title string, note []string, p *agentPickerState) []string {
+	if p.paying {
+		return agentPayingLines(p)
+	}
 	lines := []string{agentPromptLine(title)}
 	for _, line := range note {
 		lines = append(lines, "  "+ansiGray+line+ansiReset)
 	}
 	items := p.items()
 	focus := items[min(max(p.cursor, 0), len(items)-1)]
-	nameWidth, levelWidth, sourceWidth := 0, 0, 0
+	// Several thinking levels stack in their column, one to a line, so the
+	// column keeps one width.
+	nameWidth, levelWidth := 0, len("default")
 	for _, row := range p.rows {
 		nameWidth = max(nameWidth, len([]rune(row.model.DisplayName)))
-		levelWidth = max(levelWidth, len(cmp.Or(strings.Join(row.checkedLevels(), ", "), "default")))
-		if len(row.sources) > 0 {
-			sourceWidth = max(sourceWidth, len([]rune(row.sources[row.source].label)))
+		for _, level := range row.levelOpts {
+			levelWidth = max(levelWidth, len(level))
 		}
-	}
-	at := func(item agentPickerItem) bool { return item == focus }
-	mark := func(line string, focused bool) string {
-		if focused {
-			return line + agentFocusMark
-		}
-		return line
 	}
 	provider := ""
 	for i, row := range p.rows {
@@ -1314,7 +1310,7 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 			provider = row.model.Provider
 			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset)
 		}
-		focused := at(agentPickerItem{kind: "model", row: i})
+		focused := item(focus, "model", i, 0)
 		name := padRight(row.model.DisplayName, nameWidth)
 		switch {
 		case focused:
@@ -1322,74 +1318,113 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 		case !row.selected:
 			name = ansiGray + name + ansiReset
 		}
-		levels := padRight(cmp.Or(strings.Join(row.checkedLevels(), ", "), "default"), levelWidth)
-		source := ""
-		if sourceWidth > 0 {
-			label := ""
-			if len(row.sources) > 0 {
-				label = row.sources[row.source].label
-			}
-			source = "  " + ansiGray + padRight(label, sourceWidth) + ansiReset
-			if row.selected {
-				source = "  " + padRight(label, sourceWidth)
-			}
+		levels := row.checkedLevels()
+		if len(levels) == 0 {
+			levels = []string{"default"}
 		}
 		recommended := ""
 		if row.usesRecommended() {
 			recommended = "  " + ansiGreen + "recommended" + ansiReset
 		}
 		open := " "
-		if len(row.levelOpts) > 0 || len(row.sources) > 1 {
+		if len(row.levelOpts) > 1 {
 			open = ansiGray + "›" + ansiReset
 			if i == p.open {
 				open = ansiGray + "⌄" + ansiReset
 			}
 		}
-		lines = append(lines, mark(agentCursor(focused)+agentCheckbox(row.selected)+" "+name+" "+open+" "+ansiCyan+levels+ansiReset+source+recommended, focused))
+		line := agentCursor(focused) + agentCheckbox(row.selected) + " " + name + " " + open + " " + ansiCyan + padRight(levels[0], levelWidth) + ansiReset + recommended
+		lines = append(lines, agentFocused(line, focused))
+		for _, level := range levels[1:] {
+			lines = append(lines, strings.Repeat(" ", 4+nameWidth+3)+ansiCyan+level+ansiReset)
+		}
 		if i != p.open {
 			continue
 		}
-		if len(row.levelOpts) > 0 {
-			lines = append(lines, "      "+ansiGray+"Thinking"+ansiReset)
-			for j, level := range row.levelOpts {
-				focused := at(agentPickerItem{kind: "level", row: i, index: j})
-				label := level
-				if focused {
-					label = ansiBold + label + ansiReset
-				}
-				rec := ""
-				if row.recommended[level] {
-					rec = "  " + ansiGreen + "recommended" + ansiReset
-				}
-				lines = append(lines, mark("    "+agentCursor(focused)+agentCheckbox(row.checked[level])+" "+label+rec, focused))
+		lines = append(lines, "      "+ansiGray+"Thinking"+ansiReset)
+		for j, level := range row.levelOpts {
+			focused := item(focus, "level", i, j)
+			label := level
+			if focused {
+				label = ansiBold + label + ansiReset
 			}
-		}
-		if len(row.sources) > 1 {
-			lines = append(lines, "      "+ansiGray+"Pay with"+ansiReset)
-			for j, source := range row.sources {
-				focused := at(agentPickerItem{kind: "source", row: i, index: j})
-				dot := ansiGray + "○" + ansiReset
-				if j == row.source {
-					dot = ansiCoral + "●" + ansiReset
-				}
-				label := source.label
-				if focused {
-					label = ansiBold + label + ansiReset
-				}
-				lines = append(lines, mark("    "+agentCursor(focused)+dot+" "+label, focused))
+			rec := ""
+			if row.recommended[level] {
+				rec = "  " + ansiGreen + "recommended" + ansiReset
 			}
+			lines = append(lines, agentFocused("    "+agentCursor(focused)+agentCheckbox(row.checked[level])+" "+label+rec, focused))
 		}
 	}
+	next := "Continue →"
+	if p.needsPaying() {
+		next = "Next: payment →"
+	}
+	return append(lines, agentPickerFooter(p, focus, next, "↑↓ move", "enter select", "→ thinking levels", "← close", "esc back")...)
+}
+
+// agentPayingLines is the picker's second page: each chosen model that can
+// be paid for more than one way, with its choices on its line.
+func agentPayingLines(p *agentPickerState) []string {
+	lines := []string{agentPromptLine("How should each model be paid for?")}
+	items := p.items()
+	focus := items[min(max(p.cursor, 0), len(items)-1)]
+	nameWidth := 0
+	for _, it := range items {
+		if it.kind == "source" {
+			nameWidth = max(nameWidth, len([]rune(p.rows[it.row].model.DisplayName)))
+		}
+	}
+	provider := ""
+	for _, it := range items {
+		if it.kind != "source" {
+			continue
+		}
+		row := p.rows[it.row]
+		if row.model.Provider != provider {
+			provider = row.model.Provider
+			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset)
+		}
+		focused := it == focus
+		name := padRight(row.model.DisplayName, nameWidth)
+		if focused {
+			name = ansiBold + name + ansiReset
+		}
+		choices := []string{}
+		for j, source := range row.sources {
+			dot := ansiGray + "○ " + source.label + ansiReset
+			if j == row.source {
+				dot = ansiCoral + "●" + ansiReset + " " + source.label
+			}
+			choices = append(choices, dot)
+		}
+		lines = append(lines, agentFocused(agentCursor(focused)+name+"   "+strings.Join(choices, "   "), focused))
+	}
+	return append(lines, agentPickerFooter(p, focus, "Continue →", "↑↓ move", "← → choose", "esc back")...)
+}
+
+// agentPickerFooter is the picker's Continue line, its warning, and its keys.
+func agentPickerFooter(p *agentPickerState, focus agentPickerItem, label string, hints ...string) []string {
 	focused := focus.kind == "continue"
-	button := "Continue →"
 	if focused {
-		button = ansiBold + button + ansiReset
+		label = ansiBold + label + ansiReset
 	}
-	lines = append(lines, "", mark(agentCursor(focused)+button, focused))
+	lines := []string{"", agentFocused(agentCursor(focused)+label, focused)}
 	if p.warning != "" {
 		lines = append(lines, "  "+ansiRed+p.warning+ansiReset)
 	}
-	return append(lines, "", agentHintLine("↑↓ move", "enter select", "→ levels and payment", "← close", "esc back"))
+	return append(lines, "", agentHintLine(hints...))
+}
+
+func item(focus agentPickerItem, kind string, row, index int) bool {
+	return focus == agentPickerItem{kind: kind, row: row, index: index}
+}
+
+// agentFocused marks the line under the cursor for scrolling to keep in view.
+func agentFocused(line string, focused bool) string {
+	if focused {
+		return line + agentFocusMark
+	}
+	return line
 }
 
 func agentCheckbox(checked bool) string {

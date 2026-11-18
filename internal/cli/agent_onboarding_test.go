@@ -1454,7 +1454,7 @@ func TestAgentPickerLinesGroupByProviderAndAlign(t *testing.T) {
 	plain := stripANSI(strings.Join(agentPickerLines("Choose models", []string{"note one", "note two"}, p), "\n"))
 
 	// Each provider heads its models; Continue and the keys, one to a line, follow.
-	for _, want := range []string{"  note one\n  note two\n\n  Anthropic\n", "\n  Fireworks\n", "\n  OpenAI\n", "Continue →\n\n  ↑↓ move · enter select · → levels and payment · ← close · esc back"} {
+	for _, want := range []string{"  note one\n  note two\n\n  Anthropic\n", "\n  Fireworks\n", "\n  OpenAI\n", "Continue →\n\n  ↑↓ move · enter select · → thinking levels · ← close · esc back"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("missing %q in:\n%s", want, plain)
 		}
@@ -1463,7 +1463,7 @@ func TestAgentPickerLinesGroupByProviderAndAlign(t *testing.T) {
 	levelCols := map[int]bool{}
 	for _, line := range strings.Split(plain, "\n") {
 		if strings.Contains(line, "○ ") || strings.Contains(line, "◉ ") {
-			levelCols[slices.Index([]rune(line), '›')] = true
+			levelCols[runeIndex(line, "high")+runeIndex(line, "medium")+1] = true
 		}
 	}
 	if len(levelCols) != 1 {
@@ -1791,9 +1791,13 @@ func TestAgentPickerPaymentIsChosenPerModel(t *testing.T) {
 	p := newAgentPickerState(models, []string{"anthropic/opus", "anthropic/sonnet"}, nil, nil, map[string][]agentModelSource{
 		"anthropic/opus": anthropic, "anthropic/sonnet": anthropic,
 	})
-	// Open Opus: its thinking level, then how it is paid for; choose credits.
-	for _, key := range []string{"right", "down", "down", "down", "enter", "left"} {
-		p.handleKey(key)
+	// Continue goes on to the payment page; put Opus on credits, then finish.
+	if done, _ := pickerContinue(p); done || !p.paying {
+		t.Fatalf("continue did not open the payment page: done=%v paying=%v", done, p.paying)
+	}
+	p.handleKey("right")
+	if done, _ := pickerContinue(p); !done {
+		t.Fatal("did not finish from the payment page")
 	}
 	choices := p.choices()
 	if choices[0].Source.kind != "managed" || choices[1].Source.kind != "subscription" {
@@ -1834,4 +1838,32 @@ func TestDropAgentStepTakesBackTheLastMatchingLine(t *testing.T) {
 	if len(agentScreen.lines) != 2 || agentScreen.lines[1] != "other" {
 		t.Fatalf("lines = %q", agentScreen.lines)
 	}
+}
+
+func TestAgentPickerStacksThinkingLevelsAndEscLeavesPaymentPage(t *testing.T) {
+	models := testAgentModels()
+	models[2].SupportedLevels = []string{"low", "medium", "high", "xhigh"}
+	p := newAgentPickerState(models, []string{"openai/gpt-5.6-sol"}, nil, testRecommendedLevels(), nil)
+	plain := stripANSI(strings.Join(agentPickerLines("Choose models", nil, p), "\n"))
+	// Sol's two levels stack in one column: medium on its line, xhigh below it.
+	lines := strings.Split(plain, "\n")
+	i := slices.IndexFunc(lines, func(line string) bool { return strings.Contains(line, "Sol") })
+	if i < 0 || !strings.Contains(lines[i], "medium") || strings.Contains(lines[i], "xhigh") || strings.TrimSpace(lines[i+1]) != "xhigh" ||
+		runeIndex(lines[i], "medium") != runeIndex(lines[i+1], "xhigh") {
+		t.Fatalf("levels not stacked:\n%s", plain)
+	}
+	// Esc on the payment page comes back to the models.
+	p.paying = true
+	if _, canceled := p.handleKey("esc"); canceled || p.paying {
+		t.Fatalf("esc on payment: canceled=%v paying=%v", canceled, p.paying)
+	}
+}
+
+// runeIndex is strings.Index counted in runes, or -1.
+func runeIndex(s, sub string) int {
+	i := strings.Index(s, sub)
+	if i < 0 {
+		return -1
+	}
+	return len([]rune(s[:i]))
 }

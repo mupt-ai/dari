@@ -1081,6 +1081,8 @@ type agentPickerState struct {
 	open int
 	// warning shows by Continue when there is nothing to continue with.
 	warning string
+	// paying is the second page: how each chosen model is paid for.
+	paying bool
 	// quit is set when the picker was left with q or ctrl+c, which leaves the
 	// command, rather than with esc, which goes back.
 	quit bool
@@ -1096,6 +1098,12 @@ type agentPickerItem struct {
 func (p *agentPickerState) items() []agentPickerItem {
 	items := []agentPickerItem{}
 	for i, row := range p.rows {
+		if p.paying {
+			if row.selected && len(row.sources) > 1 {
+				items = append(items, agentPickerItem{kind: "source", row: i})
+			}
+			continue
+		}
 		items = append(items, agentPickerItem{kind: "model", row: i})
 		if i != p.open {
 			continue
@@ -1103,13 +1111,13 @@ func (p *agentPickerState) items() []agentPickerItem {
 		for j := range row.levelOpts {
 			items = append(items, agentPickerItem{kind: "level", row: i, index: j})
 		}
-		if len(row.sources) > 1 {
-			for j := range row.sources {
-				items = append(items, agentPickerItem{kind: "source", row: i, index: j})
-			}
-		}
 	}
 	return append(items, agentPickerItem{kind: "continue", row: -1})
+}
+
+// needsPaying reports whether a chosen model can be paid for more than one way.
+func (p *agentPickerState) needsPaying() bool {
+	return slices.ContainsFunc(p.rows, func(row agentPickerRow) bool { return row.selected && len(row.sources) > 1 })
 }
 
 // cursorOn moves the cursor to row's model line.
@@ -1217,9 +1225,11 @@ func (p *agentPickerState) choices() []agentModelChoice {
 	return choices
 }
 
-// handleKey moves the cursor or acts on the line under it: enter (or space)
-// chooses a model, a thinking level, or how a model is paid for, and on
-// Continue finishes; → opens a model's details and ← closes them.
+// handleKey moves the cursor or acts on the line under it. On the first
+// page enter chooses a model or a thinking level, → opens a model's levels
+// and ← closes them; on the second, ← → choose how a model is paid for.
+// Continue on the first page goes on to the second when a chosen model can
+// be paid for more than one way, and finishes otherwise.
 func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
 	items := p.items()
 	p.cursor = min(max(p.cursor, 0), len(items)-1)
@@ -1229,14 +1239,21 @@ func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
 		p.cursor = max(p.cursor-1, 0)
 	case "down", "j":
 		p.cursor = min(p.cursor+1, len(items)-1)
-	case "right", "l":
-		if item.kind == "model" && item.row != p.open {
-			if row := p.rows[item.row]; len(row.levelOpts) > 0 || len(row.sources) > 1 {
-				p.openRow(item.row)
+	case "right", "l", "left", "h":
+		forward := key == "right" || key == "l"
+		switch {
+		case item.kind == "source":
+			row := &p.rows[item.row]
+			if forward {
+				row.source = min(row.source+1, len(row.sources)-1)
+			} else {
+				row.source = max(row.source-1, 0)
 			}
+		case forward && item.kind == "model" && item.row != p.open && len(p.rows[item.row].levelOpts) > 1:
+			p.openRow(item.row)
+		case !forward:
+			p.closeRow()
 		}
-	case "left", "h":
-		p.closeRow()
 	case "enter", " ":
 		p.warning = ""
 		switch item.kind {
@@ -1248,21 +1265,29 @@ func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
 			row.checked[level] = !row.checked[level]
 		case "source":
 			// Each model is paid for on its own, even within one provider.
-			p.rows[item.row].source = item.index
+			row := &p.rows[item.row]
+			row.source = (row.source + 1) % len(row.sources)
 		case "continue":
 			if p.selectedCount() == 0 {
 				p.warning = "Choose at least one model."
 				return false, false
 			}
 			p.closeRow()
+			if !p.paying && p.needsPaying() {
+				p.paying, p.cursor = true, 0
+				return false, false
+			}
 			return true, false
 		}
 	case "esc":
-		if p.open >= 0 {
+		switch {
+		case p.open >= 0:
 			p.closeRow()
-			return false, false
+		case p.paying:
+			p.paying, p.cursor = false, 0
+		default:
+			return false, true
 		}
-		return false, true
 	case "quit":
 		p.quit = true
 		return false, true

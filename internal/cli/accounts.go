@@ -430,91 +430,133 @@ func (page accountsPage) addSubscription(ctx context.Context, subscriptions []su
 	return selected.provider, true, nil
 }
 
-// manageSubscription is one subscription's page: its plan at the vendor, its
-// name, its connection, a usage-limit hold, and banked limit resets. It
-// reports whether to show the page again, reloaded: after any action but
-// Back and a disconnect. Esc in a dialog it opens returns to the page.
+// manageSubscription is one subscription's page: its usage in a box like the
+// list's, its banked resets to use, and its settings. It shows itself again
+// after anything that changed nothing, and otherwise reports how it was left.
 func (page accountsPage) manageSubscription(ctx context.Context, subscription subscriptionCredential, prefetched *resetsFetch, stdin io.Reader, stderr io.Writer) (subscriptionPageOutcome, error) {
 	name := subscriptionName(subscription)
 	provider := subscriptionProviderFor(subscription.OAuthProvider)
 	path := "/v1/organizations/current/credentials/" + url.PathEscape(subscription.Name)
-	options := []agentChoiceOption{}
-	actions := []func() error{}
-	add := func(label string, action func() error) {
-		options = append(options, agentChoiceOption{label: label})
-		actions = append(actions, action)
-	}
-	if provider.billingURL != "" {
-		add("Manage plan at "+provider.vendor, func() error {
-			if openAgentBrowser(provider.billingURL) {
-				agentStep(stderr, "Opened "+provider.vendor+"; sign in as "+name+" if another account is open")
-			} else {
-				agentPrintln(stderr, "Manage the plan, signed in as "+name+", at:\n  "+provider.billingURL)
-			}
-			return nil
-		})
-	}
-	add("Rename", func() error {
-		_, err := runAgentTextInputTUI(stdin, stderr, "Rename "+name, []string{"  " + ansiGray + "Leave empty to show the account email." + ansiReset, ""}, name, func(label string) error {
-			var updated map[string]any
-			return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/label", map[string]string{"label": strings.TrimSpace(label)}, &updated))
-		})
-		return err
-	})
-	add("Reconnect", func() error {
-		return connectAgentPersonalSubscription(ctx, provider, page.client, stdin, stderr, subscription.Name)
-	})
-	if subscriptionStatus(subscription) == "held" || len(activeModelHolds(subscription, time.Now())) > 0 {
-		add("Mark available", func() error {
-			var updated map[string]any
-			return api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
-		})
-	}
-	lines := append(subscriptionLines(subscription, true), "")
-	if page.hosted && (provider == codexSubscription || provider == claudeSubscription) {
+	resettable := page.hosted && (provider == codexSubscription || provider == claudeSubscription)
+	var resets []subscriptionReset
+	var resetsErr error
+	if resettable {
 		if prefetched == nil {
 			prefetched = fetchSubscriptionResets(ctx, page.client, subscription.Name)
 		}
-		resets, err := prefetched.wait()
-		lines = append(lines, subscriptionResetLines(resets, err)...)
-		if slices.ContainsFunc(resets, func(r subscriptionReset) bool { return r.Usable }) {
-			add("Use a reset now", func() error {
-				return page.useReset(ctx, subscription, resets, stdin, stderr)
+		resets, resetsErr = prefetched.wait()
+	}
+	columns := subscriptionColumnsFor([]subscriptionCredential{subscription})
+	rows := []string{subscriptionLabel(subscription, true, columns)}
+	// Without a number before the name, the meters start where it does.
+	for _, detail := range subscriptionDetailLines(subscription, columns) {
+		rows = append(rows, strings.TrimPrefix(detail, "  "))
+	}
+	details := []string{}
+	for _, line := range agentBox(rows, 0, ansiGray) {
+		details = append(details, "  "+line)
+	}
+	if resettable && resetsErr != nil {
+		details = append(details, "", "  "+ansiGray+"Couldn't read banked resets: "+resetsErr.Error()+ansiReset)
+	} else if resettable && len(resets) == 0 {
+		details = append(details, "", "  "+ansiGray+"No banked resets"+ansiReset)
+	}
+
+	for {
+		options := []agentChoiceOption{}
+		// Each action reports whether it changed anything.
+		actions := []func() (bool, error){}
+		add := func(option agentChoiceOption, action func() (bool, error)) {
+			options = append(options, option)
+			actions = append(actions, action)
+		}
+		// Each reset is chosen where it is listed, its expiry beside it.
+		labelWidth := 0
+		for _, reset := range resets {
+			labelWidth = max(labelWidth, len([]rune(reset.Label)))
+		}
+		for i, reset := range resets {
+			note := strings.TrimPrefix(resetExpiry(reset), " · ")
+			if !reset.Usable {
+				note = strings.TrimPrefix(note+" · not usable yet", " · ")
+			}
+			option := agentChoiceOption{label: padRight(reset.Label, labelWidth) + "  " + ansiGray + note + ansiReset}
+			if i == 0 {
+				option.heading = fmt.Sprintf("Banked Resets (%d)", len(resets))
+			}
+			add(option, func() (bool, error) {
+				return page.useReset(ctx, subscription, reset, stdin, stderr)
 			})
 		}
-		label := "Use banked resets when every " + provider.name + " subscription is exhausted"
-		if subscription.AutoRedeemResets {
-			label = "Stop using banked resets"
+		settings := len(options)
+		if provider.billingURL != "" {
+			add(agentChoiceOption{label: "Manage plan at " + provider.vendor}, func() (bool, error) {
+				if openAgentBrowser(provider.billingURL) {
+					agentStep(stderr, "Opened "+provider.vendor+"; sign in as "+name+" if another account is open")
+				} else {
+					agentPrintln(stderr, "Manage the plan, signed in as "+name+", at:\n  "+provider.billingURL)
+				}
+				return false, nil
+			})
 		}
-		add(label, func() error {
-			var updated map[string]any
-			return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
+		add(agentChoiceOption{label: "Rename"}, func() (bool, error) {
+			return runAgentTextInputTUI(stdin, stderr, "Rename "+name, []string{"  " + ansiGray + "Leave empty to show the account email." + ansiReset, ""}, name, func(label string) error {
+				var updated map[string]any
+				return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/label", map[string]string{"label": strings.TrimSpace(label)}, &updated))
+			})
 		})
-	}
-	disconnected := false
-	add("Disconnect", func() error {
-		confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", nil, []agentChoiceOption{{label: "Keep it"}, {label: "Disconnect", done: name + " disconnected"}})
-		if err != nil || confirm == 0 {
-			return err
+		add(agentChoiceOption{label: "Reconnect"}, func() (bool, error) {
+			err := connectAgentPersonalSubscription(ctx, provider, page.client, stdin, stderr, subscription.Name)
+			return err == nil, err
+		})
+		if subscriptionStatus(subscription) == "held" || len(activeModelHolds(subscription, time.Now())) > 0 {
+			add(agentChoiceOption{label: "Mark available"}, func() (bool, error) {
+				var updated map[string]any
+				return true, api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
+			})
 		}
-		disconnected = true
-		return api.HumanError(page.client.Do(ctx, http.MethodDelete, path+"?scope=user", nil, nil))
-	})
-	options = append(options, agentChoiceOption{label: "Back"})
-	choice, err := runAgentChoiceTUI(stdin, stderr, name, lines, options)
-	if errors.Is(err, errAgentChoiceCanceled) || (err == nil && choice == len(actions)) {
-		return subscriptionPageBack, nil
+		if resettable {
+			label := "Use banked resets when every " + provider.name + " subscription is exhausted"
+			if subscription.AutoRedeemResets {
+				label = "Stop using banked resets"
+			}
+			add(agentChoiceOption{label: label}, func() (bool, error) {
+				var updated map[string]any
+				return true, api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
+			})
+		}
+		disconnected := false
+		add(agentChoiceOption{label: "Disconnect"}, func() (bool, error) {
+			confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", nil, []agentChoiceOption{{label: "Keep it"}, {label: "Disconnect", done: name + " disconnected"}})
+			if err != nil || confirm == 0 {
+				return false, err
+			}
+			disconnected = true
+			return true, api.HumanError(page.client.Do(ctx, http.MethodDelete, path+"?scope=user", nil, nil))
+		})
+		options[settings].heading = "Settings"
+		options = append(options, agentChoiceOption{label: "Back"})
+
+		choice, err := runAgentChoiceTUI(stdin, stderr, "", details, options)
+		if errors.Is(err, errAgentChoiceCanceled) || (err == nil && choice == len(actions)) {
+			return subscriptionPageBack, nil
+		}
+		if err != nil {
+			return subscriptionPageBack, err
+		}
+		changed, err := actions[choice]()
+		if errors.Is(err, errAgentChoiceCanceled) {
+			changed, err = false, nil
+		}
+		switch {
+		case err != nil:
+			return subscriptionPageActed, err
+		case disconnected:
+			return subscriptionPageLeft, nil
+		case changed:
+			return subscriptionPageActed, nil
+		}
 	}
-	if err != nil {
-		return subscriptionPageBack, err
-	}
-	if err := actions[choice](); err != nil && !errors.Is(err, errAgentChoiceCanceled) {
-		return subscriptionPageActed, err
-	}
-	if disconnected {
-		return subscriptionPageLeft, nil
-	}
-	return subscriptionPageActed, nil
 }
 
 // subscriptionPageOutcome is how a subscription's page was left.
@@ -661,55 +703,32 @@ func usageResetTime(resets time.Time) string {
 	return local.Format("Jan 2 3:04pm")
 }
 
-// useReset lets the user pick one usable banked reset and spends it after
-// they confirm, then shows what the provider answered.
-func (page accountsPage) useReset(ctx context.Context, subscription subscriptionCredential, resets []subscriptionReset, stdin io.Reader, stderr io.Writer) error {
+// useReset spends one banked reset after the user confirms, then shows
+// what the provider answered. It reports whether it asked the provider.
+func (page accountsPage) useReset(ctx context.Context, subscription subscriptionCredential, reset subscriptionReset, stdin io.Reader, stderr io.Writer) (bool, error) {
 	name := subscriptionName(subscription)
-	usable := slices.DeleteFunc(slices.Clone(resets), func(r subscriptionReset) bool { return !r.Usable })
-	options := []agentChoiceOption{}
-	for _, reset := range usable {
-		options = append(options, agentChoiceOption{label: reset.Label, description: strings.TrimPrefix(resetExpiry(reset), " · ")})
+	expiry := strings.TrimPrefix(resetExpiry(reset), " · ")
+	if !reset.Usable {
+		_, err := runAgentChoiceTUI(stdin, stderr, reset.Label+" can't be used yet", []string{"  " + ansiGray + cmp.Or(expiry, "No expiry") + ansiReset, ""}, []agentChoiceOption{{label: "Back"}})
+		return false, err
 	}
-	options = append(options, agentChoiceOption{label: "Back"})
-	picked, err := runAgentChoiceTUI(stdin, stderr, "Use a reset on "+name, nil, options)
-	if err != nil || picked == len(usable) {
-		return err
+	details := []string{"  " + ansiGray + "Clears " + name + "'s usage limits now." + ansiReset}
+	if expiry != "" {
+		details = append(details, "  "+ansiGray+"This reset "+strings.ToLower(expiry[:1])+expiry[1:]+"."+ansiReset)
 	}
-	reset := usable[picked]
-	details := []string{"  " + ansiGray + "Spends " + reset.Label + resetExpiry(reset) + " to clear " + name + "'s usage limits now." + ansiReset, ""}
-	confirm, err := runAgentChoiceTUI(stdin, stderr, "Use this reset?", details, []agentChoiceOption{{label: "Keep it"}, {label: "Use it"}})
+	confirm, err := runAgentChoiceTUI(stdin, stderr, "Use "+reset.Label+"?", append(details, ""), []agentChoiceOption{{label: "Keep it"}, {label: "Use it"}})
 	if err != nil || confirm == 0 {
-		return err
+		return false, err
 	}
 	result, err := useSubscriptionReset(ctx, page.client, subscription.Name, reset.ID)
 	if err != nil {
-		return err
+		return true, err
 	}
 	_, err = runAgentChoiceTUI(stdin, stderr, resetResultText(result), nil, []agentChoiceOption{{label: "Back"}})
-	return err
-}
-
-// subscriptionResetLines lists the banked resets, the soonest to expire first.
-func subscriptionResetLines(resets []subscriptionReset, err error) []string {
-	if err != nil {
-		return []string{"  " + ansiGray + "Couldn't read banked resets: " + err.Error() + ansiReset, ""}
+	if errors.Is(err, errAgentChoiceCanceled) {
+		err = nil
 	}
-	if len(resets) == 0 {
-		return []string{"  " + ansiGray + "No banked resets" + ansiReset, ""}
-	}
-	lines := []string{fmt.Sprintf("  %sBanked resets · %d%s", ansiGray, len(resets), ansiReset)}
-	// Each reset's expiry sits under it, so which goes first reads down the list.
-	for _, reset := range resets {
-		lines = append(lines, "    "+ansiGray+"› "+ansiReset+reset.Label)
-		expiry := strings.TrimPrefix(resetExpiry(reset), " · ")
-		if !reset.Usable {
-			expiry = strings.TrimPrefix(expiry+" · Not usable yet", " · ")
-		}
-		if expiry != "" {
-			lines = append(lines, "      "+ansiGray+expiry+ansiReset)
-		}
-	}
-	return append(lines, "")
+	return true, err
 }
 
 func resetExpiry(reset subscriptionReset) string {

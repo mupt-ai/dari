@@ -122,11 +122,17 @@ func connectAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader
 		where = "at " + page
 	}
 	details := []string{"  " + ansiGray + "Add AWS Bedrock, Microsoft Azure, or other credentials " + where + ansiReset, ""}
-	choice, err := runAgentChoiceTUI(stdin, stderr, "Which API key?", details, options)
-	if err != nil || choice == len(offered) {
-		return false, err
+	// Esc on the key's input comes back to this list.
+	for {
+		choice, err := runAgentChoiceTUI(stdin, stderr, "Which API key?", details, options)
+		if err != nil || choice == len(offered) {
+			return false, err
+		}
+		saved, err := saveAgentAPIKey(ctx, client, stdin, stderr, offered[choice].provider, offered[choice].name)
+		if saved || err != nil {
+			return saved, err
+		}
 	}
-	return saveAgentAPIKey(ctx, client, stdin, stderr, offered[choice].provider, offered[choice].name)
 }
 
 // agentModelSource is where a model's requests are paid for: the user's

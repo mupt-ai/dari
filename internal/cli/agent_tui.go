@@ -108,6 +108,20 @@ func agentHintLine(hints ...string) string {
 
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
+// agentBox draws rows in a rounded box of the given inner width, or the
+// widest row's when wider, its edge in the given color.
+func agentBox(rows []string, width int, edge string) []string {
+	for _, row := range rows {
+		width = max(width, ansiVisibleWidth(row))
+	}
+	border := strings.Repeat("─", width+2)
+	lines := []string{edge + "╭" + border + "╮" + ansiReset}
+	for _, row := range rows {
+		lines = append(lines, edge+"│"+ansiReset+" "+row+strings.Repeat(" ", width-ansiVisibleWidth(row))+" "+edge+"│"+ansiReset)
+	}
+	return append(lines, edge+"╰"+border+"╯"+ansiReset)
+}
+
 func agentCursor(active bool) string {
 	if active {
 		return ansiCoral + "❯ " + ansiReset
@@ -392,15 +406,18 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 			if index == cursor {
 				edge = ansiCoral
 			}
-			row := func(text string) string {
-				return edge + "│" + ansiReset + " " + text + strings.Repeat(" ", max(0, boxWidth-ansiVisibleWidth(text))) + " " + edge + "│" + ansiReset
-			}
-			border := strings.Repeat("─", boxWidth+2)
-			lines = append(lines, "  "+edge+"╭"+border+"╮"+ansiReset, agentCursor(index == cursor)+row(label))
+			rows := []string{label}
 			for _, detail := range option.details {
-				lines = append(lines, "  "+row("  "+detail))
+				rows = append(rows, "  "+detail)
 			}
-			lines = append(lines, "  "+edge+"╰"+border+"╯"+ansiReset)
+			box := agentBox(rows, boxWidth, edge)
+			for i, line := range box {
+				prefix := "  "
+				if i == 1 {
+					prefix = agentCursor(index == cursor)
+				}
+				lines = append(lines, prefix+line)
+			}
 			continue
 		}
 		line := agentCursor(index == cursor) + label

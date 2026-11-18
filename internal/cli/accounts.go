@@ -368,7 +368,16 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			return api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
 		})
 	}
+	lines := append(subscriptionLines(subscription, true), "")
 	if page.hosted && (provider == codexSubscription || provider == claudeSubscription) {
+		resets, err := listSubscriptionResets(ctx, page.client, subscription.Name)
+		lines = append(lines, subscriptionResetLines(resets, err)...)
+		if usable := slices.IndexFunc(resets, func(r subscriptionReset) bool { return r.Usable }); usable >= 0 {
+			reset := resets[usable]
+			add("Use a reset now", func() error {
+				return page.useReset(ctx, subscription, reset, stdin, stderr)
+			})
+		}
 		label := "Use banked resets when every " + provider.name + " subscription is exhausted"
 		if subscription.AutoRedeemResets {
 			label = "Stop using banked resets"
@@ -386,7 +395,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 		return api.HumanError(page.client.Do(ctx, http.MethodDelete, path+"?scope=user", nil, nil))
 	})
 	options = append(options, agentChoiceOption{label: "Back"})
-	choice, err := runAgentChoiceTUI(stdin, stderr, name, append(subscriptionLines(subscription, true), ""), options)
+	choice, err := runAgentChoiceTUI(stdin, stderr, name, lines, options)
 	if err != nil || choice == len(actions) {
 		return err
 	}
@@ -501,4 +510,67 @@ func usageResetTime(resets time.Time) string {
 		return local.Format("3:04pm")
 	}
 	return local.Format("Jan 2 3:04pm")
+}
+
+// useReset spends one banked reset after the user confirms, then shows what
+// the provider answered.
+func (page accountsPage) useReset(ctx context.Context, subscription subscriptionCredential, reset subscriptionReset, stdin io.Reader, stderr io.Writer) error {
+	name := subscriptionName(subscription)
+	details := []string{"  " + ansiGray + "Spends " + reset.Label + resetExpiry(reset) + " to clear " + name + "'s usage limits now." + ansiReset, ""}
+	confirm, err := runAgentChoiceTUI(stdin, stderr, "Use a reset on "+name+"?", details, []agentChoiceOption{{label: "Keep it"}, {label: "Use it"}})
+	if err != nil || confirm == 0 {
+		return err
+	}
+	result, err := useSubscriptionReset(ctx, page.client, subscription.Name, reset.ID)
+	if err != nil {
+		return err
+	}
+	_, err = runAgentChoiceTUI(stdin, stderr, resetResultText(result), nil, []agentChoiceOption{{label: "Back"}})
+	return err
+}
+
+// subscriptionResetLines lists the banked resets, the soonest to expire first.
+func subscriptionResetLines(resets []subscriptionReset, err error) []string {
+	if err != nil {
+		return []string{"  " + ansiGray + "Couldn't read banked resets: " + err.Error() + ansiReset, ""}
+	}
+	if len(resets) == 0 {
+		return []string{"  " + ansiGray + "No banked resets" + ansiReset, ""}
+	}
+	lines := []string{fmt.Sprintf("  %sBanked resets · %d%s", ansiGray, len(resets), ansiReset)}
+	for _, reset := range resets {
+		detail := reset.Label + resetExpiry(reset)
+		if !reset.Usable {
+			detail += " · Not usable yet"
+		}
+		lines = append(lines, "    "+ansiGray+"› "+detail+ansiReset)
+	}
+	return append(lines, "")
+}
+
+func resetExpiry(reset subscriptionReset) string {
+	expires, err := time.Parse(time.RFC3339Nano, reset.ExpiresAt)
+	if err != nil {
+		return ""
+	}
+	return " · Expires " + expires.Local().Format("Jan 2")
+}
+
+// resetResultText says what a reset did, in the provider's own terms.
+func resetResultText(result string) string {
+	switch result {
+	case "reset":
+		return "Usage limits reset"
+	case "nothing_to_reset", "not_limited":
+		return "Nothing to reset: the plan isn't at a limit, so the reset was kept"
+	case "no_credit", "already_used", "unavailable":
+		return "That reset is no longer available"
+	case "already_redeemed":
+		return "That reset was already used"
+	case "cooldown":
+		return "Claude allows another reset only later; the reset was kept"
+	case "ineligible":
+		return "This plan can't use that reset now"
+	}
+	return "Reset not confirmed: " + result
 }

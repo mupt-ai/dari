@@ -115,12 +115,15 @@ func agentHintLine(hints ...string) string {
 
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
-// agentSpinnerFrames spin while something the user started is still running.
-var agentSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+// agentSpinnerFrames spin while something the user started is still running:
+// three dots turning in the middle two rows of the Braille cell, so the
+// spinner sits level with the text beside it. (The usual frames use the top
+// three rows and ride high.)
+var agentSpinnerFrames = []string{"⠴", "⠦", "⠖", "⠲"}
 
 var agentSpinner struct{ stop, done chan struct{} }
 
-// startAgentSpinner draws a spinner frame through draw every 80ms until
+// startAgentSpinner draws a spinner frame through draw every 100ms until
 // stopAgentSpinner, starting only once the wait is long enough to notice.
 func startAgentSpinner(draw func(frame string)) {
 	stopAgentSpinner()
@@ -133,7 +136,7 @@ func startAgentSpinner(draw func(frame string)) {
 			return
 		case <-time.After(150 * time.Millisecond):
 		}
-		ticker := time.NewTicker(80 * time.Millisecond)
+		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for i := 0; ; i++ {
 			draw(agentSpinnerFrames[i%len(agentSpinnerFrames)])

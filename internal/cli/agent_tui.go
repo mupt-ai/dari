@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"regexp"
@@ -112,19 +113,6 @@ func agentHintLine(hints ...string) string {
 
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
-// agentGlowBox is agentBox for the box under the cursor: its edge gray, warming
-// to the cursor's color toward the corners.
-func agentGlowBox(rows []string, width int) []string {
-	return agentBoxWith(rows, width, func(x, y, w, h int) string {
-		// Distance to the nearest corner, as a share of the way to the middle.
-		t := min(float64(min(x, w-1-x))/max(float64(w)/2, 1)*3, 1)
-		if y != 0 && y != h-1 {
-			t = min(float64(min(y, h-1-y))/max(float64(h-1)/2, 1)*1.5, 1)
-		}
-		return glowColor(t)
-	})
-}
-
 // glowColor blends the cursor's coral (t 0) into the gray (t 1).
 func glowColor(t float64) string {
 	mix := func(a, b float64) int { return int(a + (b-a)*t + 0.5) }
@@ -356,6 +344,10 @@ func (session *agentTUISession) draw() {
 		// Pages past the first carry no title.
 		page = lines
 	}
+	// Unknown when the size can't be read: then nothing scrolls.
+	if session.height > 0 {
+		page = scrollToFocus(page, session.height+6-2)
+	}
 	var frame strings.Builder
 	frame.WriteString("\033[H\033[K\r\n")
 	for _, line := range page {
@@ -363,6 +355,47 @@ func (session *agentTUISession) draw() {
 	}
 	frame.WriteString("\033[J")
 	_, _ = session.stderr.Write([]byte(frame.String()))
+}
+
+// agentFocusMark marks the lines scrolling keeps in view: the option under
+// the cursor. It is an escape sequence with no effect on what shows.
+const agentFocusMark = "\033[28m"
+
+// scrollToFocus fits a page taller than rows by showing the part around the
+// marked lines, keeping its last line (the key hints) and saying what is
+// above and below.
+func scrollToFocus(page []string, rows int) []string {
+	if rows < 4 || len(page) <= rows {
+		return page
+	}
+	body, hints := page[:len(page)-1], page[len(page)-1]
+	// A line above and below say whether more is there.
+	window := rows - 3
+	first, last := -1, -1
+	for i, line := range body {
+		if strings.Contains(line, agentFocusMark) {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	start := 0
+	if first >= 0 {
+		// The focus and a line of what follows it, starting no lower than
+		// the focus itself.
+		start = min(max(last+2-window, 0), first)
+	}
+	start = min(start, len(body)-window)
+	above, below := "", ""
+	if start > 0 {
+		above = ansiGray + "  ↑ more" + ansiReset
+	}
+	if start+window < len(body) {
+		below = ansiGray + "  ↓ more" + ansiReset
+	}
+	shown := append([]string{above}, body[start:start+window]...)
+	return append(shown, below, hints)
 }
 
 // titlePanel is a rounded panel of the given size with Dari's mark, the
@@ -382,7 +415,13 @@ func titlePanel(width, height int, subtitle string) []string {
 		}
 		content = []string{}
 		for _, line := range logo {
-			content = append(content, ansiCoral+padRight(line, logoWidth)+ansiReset)
+			// Gray at the middle, warming to coral toward its ends.
+			var shaded strings.Builder
+			for x, r := range []rune(padRight(line, logoWidth)) {
+				t := math.Abs(float64(x)-float64(logoWidth-1)/2) / (float64(logoWidth-1) / 2)
+				shaded.WriteString(glowColor(1-t) + string(r))
+			}
+			content = append(content, shaded.String()+ansiReset)
 		}
 		content = append(content, "", ansiBold+"dari.dev"+ansiReset, ansiGray+subtitle+ansiReset)
 		break
@@ -682,9 +721,9 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 		if option.boxed {
 			// The box holds its number, in line with the other numbers; the box
 			// under the cursor takes the cursor's color in place of the ❯.
-			box := agentBox
+			edge := ansiGray
 			if index == cursor {
-				box = func(rows []string, width int, _ string) []string { return agentGlowBox(rows, width) }
+				edge = ansiCoral
 			}
 			indent := strings.Repeat(" ", len(number)+1)
 			// What wraps of the first row continues under the label, not the number.
@@ -696,10 +735,19 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 			for _, detail := range option.details {
 				rows = append(rows, indent+strings.TrimPrefix(detail, "  "))
 			}
-			lines = append(lines, box(rows, fit(boxWidth), ansiGray)...)
+			box := agentBox(rows, fit(boxWidth), edge)
+			if index == cursor {
+				// The whole box is what scrolling keeps in view.
+				box[0] += agentFocusMark
+				box[len(box)-1] += agentFocusMark
+			}
+			lines = append(lines, box...)
 			continue
 		}
 		line := agentCursor(index == cursor) + label
+		if index == cursor {
+			line += agentFocusMark
+		}
 		if option.note != "" {
 			line += "  " + ansiGreen + option.note + ansiReset
 		}

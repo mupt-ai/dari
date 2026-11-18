@@ -270,10 +270,13 @@ func (session *agentTUISession) draw() {
 	var page []string
 	if panel := min(session.width-pageWidth-gap-1, 72); session.panel && panel >= sidePanelMinWidth {
 		// Taller than the page when the terminal has room, so the wordmark fits.
-		height := max(len(lines), min(len(dariLogo)+len(dariWordmark)+7, session.height+4))
+		height := max(len(lines), min(len(dariLogo)+7, session.height+4))
 		page = besidePanel(lines, pageWidth, gap, titlePanel(panel, height, session.subtitle))
-	} else {
+	} else if session.panel {
 		page = append(pageHeader(session.width, session.subtitle), lines...)
+	} else {
+		// Pages past the first carry no title.
+		page = lines
 	}
 	var frame strings.Builder
 	frame.WriteString("\033[H\033[K\r\n")
@@ -290,13 +293,13 @@ func titlePanel(width, height int, subtitle string) []string {
 	inner := width - 2
 	title := ansiCoral + "⑂" + ansiReset + " " + ansiBold + "dari.dev" + ansiReset
 	content := []string{title, ansiGray + subtitle + ansiReset}
-	logoWidth := ansiVisibleWidth(dariLogo[0])
-	switch {
-	case inner >= logoWidth+4 && height-2 >= len(dariLogo)+len(dariWordmark)+5:
-		content = append(append(append([]string{}, dariLogo...), ""), dariWordmark...)
-		content = append(content, "", ansiGray+subtitle+ansiReset)
-	case inner >= logoWidth+4 && height-2 >= len(dariLogo)+5:
-		content = append(append(append([]string{}, dariLogo...), ""), ansiBold+"dari.dev"+ansiReset, ansiGray+subtitle+ansiReset)
+	// The mark in the cursor's color, above the name in plain text.
+	if logoWidth := ansiVisibleWidth(dariLogo[0]); inner >= logoWidth+4 && height-2 >= len(dariLogo)+5 {
+		content = []string{}
+		for _, line := range dariLogo {
+			content = append(content, ansiCoral+padRight(line, logoWidth)+ansiReset)
+		}
+		content = append(content, "", ansiBold+"dari.dev"+ansiReset, ansiGray+subtitle+ansiReset)
 	}
 	center := func(text string) string {
 		pad := max(inner-ansiVisibleWidth(text), 0)
@@ -541,6 +544,10 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 	lines := []string{}
 	if prompt != "" {
 		lines = append(lines, agentPromptLine(prompt))
+		// A blank line between a title and the options right under it.
+		if len(details) == 0 && len(summary) == 0 && len(options) > 0 && options[0].heading == "" {
+			lines = append(lines, "")
+		}
 	}
 	// Boxes shrink to fit a narrow terminal: 4 cells go to their edges.
 	fit := func(inner int) int {

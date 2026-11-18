@@ -1460,7 +1460,7 @@ func TestAgentPickerLinesAlignAndScroll(t *testing.T) {
 
 func TestAgentTUIRenderDrawsPageFromTop(t *testing.T) {
 	var out strings.Builder
-	session := &agentTUISession{stderr: &out}
+	session := &agentTUISession{stderr: &out, panel: true}
 	session.render([]string{"one"})
 	got := out.String()
 	// Raw mode needs \r\n, and every row clears what an earlier page left.

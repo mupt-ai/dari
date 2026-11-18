@@ -394,13 +394,17 @@ func (page accountsPage) addSubscription(ctx context.Context, subscriptions []su
 		buy      bool
 	}
 	choices := []choice{}
+	nameWidth := 0
+	for _, provider := range page.providers {
+		nameWidth = max(nameWidth, len([]rune(provider.name)))
+	}
 	for i, provider := range page.providers {
 		option := agentChoiceOption{label: provider.name}
 		if i == 0 {
 			option.heading = "Connect an Account"
 		}
 		if slices.ContainsFunc(subscriptions, func(c subscriptionCredential) bool { return c.OAuthProvider == provider.id }) {
-			option.label += "  " + ansiGray + "another account" + ansiReset
+			option.label = padRight(provider.name, nameWidth) + "  " + ansiGray + "another account" + ansiReset
 		}
 		options = append(options, option)
 		choices = append(choices, choice{provider: provider})
@@ -493,6 +497,21 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 				return page.useReset(ctx, subscription, reset, stdin, stderr)
 			})
 		}
+		if resettable {
+			label := "Use banked resets when every " + provider.name + " subscription is exhausted"
+			if subscription.AutoRedeemResets {
+				label = "Stop using banked resets"
+			}
+			// Resets are listed first; how Dari spends them follows them.
+			toggle := agentChoiceOption{label: label}
+			if len(resets) == 0 {
+				toggle.heading = "Banked Resets"
+			}
+			add(toggle, func() (bool, error) {
+				var updated map[string]any
+				return true, api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
+			})
+		}
 		settings := len(options)
 		if provider.billingURL != "" {
 			add(agentChoiceOption{label: "Manage plan at " + provider.vendor}, func() (bool, error) {
@@ -510,26 +529,17 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 				return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/label", map[string]string{"label": strings.TrimSpace(label)}, &updated))
 			})
 		})
-		add(agentChoiceOption{label: "Reconnect"}, func() (bool, error) {
-			err := connectAgentPersonalSubscription(ctx, provider, page.client, stdin, stderr, subscription.Name)
-			return err == nil, err
-		})
 		if subscriptionStatus(subscription) == "held" || len(activeModelHolds(subscription, time.Now())) > 0 {
 			add(agentChoiceOption{label: "Mark available"}, func() (bool, error) {
 				var updated map[string]any
 				return true, api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
 			})
 		}
-		if resettable {
-			label := "Use banked resets when every " + provider.name + " subscription is exhausted"
-			if subscription.AutoRedeemResets {
-				label = "Stop using banked resets"
-			}
-			add(agentChoiceOption{label: label}, func() (bool, error) {
-				var updated map[string]any
-				return true, api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
-			})
-		}
+		// The connection's own actions sit together.
+		add(agentChoiceOption{label: "Reconnect", gap: true}, func() (bool, error) {
+			err := connectAgentPersonalSubscription(ctx, provider, page.client, stdin, stderr, subscription.Name)
+			return err == nil, err
+		})
 		disconnected := false
 		add(agentChoiceOption{label: "Disconnect"}, func() (bool, error) {
 			confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", nil, []agentChoiceOption{{label: "Keep it"}, {label: "Disconnect", done: name + " disconnected"}})
@@ -540,7 +550,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			return true, api.HumanError(page.client.Do(ctx, http.MethodDelete, path+"?scope=user", nil, nil))
 		})
 		options[settings].heading = "Settings"
-		options = append(options, agentChoiceOption{label: "Back"})
+		options = append(options, agentChoiceOption{label: "Back", gap: true})
 
 		// The summary box's left edge lines up with the sections' ◆, its text
 		// with their titles.

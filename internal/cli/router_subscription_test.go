@@ -52,6 +52,7 @@ func TestRouterCreateSendsSubscriptionFlags(t *testing.T) {
 		"--managed-key", "openai,anthropic",
 		"--subscription", "OpenAI", "--subscription", "anthropic",
 		"--api-fallback", "openai/gpt-5.6-sol",
+		"--subscription-model", "openai/gpt-5.6-sol,anthropic/claude-fable-5",
 	})
 	if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
 		t.Fatalf("dari router create: %v", err)
@@ -61,6 +62,27 @@ func TestRouterCreateSendsSubscriptionFlags(t *testing.T) {
 	}
 	if got, want := body["subscription_api_fallback_models"], []any{"openai/gpt-5.6-sol"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("subscription_api_fallback_models = %#v, want %#v", got, want)
+	}
+	if got, want := body["subscription_models"], []any{"openai/gpt-5.6-sol", "anthropic/claude-fable-5"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("subscription_models = %#v, want %#v", got, want)
+	}
+}
+
+func TestRouterUpdateSubscriptionModelFlag(t *testing.T) {
+	var body map[string]any
+	srv := routerSubscriptionTestServer(t, &body)
+	useTestAPIKey(t)
+
+	cmd := newRootCmd("dev")
+	cmd.SetArgs([]string{"--api-url", srv.URL, "router", "update", "rtr_123", "--subscription-model", "anthropic/claude-fable-5"})
+	if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
+		t.Fatalf("dari router update: %v", err)
+	}
+	if got, want := body["subscription_models"], []any{"anthropic/claude-fable-5"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("subscription_models = %#v, want %#v", got, want)
+	}
+	if _, sent := body["subscription_providers"]; sent {
+		t.Fatalf("subscription_providers sent without --subscription: %#v", body)
 	}
 }
 

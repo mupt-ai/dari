@@ -159,16 +159,23 @@ export type InteractionOutputItem =
   | InteractionToolCall
   | InteractionHostedToolCall;
 
-export type ServerToolKind =
-  | "bash_20250124"
-  | "text_editor_20250124"
-  | "tool_search_tool_20250919"
-  | "tool_search_tool_regex_20250919"
-  | "tool_search_tool_regex"
-  | "tool_search_tool_regex_20251119"
-  | "tool_search_tool_bm25"
-  | "tool_search_tool_bm25_20251119"
-  | AnthropicWebSearchToolType;
+// Anthropic tool types the gateway accepts, each with the side that runs it.
+export const ANTHROPIC_TOOL_TYPE_KINDS = {
+  bash_20250124: "client_tool",
+  text_editor_20250124: "client_tool",
+  tool_search_tool_20250919: "server_tool",
+  tool_search_tool_regex_20250919: "server_tool",
+  tool_search_tool_regex: "server_tool",
+  tool_search_tool_regex_20251119: "server_tool",
+  tool_search_tool_bm25: "server_tool",
+  tool_search_tool_bm25_20251119: "server_tool",
+} as const;
+
+type AnthropicToolTypeKinds = typeof ANTHROPIC_TOOL_TYPE_KINDS;
+export type ClientToolType = {
+  [K in keyof AnthropicToolTypeKinds]: AnthropicToolTypeKinds[K] extends "client_tool" ? K : never;
+}[keyof AnthropicToolTypeKinds];
+export type ServerToolKind = keyof AnthropicToolTypeKinds | AnthropicWebSearchToolType;
 
 // Anthropic's web search tool at any dated version, e.g. `web_search_20250305`.
 export type AnthropicWebSearchToolType = `web_search_${number}`;
@@ -176,7 +183,7 @@ export type AnthropicWebSearchToolType = `web_search_${number}`;
 export type ClientTool = {
   kind: "client_tool";
   name: string;
-  type: "bash_20250124" | "text_editor_20250124";
+  type: ClientToolType;
   description?: string;
 };
 

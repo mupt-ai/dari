@@ -7,8 +7,10 @@ import { decodeUntrustedProviderContinuationState } from "../../interaction/prov
 import { decodeUntrustedPortableReasoningState } from "../../interaction/portable_reasoning_state.js";
 import { toolsByWireName } from "../../interaction/tool_identity.js";
 import { explicitModelId, isAnthropicRouterModel, unsupportedModelMessage } from "./router_model.js";
+import { ANTHROPIC_TOOL_TYPE_KINDS } from "../../interaction/types.js";
 import type {
   ClientTool,
+  ClientToolType,
   InteractionContent,
   InteractionDocument,
   InteractionItem,
@@ -21,19 +23,10 @@ import type {
   ServerToolKind,
 } from "../../interaction/types.js";
 
-const SUPPORTED_SERVER_TOOL_TYPES: readonly ServerToolKind[] = [
-  "bash_20250124",
-  "text_editor_20250124",
-  "tool_search_tool_20250919",
-  "tool_search_tool_regex_20250919",
-  "tool_search_tool_regex",
-  "tool_search_tool_regex_20251119",
-  "tool_search_tool_bm25",
-  "tool_search_tool_bm25_20251119",
-] as const;
-
-const isServerToolType = (type: string): type is ServerToolKind =>
-  SUPPORTED_SERVER_TOOL_TYPES.includes(type as ServerToolKind) || isAnthropicWebSearchToolType(type);
+const anthropicToolKind = (type: string): "client_tool" | "server_tool" | undefined => {
+  if (Object.hasOwn(ANTHROPIC_TOOL_TYPE_KINDS, type)) return ANTHROPIC_TOOL_TYPE_KINDS[type as keyof typeof ANTHROPIC_TOOL_TYPE_KINDS];
+  return isAnthropicWebSearchToolType(type) ? "server_tool" : undefined;
+};
 
 export function anthropicMessagesToInteraction(
   payload: Record<string, unknown>,
@@ -454,21 +447,22 @@ function anthropicTool(rawTool: unknown, param: string): InteractionTool {
   if (!isRecord(rawTool)) throw invalidRequest(`${param} must be an object.`, param);
   const type = rawTool.type;
   if (type !== undefined && type !== "custom") {
-    if (typeof type === "string" && isServerToolType(type)) {
-      if (type === "bash_20250124" || type === "text_editor_20250124") {
-        return {
-          kind: "client_tool",
-          name: requiredString(rawTool.name, `${param}.name`),
-          type,
-          description: optionalString(rawTool.description, `${param}.description`),
-        } satisfies ClientTool;
-      }
+    const kind = typeof type === "string" ? anthropicToolKind(type) : undefined;
+    if (kind === "client_tool") {
       return {
-        kind: "server_tool" as const,
+        kind,
         name: requiredString(rawTool.name, `${param}.name`),
-        type,
+        type: type as ClientToolType,
         description: optionalString(rawTool.description, `${param}.description`),
-        ...(isAnthropicWebSearchToolType(type) ? { definition: rawTool } : {}),
+      } satisfies ClientTool;
+    }
+    if (kind === "server_tool") {
+      return {
+        kind,
+        name: requiredString(rawTool.name, `${param}.name`),
+        type: type as ServerToolKind,
+        description: optionalString(rawTool.description, `${param}.description`),
+        ...(isAnthropicWebSearchToolType(type as string) ? { definition: rawTool } : {}),
       };
     }
     throw new HttpError(

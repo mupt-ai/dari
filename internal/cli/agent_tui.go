@@ -294,12 +294,17 @@ func titlePanel(width, height int, subtitle string) []string {
 	title := ansiCoral + "⑂" + ansiReset + " " + ansiBold + "dari.dev" + ansiReset
 	content := []string{title, ansiGray + subtitle + ansiReset}
 	// The mark in the cursor's color, above the name in plain text.
-	if logoWidth := ansiVisibleWidth(dariLogo[0]); inner >= logoWidth+4 && height-2 >= len(dariLogo)+5 {
+	for _, logo := range [][]string{dariLogo, dariLogoSmall} {
+		logoWidth := ansiVisibleWidth(logo[0])
+		if inner < logoWidth+4 || height-2 < len(logo)+5 {
+			continue
+		}
 		content = []string{}
-		for _, line := range dariLogo {
+		for _, line := range logo {
 			content = append(content, ansiCoral+padRight(line, logoWidth)+ansiReset)
 		}
 		content = append(content, "", ansiBold+"dari.dev"+ansiReset, ansiGray+subtitle+ansiReset)
+		break
 	}
 	center := func(text string) string {
 		pad := max(inner-ansiVisibleWidth(text), 0)

@@ -116,17 +116,27 @@ func connectAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader
 			offer(group.Provider, cmp.Or(group.ProviderLabel, group.Provider), "")
 		}
 	}
-	options = append(options, agentChoiceOption{label: "Back"})
-	where := "on the Subscriptions & Keys page of the Dari web app"
-	if page := agentWebAppURL(ctx, client, "/credentials"); page != "" {
-		where = "at " + page
-	}
-	details := []string{"  " + ansiGray + "Add AWS Bedrock, Microsoft Azure, or other credentials " + where + ansiReset, ""}
+	// Credentials that need more than one key are added in the web app.
+	webApp := agentWebAppURL(ctx, client, "/credentials")
+	options = append(options,
+		agentChoiceOption{label: "AWS Bedrock, Microsoft Azure, or other", note: "opens the Dari web app", gap: true},
+		agentChoiceOption{label: "Back"},
+	)
 	// Esc on the key's input comes back to this list.
 	for {
-		choice, err := runAgentChoiceTUI(stdin, stderr, "Which API key?", details, options)
-		if err != nil || choice == len(offered) {
+		choice, err := runAgentChoiceTUI(stdin, stderr, "Which API key?", nil, options)
+		if err != nil || choice == len(offered)+1 {
 			return false, err
+		}
+		if choice == len(offered) {
+			if webApp == "" || !openAgentBrowser(webApp) {
+				where := "on the Subscriptions & Keys page of the Dari web app"
+				if webApp != "" {
+					where = "at " + webApp
+				}
+				agentPrintln(stderr, "Add other credentials "+where)
+			}
+			continue
 		}
 		saved, err := saveAgentAPIKey(ctx, client, stdin, stderr, offered[choice].provider, offered[choice].name)
 		if saved || err != nil {

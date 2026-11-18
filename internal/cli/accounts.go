@@ -314,6 +314,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		}
 		add(addSubscription, func() (bool, error) {
 			provider, ok, err := page.addSubscription(ctx, subscriptions, stdin, stderr)
+			changed = ok
 			if ok && !slices.Contains(result.added, provider) {
 				result.added = append(result.added, provider)
 			}
@@ -323,6 +324,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		case page.hosted:
 			add(agentChoiceOption{label: "Add an API key"}, func() (bool, error) {
 				saved, err := connectAgentAPIKey(ctx, page.client, stdin, stderr, keys)
+				changed = saved
 				if saved {
 					result.keysAdded++
 				}
@@ -384,33 +386,39 @@ func (page accountsPage) local() bool { return page.gw != nil && page.gw.local }
 // addSubscription connects a provider's account, or buys another one first.
 // It reports the provider when one was connected.
 func (page accountsPage) addSubscription(ctx context.Context, subscriptions []subscriptionCredential, stdin io.Reader, stderr io.Writer) (agentSubscriptionProvider, bool, error) {
+	// Two groups, connecting an account and buying one, each listing the
+	// providers by name.
 	options := []agentChoiceOption{}
 	type choice struct {
 		provider agentSubscriptionProvider
 		buy      bool
 	}
 	choices := []choice{}
-	for _, provider := range page.providers {
-		label := "Connect a " + provider.name + " account"
-		if slices.ContainsFunc(subscriptions, func(c subscriptionCredential) bool { return c.OAuthProvider == provider.id }) {
-			label = "Connect another " + provider.name + " account"
+	for i, provider := range page.providers {
+		option := agentChoiceOption{label: provider.name}
+		if i == 0 {
+			option.heading = "Connect an Account"
 		}
-		options = append(options, agentChoiceOption{label: label})
+		if slices.ContainsFunc(subscriptions, func(c subscriptionCredential) bool { return c.OAuthProvider == provider.id }) {
+			option.label += "  " + ansiGray + "another account" + ansiReset
+		}
+		options = append(options, option)
 		choices = append(choices, choice{provider: provider})
 	}
+	first := true
 	for _, provider := range page.providers {
 		if provider.buyURL == "" {
 			continue
 		}
-		label := "Buy a " + provider.name + " subscription"
-		if slices.ContainsFunc(subscriptions, func(c subscriptionCredential) bool { return c.OAuthProvider == provider.id }) {
-			label = "Buy another " + provider.name + " subscription"
+		option := agentChoiceOption{label: provider.name}
+		if first {
+			option.heading, first = "Buy a Subscription", false
 		}
-		options = append(options, agentChoiceOption{label: label})
+		options = append(options, option)
 		choices = append(choices, choice{provider: provider, buy: true})
 	}
-	options = append(options, agentChoiceOption{label: "Back"})
-	picked, err := runAgentChoiceTUI(stdin, stderr, "Add a subscription", nil, options)
+	options = append(options, agentChoiceOption{label: "Back", gap: true})
+	picked, err := runAgentChoiceTUI(stdin, stderr, "", nil, options)
 	if errors.Is(err, errAgentChoiceCanceled) {
 		return agentSubscriptionProvider{}, false, nil
 	}

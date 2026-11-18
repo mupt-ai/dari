@@ -379,11 +379,11 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 	headings := []int{}
 	// Boxed options share one width, the widest of them.
 	boxWidth := 0
-	for index, option := range options {
+	for _, option := range options {
 		if option.boxed {
-			boxWidth = max(boxWidth, ansiVisibleWidth(fmt.Sprintf("[%d] %s", index+1, option.label)))
+			boxWidth = max(boxWidth, ansiVisibleWidth(option.label))
 			for _, detail := range option.details {
-				boxWidth = max(boxWidth, ansiVisibleWidth("  "+detail))
+				boxWidth = max(boxWidth, ansiVisibleWidth(strings.TrimPrefix(detail, "  ")))
 			}
 		}
 	}
@@ -398,25 +398,28 @@ func agentChoiceLines(prompt string, details []string, options []agentChoiceOpti
 		} else if option.gap {
 			lines = append(lines, "")
 		}
-		label := fmt.Sprintf("[%d] %s", index+1, option.label)
+		// The number under the cursor takes the cursor's color.
+		number := fmt.Sprintf("[%d]", index+1)
+		label := number + " " + option.label
 		if index == cursor {
-			label = ansiBold + label + ansiReset
+			label = ansiCoral + number + ansiReset + " " + ansiBold + option.label + ansiReset
 		}
 		if option.boxed {
-			// The box under the cursor takes the cursor's color.
-			edge := ansiGray
+			// The number stays in line with the others, and the box follows it,
+			// taking the cursor's color under the cursor.
+			edge, mark := ansiGray, number
 			if index == cursor {
-				edge = ansiCoral
+				edge, mark = ansiCoral, ansiCoral+number+ansiReset
 			}
-			rows := []string{label}
+			rows := []string{option.label}
 			for _, detail := range option.details {
-				rows = append(rows, "  "+detail)
+				rows = append(rows, strings.TrimPrefix(detail, "  "))
 			}
-			box := agentBox(rows, boxWidth, edge)
-			for i, line := range box {
-				prefix := "  "
+			indent := strings.Repeat(" ", len(number)+1)
+			for i, line := range agentBox(rows, boxWidth, edge) {
+				prefix := "  " + indent
 				if i == 1 {
-					prefix = agentCursor(index == cursor)
+					prefix = agentCursor(index == cursor) + mark + " "
 				}
 				lines = append(lines, prefix+line)
 			}

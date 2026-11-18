@@ -460,10 +460,9 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 	for _, detail := range subscriptionDetailLines(subscription, columns) {
 		rows = append(rows, strings.TrimPrefix(detail, "  "))
 	}
-	details := []string{}
-	for _, line := range agentBox(rows, 0, ansiGray) {
-		details = append(details, "  "+line)
-	}
+	// The box's left edge lines up with the sections' ◆, its text with their
+	// titles.
+	details := agentBox(rows, 0, ansiGray)
 	if resettable && resetsErr != nil {
 		details = append(details, "", "  "+ansiGray+"Couldn't read banked resets: "+resetsErr.Error()+ansiReset)
 	} else if resettable && len(resets) == 0 {

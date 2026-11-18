@@ -345,6 +345,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				return false, err
 			})
 		}
+		finish.gap = true
 		add(finish, leave)
 
 		// The page is a command's first page, which esc closes; in onboarding

@@ -112,9 +112,34 @@ func agentHintLine(hints ...string) string {
 
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
+// agentGlowBox is agentBox for the box under the cursor: its edge gray, warming
+// to the cursor's color toward the corners.
+func agentGlowBox(rows []string, width int) []string {
+	return agentBoxWith(rows, width, func(x, y, w, h int) string {
+		// Distance to the nearest corner, as a share of the way to the middle.
+		t := min(float64(min(x, w-1-x))/max(float64(w)/2, 1)*3, 1)
+		if y != 0 && y != h-1 {
+			t = min(float64(min(y, h-1-y))/max(float64(h-1)/2, 1)*1.5, 1)
+		}
+		return glowColor(t)
+	})
+}
+
+// glowColor blends the cursor's coral (t 0) into the gray (t 1).
+func glowColor(t float64) string {
+	mix := func(a, b float64) int { return int(a + (b-a)*t + 0.5) }
+	return fmt.Sprintf("\033[38;2;%d;%d;%dm", mix(255, 138), mix(135, 138), mix(95, 138))
+}
+
 // agentBox draws rows in a rounded box of the given inner width, or the
 // widest row's when width is 0, its edge in the given color.
 func agentBox(rows []string, width int, edge string) []string {
+	return agentBoxWith(rows, width, func(int, int, int, int) string { return edge })
+}
+
+// agentBoxWith is agentBox with each edge cell's color from color(x, y, w, h),
+// for a box w cells wide and h tall.
+func agentBoxWith(rows []string, width int, color func(x, y, w, h int) string) []string {
 	if width <= 0 {
 		for _, row := range rows {
 			width = max(width, ansiVisibleWidth(row))
@@ -126,13 +151,21 @@ func agentBox(rows []string, width int, edge string) []string {
 	for _, row := range rows {
 		wrapped = append(wrapped, wrapColumns(row, width)...)
 	}
-	rows = wrapped
-	border := strings.Repeat("─", width+2)
-	lines := []string{edge + "╭" + border + "╮" + ansiReset}
-	for _, row := range rows {
-		lines = append(lines, edge+"│"+ansiReset+" "+row+strings.Repeat(" ", width-ansiVisibleWidth(row))+" "+edge+"│"+ansiReset)
+	w, h := width+4, len(wrapped)+2
+	rule := func(y int, left, right string) string {
+		var b strings.Builder
+		b.WriteString(color(0, y, w, h) + left)
+		for x := 1; x < w-1; x++ {
+			b.WriteString(color(x, y, w, h) + "─")
+		}
+		b.WriteString(color(w-1, y, w, h) + right + ansiReset)
+		return b.String()
 	}
-	return append(lines, edge+"╰"+border+"╯"+ansiReset)
+	lines := []string{rule(0, "╭", "╮")}
+	for i, row := range wrapped {
+		lines = append(lines, color(0, i+1, w, h)+"│"+ansiReset+" "+row+strings.Repeat(" ", max(0, width-ansiVisibleWidth(row)))+" "+color(w-1, i+1, w, h)+"│"+ansiReset)
+	}
+	return append(lines, rule(h-1, "╰", "╯"))
 }
 
 // wrapColumns breaks a row that is wider than width at its column gaps (two
@@ -340,7 +373,10 @@ func titlePanel(width, height int, subtitle string) []string {
 	content := []string{title, ansiGray + subtitle + ansiReset}
 	// The mark in the cursor's color, above the name in plain text.
 	for _, logo := range [][]string{dariLogo, dariLogoSmall} {
-		logoWidth := ansiVisibleWidth(logo[0])
+		logoWidth := 0
+		for _, line := range logo {
+			logoWidth = max(logoWidth, ansiVisibleWidth(line))
+		}
 		if inner < logoWidth+4 || height-2 < len(logo)+5 {
 			continue
 		}
@@ -646,9 +682,9 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 		if option.boxed {
 			// The box holds its number, in line with the other numbers; the box
 			// under the cursor takes the cursor's color in place of the ❯.
-			edge := ansiGray
+			box := agentBox
 			if index == cursor {
-				edge = ansiCoral
+				box = func(rows []string, width int, _ string) []string { return agentGlowBox(rows, width) }
 			}
 			indent := strings.Repeat(" ", len(number)+1)
 			// What wraps of the first row continues under the label, not the number.
@@ -660,7 +696,7 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 			for _, detail := range option.details {
 				rows = append(rows, indent+strings.TrimPrefix(detail, "  "))
 			}
-			lines = append(lines, agentBox(rows, fit(boxWidth), edge)...)
+			lines = append(lines, box(rows, fit(boxWidth), ansiGray)...)
 			continue
 		}
 		line := agentCursor(index == cursor) + label

@@ -399,16 +399,21 @@ func titlePanel(width, height int, subtitle string) []string {
 	inner := width - 2
 	title := ansiCoral + "⑂" + ansiReset + " " + ansiBold + "dari.dev" + ansiReset
 	content := []string{title, ansiGray + subtitle + ansiReset}
-	logoWidth := 0
-	for _, line := range dariLogo {
-		logoWidth = max(logoWidth, len([]rune(line)))
-	}
-	if inner >= logoWidth+4 && height-2 >= len(dariLogo)+5 {
+	// The largest mark the panel has room for.
+	for _, logo := range [][]string{dariLogo, dariLogoSmall} {
+		logoWidth := 0
+		for _, line := range logo {
+			logoWidth = max(logoWidth, len([]rune(line)))
+		}
+		if inner < logoWidth+4 || height-2 < len(logo)+5 {
+			continue
+		}
 		content = []string{}
-		for _, line := range dariLogo {
+		for _, line := range logo {
 			content = append(content, ansiSilver+padRight(line, logoWidth)+ansiReset)
 		}
 		content = append(content, "", ansiBold+"dari.dev"+ansiReset, ansiGray+subtitle+ansiReset)
+		break
 	}
 	center := func(text string) string {
 		pad := max(inner-ansiVisibleWidth(text), 0)

@@ -1898,3 +1898,12 @@ func TestSessionPinningDescriptionsAlignUnderLabelsAndWrap(t *testing.T) {
 		}
 	}
 }
+
+func TestAccountsKeyRefusesAnEmptyKey(t *testing.T) {
+	cmd := newAccountsLocalKeyCmd()
+	cmd.SetArgs([]string{"anthropic", "  "})
+	cmd.SilenceUsage, cmd.SilenceErrors = true, true
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("empty key error = %v", err)
+	}
+}

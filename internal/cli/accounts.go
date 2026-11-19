@@ -88,6 +88,9 @@ func newAccountsLocalKeyCmd() *cobra.Command {
 			return nil
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 2 && strings.TrimSpace(args[1]) == "" {
+				return errors.New("the API key is empty; pass the key, or off to remove the saved one")
+			}
 			gw, err := localGateway()
 			if err != nil {
 				return err

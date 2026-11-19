@@ -398,7 +398,7 @@ func ensureAgentRouter(
 		// numbered list a script gets.
 		recommendedNote := "The checked models are recommended."
 		if agentInputIsTerminal(stdin) {
-			recommendedNote = "Green circles mark recommended models and levels."
+			recommendedNote = "Green circles are recommended; orange ones are your own choice."
 		}
 		note := []string{recommendedNote, "Auto-routing picks the best of the checked models for each request."}
 		if !routing {

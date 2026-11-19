@@ -1326,7 +1326,7 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 			}
 		}
 		levels := cmp.Or(strings.Join(row.checkedLevels(), ", "), "default")
-		line := agentCursor(focused) + agentPickerCircle(row.selected, row.usesRecommended()) + " " + name + " " + open + " " + ansiCyan + levels + ansiReset
+		line := agentCursor(focused) + agentPickerCircle(row.selected, len(row.recommended) > 0, !row.usesRecommended()) + " " + name + " " + open + " " + ansiCyan + levels + ansiReset
 		lines = append(lines, agentFocused(line, focused))
 		if i != p.open {
 			continue
@@ -1344,7 +1344,7 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 			if focused {
 				label = ansiBold + label + ansiReset
 			}
-			lines = append(lines, agentFocused(strings.Repeat(" ", levelColumn-4)+agentCursor(focused)+agentPickerCircle(row.checked[level], row.recommended[level])+" "+label, focused))
+			lines = append(lines, agentFocused(strings.Repeat(" ", levelColumn-4)+agentCursor(focused)+agentPickerCircle(row.checked[level], row.recommended[level], false)+" "+label, focused))
 		}
 		lines = append(lines, rule)
 	}
@@ -1427,15 +1427,22 @@ func agentFocused(line string, focused bool) string {
 	return line
 }
 
-// agentPickerCircle is agentCheckbox, green when it is a recommended choice.
-func agentPickerCircle(checked, recommended bool) string {
-	if !recommended {
-		return agentCheckbox(checked)
-	}
-	if checked {
+// agentPickerCircle is a model's or level's circle: green when it is chosen
+// as recommended, orange when chosen otherwise, and for a recommended model
+// whose levels were changed, orange on a green cell, as near as one
+// character comes to a green ring around an orange fill.
+func agentPickerCircle(checked, recommended, changed bool) string {
+	switch {
+	case !checked && recommended:
+		return ansiGreen + "○" + ansiReset
+	case !checked:
+		return ansiGray + "○" + ansiReset
+	case recommended && changed:
+		return "\033[48;5;22m" + ansiCoral + "◉" + ansiReset
+	case recommended:
 		return ansiGreen + "◉" + ansiReset
 	}
-	return ansiGreen + "○" + ansiReset
+	return ansiCoral + "◉" + ansiReset
 }
 
 func agentCheckbox(checked bool) string {

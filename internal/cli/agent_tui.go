@@ -1358,9 +1358,9 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 		return agentPayingLines(p)
 	}
 	lines := []string{agentPromptLine(title)}
-	// The note lines up with the model names, past the cursor and checkbox.
+	// The note starts under the ◆, where the title starts.
 	for _, line := range note {
-		lines = append(lines, "    "+ansiGray+line+ansiReset)
+		lines = append(lines, ansiGray+line+ansiReset)
 	}
 	items := p.items()
 	focus := items[min(max(p.cursor, 0), len(items)-1)]

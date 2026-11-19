@@ -1428,9 +1428,8 @@ func agentFocused(line string, focused bool) string {
 }
 
 // agentPickerCircle is a model's or level's circle: green when it is chosen
-// as recommended, orange when chosen otherwise, and for a recommended model
-// whose levels were changed, orange on a green cell, as near as one
-// character comes to a green ring around an orange fill.
+// as recommended, orange when chosen otherwise, and a green double ring for
+// a recommended model whose levels were changed.
 func agentPickerCircle(checked, recommended, changed bool) string {
 	switch {
 	case !checked && recommended:
@@ -1438,7 +1437,7 @@ func agentPickerCircle(checked, recommended, changed bool) string {
 	case !checked:
 		return ansiGray + "○" + ansiReset
 	case recommended && changed:
-		return "\033[48;5;22m" + ansiCoral + "◉" + ansiReset
+		return ansiGreen + "◎" + ansiReset
 	case recommended:
 		return ansiGreen + "◉" + ansiReset
 	}

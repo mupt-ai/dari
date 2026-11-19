@@ -544,11 +544,11 @@ func chooseGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, s
 		return sortName(models[i]) < sortName(models[j])
 	})
 	title, saved := "Models", "Models"
-	note := []string{"  Models from a provider serve once it has a connected account or API key."}
+	note := []string{"Models from a provider serve once it has a connected account or API key."}
 	if agent != "" {
 		title = "Models for " + agentSetups[agent].label
 		saved = agentSetups[agent].label + " models"
-		note = append(note, fmt.Sprintf("  %s is offered these in place of the gateway's models. Undo with `dari gateway models --agent %s --reset`.", agentSetups[agent].label, agent))
+		note = append(note, fmt.Sprintf("%s is offered these in place of the gateway's models. Undo with `dari gateway models --agent %s --reset`.", agentSetups[agent].label, agent))
 	}
 	choices, err := selectAgentModels(stdin, stderr, title, note, false, models, defaults, currentLevels, nil, nil)
 	if err != nil {

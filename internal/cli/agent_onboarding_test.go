@@ -1873,3 +1873,28 @@ func runeIndex(s, sub string) int {
 	}
 	return len([]rune(s[:i]))
 }
+
+func TestSessionPinningDescriptionsAlignUnderLabelsAndWrap(t *testing.T) {
+	lines := agentChoiceLines("When should Dari pick the model?", nil, nil, []agentChoiceOption{
+		{label: "Every turn", description: "Dari picks the best model for each request."},
+		{label: "Once per session", description: "Dari picks when a session starts and keeps that model. Each subagent gets its own pick, then keeps it."},
+	}, 0, "esc back", 40)
+	plain := []string{}
+	for _, line := range lines {
+		plain = append(plain, stripANSI(line))
+	}
+	labelCol := runeIndex(plain[2], "Every")
+	if labelCol < 0 || runeIndex(plain[3], "Dari") != labelCol {
+		t.Fatalf("description not under label:\n%s", strings.Join(plain, "\n"))
+	}
+	// A blank line sets the first option's description apart from the second.
+	last := slices.IndexFunc(plain, func(line string) bool { return strings.Contains(line, "request.") })
+	if last < 0 || plain[last+1] != "" || !strings.Contains(plain[last+2], "Once per session") {
+		t.Fatalf("no space between options:\n%s", strings.Join(plain, "\n"))
+	}
+	for _, line := range plain {
+		if len([]rune(line)) > 40 {
+			t.Fatalf("line wider than the page: %q", line)
+		}
+	}
+}

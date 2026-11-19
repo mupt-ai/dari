@@ -616,6 +616,26 @@ func clipANSI(line string, width int) string {
 
 // clipText shortens plain text to width cells, marking the cut with an
 // ellipsis.
+// wrapWords breaks text into lines of at most width cells, at its spaces.
+func wrapWords(text string, width int) []string {
+	lines, line := []string{}, ""
+	for _, word := range strings.Fields(text) {
+		if line != "" && len([]rune(line))+1+len([]rune(word)) > width {
+			lines = append(lines, line)
+			line = word
+			continue
+		}
+		if line != "" {
+			line += " "
+		}
+		line += word
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func clipText(text string, width int) string {
 	if width < 1 {
 		return ""
@@ -898,7 +918,18 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 		}
 		lines = append(lines, line)
 		if option.description != "" {
-			lines = append(lines, "     "+ansiGray+option.description+ansiReset)
+			// The description starts under the label, past the cursor and the
+			// number, and wraps within the page.
+			indent := strings.Repeat(" ", 2+numberWidth+1)
+			room := 1 << 20
+			if width > 0 {
+				room = max(width-len(indent), 20)
+			}
+			for _, text := range wrapWords(option.description, room) {
+				lines = append(lines, indent+ansiGray+text+ansiReset)
+			}
+			// Options with a description are set apart from the next.
+			lines = append(lines, "")
 		}
 		for _, detail := range option.details {
 			lines = append(lines, "    "+detail)

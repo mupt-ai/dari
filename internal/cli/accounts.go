@@ -326,7 +326,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		if page.onboarding {
 			finish = agentChoiceOption{label: "Continue", done: fmt.Sprintf("Accounts: %d connected", len(subscriptions)+len(accountKeys))}
 			if !connected {
-				finish = agentChoiceOption{label: "Use Dari managed billing", done: "Using Dari managed billing"}
+				finish = agentChoiceOption{label: "Use Dari Managed Billing", done: "Using Dari managed billing"}
 			}
 		}
 		// The accounts themselves come first, each numbered where it is shown,
@@ -362,7 +362,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 			})
 		}
 		// Done closes the Settings section, after what can still be added.
-		add(agentChoiceOption{label: "Add a subscription", heading: "Settings"}, func() (bool, error) {
+		add(agentChoiceOption{label: "Add a Subscription", heading: "Settings"}, func() (bool, error) {
 			provider, ok, err := page.addSubscription(ctx, subscriptions, stdin, stderr)
 			changed = ok
 			if ok && !slices.Contains(result.added, provider) {
@@ -372,7 +372,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		})
 		switch {
 		case page.hosted:
-			add(agentChoiceOption{label: "Add an API key"}, func() (bool, error) {
+			add(agentChoiceOption{label: "Add an API Key"}, func() (bool, error) {
 				saved, err := connectAgentAPIKey(ctx, page.client, stdin, stderr, keys)
 				changed = saved
 				if saved {
@@ -381,13 +381,13 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				return false, err
 			})
 			if !routing {
-				add(agentChoiceOption{label: "Get auto-routing"}, func() (bool, error) {
+				add(agentChoiceOption{label: "Get Auto-Routing"}, func() (bool, error) {
 					_, err := getAutorouting(ctx, page.client, stdin, stderr)
 					return false, err
 				})
 			}
 		case page.local():
-			add(agentChoiceOption{label: "Add an API key"}, func() (bool, error) {
+			add(agentChoiceOption{label: "Add an API Key"}, func() (bool, error) {
 				return false, page.addLocalKey(ctx, stdin, stderr)
 			})
 			label := "Add a Dari API key for auto-routing"
@@ -395,7 +395,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				label = "Replace the auto-routing Dari API key"
 			}
 			add(agentChoiceOption{label: label}, func() (bool, error) {
-				_, err := runAgentSecretInputTUI(stdin, stderr, "Dari API key", nil, func(value string) error {
+				_, err := runAgentSecretInputTUI(stdin, stderr, "Dari API Key", nil, func(value string) error {
 					page.gw.settings.AutoRoutingKey = value
 					return saveLocalGateway(ctx, page.gw, stderr)
 				})
@@ -572,7 +572,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			if subscription.AutoRedeemResets {
 				state, turn, keep = ansiGreen+"On"+ansiReset, "Turn off", "Keep on"
 			}
-			toggle := agentChoiceOption{label: "Use automatically: " + state}
+			toggle := agentChoiceOption{label: "Use Automatically: " + state}
 			if len(resets) == 0 {
 				toggle.heading = "Banked Resets"
 			}
@@ -582,7 +582,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 					"  " + ansiGray + "banked reset so requests keep going. Now: " + ansiReset + state,
 					"",
 				}
-				confirm, err := runAgentChoiceTUI(stdin, stderr, "Use banked resets automatically?", explain, []agentChoiceOption{{label: keep}, {label: turn}})
+				confirm, err := runAgentChoiceTUI(stdin, stderr, "Use Banked Resets Automatically?", explain, []agentChoiceOption{{label: keep}, {label: turn}})
 				if err != nil || confirm == 0 {
 					return false, err
 				}
@@ -592,7 +592,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 		}
 		settings := len(options)
 		if provider.billingURL != "" {
-			add(agentChoiceOption{label: "Manage plan at " + provider.vendor}, func() (bool, error) {
+			add(agentChoiceOption{label: "Manage Plan at " + provider.vendor}, func() (bool, error) {
 				if openAgentBrowser(provider.billingURL) {
 					agentStep(stderr, "Opened "+provider.vendor+"; sign in as "+name+" if another account is open")
 				} else {
@@ -608,7 +608,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			})
 		})
 		if subscriptionStatus(subscription) == "held" || len(activeModelHolds(subscription, time.Now())) > 0 {
-			add(agentChoiceOption{label: "Mark available"}, func() (bool, error) {
+			add(agentChoiceOption{label: "Mark Available"}, func() (bool, error) {
 				var updated map[string]any
 				return true, api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
 			})
@@ -621,7 +621,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 		disconnected := false
 		add(agentChoiceOption{label: "Disconnect"}, func() (bool, error) {
 			details := []string{"  " + ansiGray + "Routing stops using this subscription. You can connect it again later." + ansiReset, ""}
-			confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", details, []agentChoiceOption{{label: "Keep it"}, {label: "Disconnect", done: name + " disconnected"}})
+			confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", details, []agentChoiceOption{{label: "Keep It"}, {label: "Disconnect", done: name + " disconnected"}})
 			if err != nil || confirm == 0 {
 				return false, err
 			}
@@ -701,7 +701,7 @@ func (page accountsPage) addLocalKey(ctx context.Context, stdin io.Reader, stder
 		options = append(options, agentChoiceOption{label: label})
 	}
 	options = append(options, agentChoiceOption{label: "Back"})
-	choice, err := runAgentChoiceTUI(stdin, stderr, "Add an API key", nil, options)
+	choice, err := runAgentChoiceTUI(stdin, stderr, "Add an API Key", nil, options)
 	if err != nil || choice == len(localProviderKeys) {
 		return err
 	}
@@ -728,8 +728,8 @@ func buyAgentSubscription(stdin io.Reader, stderr io.Writer, provider agentSubsc
 	}
 	details = append(details, agentURLLines(provider.buyURL, 0)...)
 	details = append(details, "  "+ansiGray+"Sign in with a new account, subscribe, then connect it here."+ansiReset, "")
-	choice, err := runAgentChoiceTUI(stdin, stderr, "Buy a "+provider.name+" subscription", details, []agentChoiceOption{
-		{label: "I've subscribed, connect it"},
+	choice, err := runAgentChoiceTUI(stdin, stderr, "Buy a "+provider.name+" Subscription", details, []agentChoiceOption{
+		{label: "I've Subscribed, Connect It"},
 		{label: "Back"},
 	})
 	return choice == 0, err
@@ -813,7 +813,7 @@ func (page accountsPage) useReset(ctx context.Context, subscription subscription
 	if expiry != "" {
 		details = append(details, "  "+ansiGray+"This reset "+strings.ToLower(expiry[:1])+expiry[1:]+"."+ansiReset)
 	}
-	confirm, err := runAgentChoiceTUI(stdin, stderr, "Use "+reset.Label+"?", append(details, ""), []agentChoiceOption{{label: "Keep it"}, {label: "Use it"}})
+	confirm, err := runAgentChoiceTUI(stdin, stderr, "Use "+reset.Label+"?", append(details, ""), []agentChoiceOption{{label: "Keep It"}, {label: "Use It"}})
 	if err != nil || confirm == 0 {
 		return false, err
 	}
@@ -871,7 +871,7 @@ func manageAPIKey(stdin io.Reader, stderr io.Writer, name string, remove func() 
 			return false, err
 		}
 		details := []string{"  " + ansiGray + "Routers stop using this key. You can add it again later." + ansiReset, ""}
-		confirm, err := runAgentChoiceTUI(stdin, stderr, "Remove "+name+"?", details, []agentChoiceOption{{label: "Keep it"}, {label: "Remove", done: name + " removed"}})
+		confirm, err := runAgentChoiceTUI(stdin, stderr, "Remove "+name+"?", details, []agentChoiceOption{{label: "Keep It"}, {label: "Remove", done: name + " removed"}})
 		// Esc or Keep it comes back to the key's page.
 		if errors.Is(err, errAgentChoiceCanceled) || (err == nil && confirm == 0) {
 			continue

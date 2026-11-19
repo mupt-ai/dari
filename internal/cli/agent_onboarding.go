@@ -116,6 +116,19 @@ type agentRouter struct {
 	SubscriptionModels []string `json:"subscription_models"`
 	SessionPinning     bool     `json:"session_pinning"`
 	NativeCompaction   bool     `json:"native_compaction"`
+	// RoleModels pins a model to the main agent or subagents.
+	RoleModels map[string]*string `json:"role_models"`
+}
+
+// roleOf names the agent role a router pins model to, if any.
+func (router agentRouter) roleOf(model string) string {
+	var roles []string
+	for _, role := range []struct{ key, name string }{{"main", "your main agent"}, {"subagent", "your subagents"}} {
+		if pinned := router.RoleModels[role.key]; pinned != nil && *pinned == model {
+			roles = append(roles, role.name)
+		}
+	}
+	return strings.Join(roles, " and ")
 }
 
 type agentModel struct {
@@ -385,7 +398,7 @@ func ensureAgentRouter(
 		}
 	}
 
-	title := "Choose models for " + setup.label
+	title := "Choose Models for " + setup.label
 	suggestion, err := fetchAgentModelSuggestion(ctx, client, setup.suggestion)
 	if err != nil {
 		return "", err
@@ -564,7 +577,7 @@ func pickAgentModels(
 			continue
 		}
 		if errors.Is(err, errAgentChoiceCanceled) {
-			leave, err := runAgentChoiceTUI(stdin, stderr, "Leave setup?", []string{"  " + ansiGray + "Nothing is saved until you finish choosing models." + ansiReset, ""}, []agentChoiceOption{{label: "Keep choosing"}, {label: "Leave setup"}})
+			leave, err := runAgentChoiceTUI(stdin, stderr, "Leave Setup?", []string{"  " + ansiGray + "Nothing is saved until you finish choosing models." + ansiReset, ""}, []agentChoiceOption{{label: "Keep Choosing"}, {label: "Leave Setup"}})
 			if (err == nil && leave == 0) || errors.Is(err, errAgentChoiceCanceled) {
 				continue
 			}
@@ -1125,6 +1138,9 @@ type agentPickerRow struct {
 	// indexes the chosen one.
 	sources []agentModelSource
 	source  int
+	// note shows under the model on the payment page, such as the role a
+	// template pins it to.
+	note string
 }
 
 func (row *agentPickerRow) checkedLevels() []string {
@@ -1178,8 +1194,11 @@ type agentPickerState struct {
 	// quit is set when the picker was left with q or ctrl+c, which leaves the
 	// command, rather than with esc, which goes back.
 	quit bool
-	// payOnly shows only the payment page, for models already decided.
-	payOnly bool
+	// fixed is a template's picker: its models can't change, so it opens on
+	// the payment page, shows every model there, and esc leaves.
+	fixed bool
+	// action is the row whose connect or add-key choice enter picked, or -1.
+	action int
 }
 
 // agentPickerItem is one line the cursor can rest on.
@@ -1193,7 +1212,9 @@ func (p *agentPickerState) items() []agentPickerItem {
 	items := []agentPickerItem{}
 	for i, row := range p.rows {
 		if p.paying {
-			if row.selected && len(row.sources) > 1 {
+			// A template's page reaches every model, so one whose only way to
+			// pay is a setup step can still run it.
+			if row.selected && (len(row.sources) > 1 || p.fixed) {
 				items = append(items, agentPickerItem{kind: "source", row: i})
 			}
 			continue
@@ -1251,7 +1272,7 @@ func newAgentPickerState(
 	recommendedLevels map[string][]string,
 	sources map[string][]agentModelSource,
 ) *agentPickerState {
-	state := &agentPickerState{rows: make([]agentPickerRow, 0, len(models)), open: -1}
+	state := &agentPickerState{rows: make([]agentPickerRow, 0, len(models)), open: -1, action: -1}
 	for _, model := range models {
 		row := newAgentPickerRow(model, currentLevels[model.ID], recommendedLevels[model.ID])
 		row.selected = slices.Contains(defaults, model.ID)
@@ -1360,11 +1381,21 @@ func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
 		case "source":
 			// Each model is paid for on its own, even within one provider.
 			row := &p.rows[item.row]
+			if row.sources[row.source].action() {
+				p.action = item.row
+				return true, false
+			}
 			row.source = (row.source + 1) % len(row.sources)
 		case "continue":
 			if p.selectedCount() == 0 {
 				p.warning = "Choose at least one model."
 				return false, false
+			}
+			for _, row := range p.rows {
+				if row.selected && len(row.sources) > 0 && row.sources[row.source].action() {
+					p.warning = row.model.DisplayName + ": press enter to " + row.sources[row.source].label + ", or choose another way to pay."
+					return false, false
+				}
 			}
 			p.closeRow()
 			if !p.paying && p.needsPaying() {
@@ -1377,7 +1408,7 @@ func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
 		switch {
 		case p.open >= 0:
 			p.closeRow()
-		case p.paying && !p.payOnly:
+		case p.paying && !p.fixed:
 			p.paying, p.cursor = false, 0
 		default:
 			return false, true
@@ -1584,9 +1615,9 @@ func chooseAgentSessionPinning(stdin io.Reader, stderr io.Writer, current bool) 
 	if !agentInputIsTerminal(stdin) {
 		return current, nil
 	}
-	choice, err := runAgentChoiceTUI(stdin, stderr, "When should Dari pick the model?", nil, []agentChoiceOption{
-		{label: "Every turn " + ansiGreen + "(default)" + ansiReset, description: "Dari picks the best model for each request.", done: "Routing every turn"},
-		{label: "Once per session", description: "Dari picks when a session starts and keeps that model. Each subagent gets its own pick, then keeps it.", done: "Routing once per session"},
+	choice, err := runAgentChoiceTUI(stdin, stderr, "When Should Dari Pick the Model?", nil, []agentChoiceOption{
+		{label: "Every Turn " + ansiGreen + "(Default)" + ansiReset, description: "Dari picks the best model for each request.", done: "Routing every turn"},
+		{label: "Once per Session", description: "Dari picks when a session starts and keeps that model. Each subagent gets its own pick, then keeps it.", done: "Routing once per session"},
 	})
 	if err != nil {
 		return false, err

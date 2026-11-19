@@ -1275,47 +1275,6 @@ var errAgentChoiceCanceled = errors.New("agent onboarding canceled")
 // errAgentQuit is q or ctrl+c on a choice, which leaves the whole command.
 var errAgentQuit = errors.New("agent onboarding canceled")
 
-// runAgentPaymentPicker asks only how each of models is paid for, when one
-// can be paid for more than one way; the models themselves are fixed.
-func runAgentPaymentPicker(
-	stdin io.Reader,
-	stderr io.Writer,
-	models []agentModel,
-	currentLevels map[string][]string,
-	sources map[string][]agentModelSource,
-) ([]agentModelChoice, error) {
-	p := newAgentPickerState(models, modelIDs(models), currentLevels, nil, sources)
-	p.paying, p.payOnly = true, true
-	if !p.needsPaying() {
-		return p.choices(), nil
-	}
-	session, err := startAgentTUISession(stdin, stderr)
-	if err != nil {
-		return nil, err
-	}
-	defer session.Close()
-	buf := make([]byte, 256)
-	for {
-		session.render(agentPickerLines("", nil, p))
-		n, readErr := session.file.Read(buf)
-		for _, key := range parseAgentPickerKeys(buf[:n]) {
-			done, canceled := p.handleKey(key)
-			if canceled {
-				return nil, errAgentQuit
-			}
-			if done {
-				return p.choices(), nil
-			}
-		}
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				return nil, errors.New("payment selection canceled")
-			}
-			return nil, fmt.Errorf("read selection: %w", readErr)
-		}
-	}
-}
-
 func runAgentPicker(
 	stdin io.Reader,
 	stderr io.Writer,
@@ -1332,43 +1291,46 @@ func runAgentPicker(
 	if len(p.rows) == 0 {
 		return nil, errors.New("no managed-key models are available")
 	}
-	session, err := startAgentTUISession(stdin, stderr)
-	if err != nil {
-		return nil, err
-	}
-	choices, err := func() ([]agentModelChoice, error) {
-		defer session.Close()
-		buf := make([]byte, 256)
-		for {
-			session.render(agentPickerLines(title, note, p))
-			n, readErr := session.file.Read(buf)
-			for _, key := range parseAgentPickerKeys(buf[:n]) {
-				if key == "a" && offerAutorouting {
-					return nil, errAgentWantsAutorouting
-				}
-				done, canceled := p.handleKey(key)
-				if canceled && p.quit {
-					return nil, errAgentQuit
-				}
-				if canceled {
-					return nil, errAgentChoiceCanceled
-				}
-				if done {
-					return p.choices(), nil
-				}
-			}
-			if readErr != nil {
-				if errors.Is(readErr, io.EOF) {
-					return nil, errors.New("model selection canceled")
-				}
-				return nil, fmt.Errorf("read selection: %w", readErr)
-			}
-		}
-	}()
+	choices, err := runAgentPickerState(stdin, stderr, title, note, offerAutorouting, p)
 	if err == nil {
 		agentStep(stderr, "Models: "+agentPickerSummary(p))
 	}
 	return choices, err
+}
+
+// runAgentPickerState runs the picker on p until it is continued or left.
+func runAgentPickerState(stdin io.Reader, stderr io.Writer, title string, note []string, offerAutorouting bool, p *agentPickerState) ([]agentModelChoice, error) {
+	session, err := startAgentTUISession(stdin, stderr)
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+	buf := make([]byte, 256)
+	for {
+		session.render(agentPickerLines(title, note, p))
+		n, readErr := session.file.Read(buf)
+		for _, key := range parseAgentPickerKeys(buf[:n]) {
+			if key == "a" && offerAutorouting {
+				return nil, errAgentWantsAutorouting
+			}
+			done, canceled := p.handleKey(key)
+			if canceled && p.quit {
+				return nil, errAgentQuit
+			}
+			if canceled {
+				return nil, errAgentChoiceCanceled
+			}
+			if done {
+				return p.choices(), nil
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return nil, errors.New("model selection canceled")
+			}
+			return nil, fmt.Errorf("read selection: %w", readErr)
+		}
+	}
 }
 
 // agentPickerVisibleRows leaves room for the prompt, hints, and a level list.
@@ -1396,7 +1358,7 @@ var agentProviderNames = map[string]string{
 // thinking levels, or how each chosen model is paid for.
 func agentPickerLines(title string, note []string, p *agentPickerState) []string {
 	if p.paying {
-		return agentPayingLines(p)
+		return agentPayingLines(title, note, p)
 	}
 	lines := []string{agentPromptLine(title)}
 	// The note starts where the title's text does, past the ◆.
@@ -1462,36 +1424,47 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 }
 
 // agentPayingLines is the picker's second page: each chosen model that can
-// be paid for more than one way, with its choices on its line.
-func agentPayingLines(p *agentPickerState) []string {
-	lines := []string{agentPromptLine("How should each model be paid for?")}
+// be paid for more than one way, with its choices on its line. A template's
+// picker shows every model, and its title and note.
+func agentPayingLines(title string, note []string, p *agentPickerState) []string {
+	lines := []string{agentPromptLine("How Should Each Model Be Paid For?")}
+	if p.fixed {
+		lines = []string{agentPromptLine(title)}
+		for _, line := range note {
+			lines = append(lines, "  "+ansiGray+line+ansiReset)
+		}
+	}
 	items := p.items()
 	focus := items[min(max(p.cursor, 0), len(items)-1)]
+	shown := []int{}
+	for i, row := range p.rows {
+		if row.selected && (len(row.sources) > 1 || p.fixed) {
+			shown = append(shown, i)
+		}
+	}
 	// Choices line up in columns across the models.
 	nameWidth, choiceWidths := 0, []int{}
-	for _, it := range items {
-		if it.kind != "source" {
-			continue
-		}
-		nameWidth = max(nameWidth, len([]rune(p.rows[it.row].model.DisplayName)))
-		for j, source := range p.rows[it.row].sources {
+	for _, i := range shown {
+		nameWidth = max(nameWidth, len([]rune(p.rows[i].model.DisplayName)))
+		for j, source := range p.rows[i].sources {
 			if j == len(choiceWidths) {
 				choiceWidths = append(choiceWidths, 0)
 			}
 			choiceWidths[j] = max(choiceWidths[j], len([]rune(source.label)))
 		}
 	}
+	// A template's few models read as one list, in the template's order.
+	if p.fixed {
+		lines = append(lines, "")
+	}
 	provider := ""
-	for _, it := range items {
-		if it.kind != "source" {
-			continue
-		}
-		row := p.rows[it.row]
-		if row.model.Provider != provider {
+	for _, i := range shown {
+		row := p.rows[i]
+		if !p.fixed && row.model.Provider != provider {
 			provider = row.model.Provider
 			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset, "")
 		}
-		focused := it == focus
+		focused := focus == agentPickerItem{kind: "source", row: i}
 		name := padRight(row.model.DisplayName, nameWidth)
 		if focused {
 			name = ansiBold + name + ansiReset
@@ -1500,18 +1473,26 @@ func agentPayingLines(p *agentPickerState) []string {
 		for j, source := range row.sources {
 			label := padRight(source.label, choiceWidths[j])
 			dot := ansiGray + "○ " + label + ansiReset
+			if source.action() {
+				dot = ansiGray + "+ " + label + ansiReset
+			}
 			if j == row.source {
 				dot = ansiCoral + "●" + ansiReset + " " + label
 			}
 			choices = append(choices, dot)
 		}
 		lines = append(lines, agentFocused(agentCursor(focused)+name+"   "+strings.Join(choices, "   "), focused))
+		if row.note != "" {
+			lines = append(lines, "    "+ansiGray+row.note+ansiReset, "")
+		}
 	}
-	esc := "esc back"
-	if p.payOnly {
-		esc = "esc quit"
+	if p.fixed {
+		if lines[len(lines)-1] == "" {
+			lines = lines[:len(lines)-1]
+		}
+		return append(lines, agentPickerFooter(p, focus, "Continue →", "↑↓ move", "← → choose", "enter connect / add", "esc quit")...)
 	}
-	return append(lines, agentPickerFooter(p, focus, "Continue →", "↑↓ move", "← → choose", esc)...)
+	return append(lines, agentPickerFooter(p, focus, "Continue →", "↑↓ move", "← → choose", "esc back")...)
 }
 
 // agentPickerFooter is the picker's Continue line, its warning, and its keys.

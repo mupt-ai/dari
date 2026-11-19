@@ -101,7 +101,7 @@ func TestAgentProviderKeysWithoutKeysKeepDariCredits(t *testing.T) {
 		t.Errorf("provider_key_sources = %v, want %v", body.ProviderKeySources, want)
 	}
 	encoded, _ := json.Marshal(body)
-	if strings.Contains(string(encoded), "provider_credential_ids") || !strings.Contains(stderr.String(), "Dari credits for Fable 5.1, Sol, GLM") {
+	if strings.Contains(string(encoded), "provider_credential_ids") || !strings.Contains(stderr.String(), "Dari Credits for Fable 5.1, Sol, GLM") {
 		t.Errorf("payload = %s, stderr = %q", encoded, stderr.String())
 	}
 }
@@ -134,7 +134,7 @@ func TestAgentProviderKeysGatewayServesWhatItCan(t *testing.T) {
 	if want := map[string]string{"vercel-ai-gateway": "cred_team"}; !maps.Equal(body.ProviderCredentialIDs, want) {
 		t.Errorf("provider_credential_ids = %v, want %v", body.ProviderCredentialIDs, want)
 	}
-	if !strings.Contains(stderr.String(), "Vercel AI Gateway key for Fable 5.1, Sol; Dari credits for GLM") {
+	if !strings.Contains(stderr.String(), "Vercel AI Gateway Key for Fable 5.1, Sol; Dari Credits for GLM") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 }
@@ -251,7 +251,7 @@ func TestAgentProviderKeysDirectKeyOnSubscriptionBecomesAPIFallback(t *testing.T
 	if got := keys.fallbackModels([]string{"zai-org/GLM-5.3", "removed/model"}, body.EnabledModels); !slices.Equal(got, []string{"zai-org/GLM-5.3", "anthropic/claude-fable-5-1"}) {
 		t.Fatalf("merged API fallback models = %v", got)
 	}
-	if !strings.Contains(stderr.String(), "Claude Code subscription for Fable 5.1") {
+	if !strings.Contains(stderr.String(), "Claude Code Subscription for Fable 5.1") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 	// Without a direct key on a subscribed provider, the router's API

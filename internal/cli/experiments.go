@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -25,6 +26,10 @@ type agentExperiment struct {
 	// What the admin lets run after the user's subscriptions.
 	AllowBYOK    bool `json:"allow_byok"`
 	AllowManaged bool `json:"allow_managed"`
+	// pay and makeDefault are a launch's --pay and --default: the picker's
+	// answers, for launches without it.
+	pay         map[string]string
+	makeDefault bool
 }
 
 func listAgentExperiments(ctx context.Context, client *api.Client) ([]agentExperiment, error) {
@@ -37,9 +42,10 @@ func listAgentExperiments(ctx context.Context, client *api.Client) ([]agentExper
 	return listed.ExperimentalRouters, nil
 }
 
-// takeAgentExperiment takes `--template <name>` (or `--template=<name>`)
-// out of the agent's arguments and returns the template it names for the
-// launched agent. Launches without it skip the lookup.
+// takeAgentExperiment takes `--template <name>`, and with it any `--pay
+// <model>=<subscription|key|credits>` and `--default`, out of the agent's
+// arguments and returns the template it names for the launched agent.
+// Launches without it skip the lookup.
 func takeAgentExperiment(ctx context.Context, client *api.Client, launch *agentLaunch, stderr io.Writer) (*agentExperiment, error) {
 	_, ok := agentSetups[launch.name]
 	if !ok {
@@ -49,21 +55,41 @@ func takeAgentExperiment(ctx context.Context, client *api.Client, launch *agentL
 	if end < 0 {
 		end = len(launch.args)
 	}
-	name, start, stop := "", -1, -1
-	for i, arg := range launch.args[:end] {
-		if value, found := strings.CutPrefix(arg, "--template="); found {
-			name, start, stop = value, i, i+1
-			break
-		}
-		if arg == "--template" {
-			if i+1 >= end {
-				return nil, fmt.Errorf("--template needs a name; list them with `dari router experiments`")
+	name, found, makeDefault := "", false, false
+	pay := map[string]string{}
+	var kept []string
+	for i := 0; i < end; i++ {
+		arg := launch.args[i]
+		flagName, value, inline := strings.Cut(arg, "=")
+		if flagName != "--template" && flagName != "--pay" {
+			if arg == "--default" {
+				makeDefault = true
+			} else {
+				kept = append(kept, arg)
 			}
-			name, start, stop = launch.args[i+1], i, i+2
-			break
+			continue
 		}
+		if !inline {
+			if i+1 >= end {
+				return nil, fmt.Errorf("%s needs a value; list templates with `dari router experiments`", flagName)
+			}
+			i++
+			value = launch.args[i]
+		}
+		if flagName == "--template" {
+			name, found = value, true
+			continue
+		}
+		model, way, ok := strings.Cut(value, "=")
+		if !ok || model == "" {
+			return nil, fmt.Errorf("--pay %s: write --pay <model>=<subscription|key|credits>", value)
+		}
+		pay[model] = way
 	}
-	if start < 0 {
+	if !found && len(pay) > 0 {
+		return nil, errors.New("--pay goes with --template <name>")
+	}
+	if !found {
 		return nil, nil
 	}
 	experiments, err := listAgentExperiments(ctx, client)
@@ -72,7 +98,8 @@ func takeAgentExperiment(ctx context.Context, client *api.Client, launch *agentL
 	}
 	for _, experiment := range experiments {
 		if experiment.Flag == name {
-			launch.args = slices.Delete(launch.args, start, stop)
+			launch.args = append(kept, launch.args[end:]...)
+			experiment.pay, experiment.makeDefault = pay, makeDefault
 			return &experiment, nil
 		}
 	}
@@ -124,7 +151,8 @@ func saveExperimentPayments(
 	keys.apply(body.ModelProviders, body.ProviderKeySources)
 	for _, choice := range choices {
 		// A provider with a saved key keeps it; the rest move to Dari credits.
-		if _, ok := keys.credentialIDs[choice.Source.provider]; !ok && choice.Source.kind == "managed" {
+		if _, ok := keys.credentialIDs[choice.Source.provider]; !ok && choice.Source.kind == "managed" &&
+			!subscriptionOnlyProviders[choice.Source.provider] && slices.Contains(slices.Collect(maps.Values(body.ModelProviders)), choice.Source.provider) {
 			body.ProviderKeySources[choice.Source.provider] = "managed"
 		}
 	}
@@ -132,6 +160,225 @@ func saveExperimentPayments(
 	body.SubscriptionAPIFallbackModels = keys.fallbackModels(router.SubscriptionAPIFallbackModels, body.EnabledModels)
 	body.SubscriptionModels = subscriptionModelsFor(router, choices, keyContext.subscriptions)
 	return putAgentRouter(ctx, client, router.ID, body)
+}
+
+// templateSubscriptions are the plans that can pay for a template's models
+// in agent: the agent's own, and OpenCode Go, which serves any client.
+func templateSubscriptions(setup agentSetup) []agentSubscriptionProvider {
+	plans := slices.Clone(setup.subscriptions)
+	if !slices.Contains(plans, opencodeGoSubscription) {
+		plans = append(plans, opencodeGoSubscription)
+	}
+	return plans
+}
+
+// templateSetupSteps are the ways a model's picker row can set up a way to
+// pay: connecting a subscription the template can use, or adding a key.
+func templateSetupSteps(setup agentSetup, router agentRouter, keyContext agentKeyContext, provider string) []agentModelSource {
+	var steps []agentModelSource
+	for _, plan := range templateSubscriptions(setup) {
+		if _, connected := keyContext.subscriptions[plan.routerProvider]; !connected &&
+			plan.routerProvider == provider && slices.Contains(router.SubscriptionProviders, provider) {
+			steps = append(steps, agentModelSource{kind: "connect", provider: provider, modelProvider: provider, label: "Connect " + plan.name})
+		}
+	}
+	if _, hasKey := keyContext.saved[provider]; !hasKey && !keyContext.blocked["key"] && !subscriptionOnlyProviders[provider] {
+		steps = append(steps, agentModelSource{kind: "add-key", provider: provider, modelProvider: provider, label: "Add " + keyContext.label(provider) + " Key"})
+	}
+	return steps
+}
+
+// templateModel is a template's model as the catalog names it.
+func templateModel(models []agentModel, id string) agentModel {
+	if i := slices.IndexFunc(models, func(model agentModel) bool { return model.ID == id }); i >= 0 {
+		return models[i]
+	}
+	return agentModel{ID: id, DisplayName: id}
+}
+
+// chooseTemplatePayments shows every model of the template on one page, each
+// with its ways to pay: a connected subscription, a saved key, Dari credits,
+// or connecting a subscription or adding a key, which run and then bring the
+// page back.
+func chooseTemplatePayments(
+	ctx context.Context,
+	client *api.Client,
+	stdin io.Reader,
+	stderr io.Writer,
+	setup agentSetup,
+	experiment agentExperiment,
+	router agentRouter,
+	models []agentModel,
+	modelProviders map[string]string,
+	preferred map[string]agentModelSource,
+	keyContext agentKeyContext,
+) ([]agentModelChoice, agentKeyContext, error) {
+	// What each model is on; setting something up moves it there, without
+	// touching preferred, which quitting puts back.
+	current := maps.Clone(preferred)
+	cursor, warning := 0, ""
+	var note []string
+	if experiment.Description != "" {
+		note = []string{experiment.Description}
+	}
+	for {
+		var templateModels []agentModel
+		sources := map[string][]agentModelSource{}
+		for _, id := range router.EnabledModels {
+			model, provider := templateModel(models, id), modelProviders[id]
+			ways := append(keyContext.sources(model, provider), templateSetupSteps(setup, router, keyContext, provider)...)
+			if len(ways) == 0 {
+				return nil, keyContext, fmt.Errorf("nothing can pay for %s: the template allows neither your keys nor Dari credits for it", model.DisplayName)
+			}
+			sources[id] = ways
+			templateModels = append(templateModels, model)
+		}
+		p := newAgentPickerState(templateModels, router.EnabledModels, router.ModelThinkingLevels, nil, sources)
+		// Keep the template's order rather than grouping by provider.
+		slices.SortStableFunc(p.rows, func(a, b agentPickerRow) int {
+			return slices.Index(router.EnabledModels, a.model.ID) - slices.Index(router.EnabledModels, b.model.ID)
+		})
+		p.paying, p.fixed, p.cursor, p.warning = true, true, cursor, warning
+		warning = ""
+		for i := range p.rows {
+			row := &p.rows[i]
+			if role := router.roleOf(row.model.ID); role != "" {
+				row.note = "Runs " + role
+			}
+			want := current[row.model.ID]
+			if j := slices.IndexFunc(row.sources, func(source agentModelSource) bool {
+				return source.kind == want.kind && source.provider == want.provider
+			}); j >= 0 {
+				row.source = j
+			}
+		}
+		choices, err := runAgentPickerState(stdin, stderr, "How Should "+experiment.Name+"'s Models Be Paid For?", note, false, p)
+		if err != nil {
+			return nil, keyContext, err
+		}
+		for _, row := range p.rows {
+			current[row.model.ID] = row.sources[row.source]
+		}
+		if p.action < 0 {
+			for i := range choices {
+				choices[i].Levels = router.ModelThinkingLevels[choices[i].ID]
+			}
+			return choices, keyContext, nil
+		}
+		cursor = p.cursor
+		row := p.rows[p.action]
+		step := row.sources[row.source]
+		switch step.kind {
+		case "connect":
+			plan := templateSubscriptions(setup)[slices.IndexFunc(templateSubscriptions(setup), func(plan agentSubscriptionProvider) bool {
+				return plan.routerProvider == step.provider
+			})]
+			// A failed or abandoned sign-in comes back here, saying why, so it
+			// can be tried again and quitting still puts payments back.
+			err := connectAgentPersonalSubscription(ctx, plan, client, stdin, stderr, "")
+			if errors.Is(err, errAgentQuit) {
+				return nil, keyContext, err
+			}
+			if err != nil && !errors.Is(err, errAgentChoiceCanceled) {
+				warning = err.Error()
+			}
+			if err == nil {
+				keyContext.subscriptions[plan.routerProvider] = plan.name
+				current[row.model.ID] = agentModelSource{kind: "subscription", provider: step.provider}
+			}
+		case "add-key":
+			saved, err := saveAgentAPIKey(ctx, client, stdin, stderr, step.provider, keyContext.label(step.provider))
+			if errors.Is(err, errAgentQuit) {
+				return nil, keyContext, err
+			}
+			if err != nil && !errors.Is(err, errAgentChoiceCanceled) {
+				warning = err.Error()
+				continue
+			}
+			if !saved {
+				continue
+			}
+			// The key is saved; without the reload the page can't offer it.
+			reloaded, err := loadAgentKeyContext(ctx, client, nil)
+			if err != nil {
+				return nil, keyContext, err
+			}
+			keyContext.saved = reloaded.saved
+			if _, ok := keyContext.saved[step.provider]; ok {
+				current[row.model.ID] = agentModelSource{kind: "key", provider: step.provider}
+			}
+		}
+	}
+}
+
+// templatePayWays name, for --pay, the source kinds a launch can choose.
+var templatePayWays = map[string]string{"subscription": "subscription", "key": "key", "credits": "managed"}
+
+// withTemplatePay applies `--pay <model>=<subscription|key|credits>` to the
+// choices, so a launch without a terminal chooses what the picker would.
+func withTemplatePay(
+	pay map[string]string,
+	choices []agentModelChoice,
+	models []agentModel,
+	modelProviders map[string]string,
+	keyContext agentKeyContext,
+	setup agentSetup,
+	router agentRouter,
+) ([]agentModelChoice, error) {
+	for name, way := range pay {
+		i := slices.IndexFunc(choices, func(choice agentModelChoice) bool {
+			_, short, _ := strings.Cut(choice.ID, "/")
+			return name == choice.ID || name == short
+		})
+		if i < 0 {
+			return nil, fmt.Errorf("--pay %s: the template has no such model; its models are %s", name, strings.Join(router.EnabledModels, ", "))
+		}
+		kind, ok := templatePayWays[way]
+		if !ok {
+			return nil, fmt.Errorf("--pay %s=%s: pay with subscription, key, or credits", name, way)
+		}
+		id := choices[i].ID
+		provider := modelProviders[id]
+		sources := keyContext.sources(templateModel(models, id), provider)
+		j := slices.IndexFunc(sources, func(source agentModelSource) bool { return source.kind == kind })
+		if j < 0 {
+			return nil, fmt.Errorf("--pay %s=%s: %s", name, way, templatePayHelp(id, provider, sources, setup, router, keyContext))
+		}
+		choices[i].Source = sources[j]
+	}
+	return choices, nil
+}
+
+// templatePayHelp says how a model can be paid for now, and the commands
+// that add another way.
+func templatePayHelp(id, provider string, sources []agentModelSource, setup agentSetup, router agentRouter, keyContext agentKeyContext) string {
+	ways := []string{}
+	for _, source := range sources {
+		for way, kind := range templatePayWays {
+			if kind == source.kind && !slices.Contains(ways, way) {
+				ways = append(ways, way)
+			}
+		}
+	}
+	slices.Sort(ways)
+	help := id + " can't be paid for that way"
+	if len(ways) > 0 {
+		help += "; it can use " + strings.Join(ways, " or ")
+	}
+	for _, step := range templateSetupSteps(setup, router, keyContext, provider) {
+		switch step.kind {
+		case "connect":
+			for name, plan := range subscriptionProviders {
+				if plan.routerProvider == provider {
+					help += fmt.Sprintf("; `dari accounts subscription connect %s` adds subscription", name)
+					break
+				}
+			}
+		case "add-key":
+			help += fmt.Sprintf("; `dari accounts provider add %s <label> <api_key>` adds key", provider)
+		}
+	}
+	return help
 }
 
 // applyAgentExperiment sets up the template's router in the current org,
@@ -160,7 +407,8 @@ func applyAgentExperiment(
 		return "", api.HumanError(err)
 	}
 	assigned := slices.Contains(router.CodingAgents, setup.codingAgent)
-	choose := terminal && !assigned
+	// --pay and --default answer the picker's questions without it.
+	choose := terminal && !assigned && len(experiment.pay) == 0 && !experiment.makeDefault
 
 	models, err := listAgentModels(ctx, client)
 	if err != nil {
@@ -180,7 +428,7 @@ func applyAgentExperiment(
 		}
 	}
 	models = includeCurrentAgentModels(models, router)
-	connected, err := connectedAgentSubscriptions(ctx, client, setup.subscriptions)
+	connected, err := connectedAgentSubscriptions(ctx, client, templateSubscriptions(setup))
 	if err != nil {
 		return "", err
 	}
@@ -192,7 +440,12 @@ func applyAgentExperiment(
 		return "", err
 	}
 	keyContext.blocked = map[string]bool{"key": !experiment.AllowBYOK, "managed": !experiment.AllowManaged}
+	// Each model is paid for through the provider the template serves it
+	// with, which need not be the catalog's.
 	modelProviders := agentProvidersFor(models, modelIDs(models))
+	for id, provider := range router.ModelProviders {
+		modelProviders[id] = provider
+	}
 	preferred := map[string]agentModelSource{}
 	if copied {
 		for _, id := range before.EnabledModels {
@@ -201,20 +454,12 @@ func applyAgentExperiment(
 	}
 
 	// The template fixes its models, and may pin some to the main agent or
-	// subagents, so only how each is paid for is chosen.
+	// subagents, so only how each is paid for is asked.
 	var choices []agentModelChoice
 	quit := false
 	if choose {
-		var fixed []agentModel
-		sources := map[string][]agentModelSource{}
-		for _, model := range models {
-			if slices.Contains(router.EnabledModels, model.ID) {
-				fixed = append(fixed, model)
-				sources[model.ID] = keyContext.sourcesPreferring(model, modelProviders[model.ID], preferred[model.ID])
-			}
-		}
-		choices, err = runAgentPaymentPicker(stdin, stderr, fixed, router.ModelThinkingLevels, sources)
-		quit = errors.Is(err, errAgentQuit)
+		choices, keyContext, err = chooseTemplatePayments(ctx, client, stdin, stderr, setup, experiment, router, models, modelProviders, preferred, keyContext)
+		quit = errors.Is(err, errAgentChoiceCanceled) || errors.Is(err, errAgentQuit)
 		if err != nil && !quit {
 			return "", err
 		}
@@ -235,12 +480,19 @@ func applyAgentExperiment(
 		}
 	}
 	choices = keyContext.withSources(models, choices, modelProviders)
+	if !choose {
+		if choices, err = withTemplatePay(experiment.pay, choices, models, modelProviders, keyContext, setup, router); err != nil {
+			return "", err
+		}
+	}
 	for _, choice := range choices {
 		if choice.Source.kind == "" {
 			if quit {
 				return "", errAgentQuit
 			}
-			return "", fmt.Errorf("%s can't be paid for in %s: connect its subscription, or leave it out of the template", choice.ID, experiment.Name)
+			provider := modelProviders[choice.ID]
+			return "", fmt.Errorf("%s can't be paid for in %s: %s", choice.ID, experiment.Name,
+				templatePayHelp(choice.ID, provider, nil, setup, router, keyContext))
 		}
 	}
 	if !quit {
@@ -254,7 +506,14 @@ func applyAgentExperiment(
 	if quit {
 		return "", errAgentQuit
 	}
-	if assigned || !terminal {
+	if experiment.makeDefault && !assigned {
+		if err := assignAgentRouter(ctx, client, router.ID, setup.codingAgent); err != nil {
+			return "", err
+		}
+		agentStep(stderr, experiment.Name+" is now your default for "+setup.label)
+		return router.ID, nil
+	}
+	if assigned || !choose {
 		agentStep(stderr, "Using template "+experiment.Name)
 		return router.ID, nil
 	}
@@ -262,9 +521,9 @@ func applyAgentExperiment(
 	if experiment.Description != "" {
 		details = []string{experiment.Description}
 	}
-	choice, err := runAgentChoiceTUI(stdin, stderr, fmt.Sprintf("Make %s your default setup for %s?", experiment.Name, setup.label), details, []agentChoiceOption{
-		{label: "Just this launch", description: fmt.Sprintf("`dari %s` without --template keeps your current setup.", agent), done: "Using template " + experiment.Name + " for this launch"},
-		{label: "Make it my default", description: fmt.Sprintf("`dari %s` uses it from now on; `dari router assign-agent` moves %s back.", agent, setup.label), done: experiment.Name + " is now your default for " + setup.label},
+	choice, err := runAgentChoiceTUI(stdin, stderr, fmt.Sprintf("Make %s Your Default Setup for %s?", experiment.Name, setup.label), details, []agentChoiceOption{
+		{label: "Just This Launch", description: fmt.Sprintf("`dari %s` without --template keeps your current setup.", agent), done: "Using template " + experiment.Name + " for this launch"},
+		{label: "Make It My Default", description: fmt.Sprintf("`dari %s` uses it from now on; `dari router assign-agent` moves %s back.", agent, setup.label), done: experiment.Name + " is now your default for " + setup.label},
 	})
 	if err != nil {
 		return "", err
@@ -281,7 +540,11 @@ func newRouterExperimentsCmd(gf *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "experiments",
 		Short: "List router templates; launch one with `dari <agent> --template <name>`",
-		Args:  cobra.NoArgs,
+		Long: "List router templates; launch one with `dari <agent> --template <name>`. In a terminal the launch " +
+			"asks how each model is paid for. Without one, or to skip the questions, add " +
+			"`--pay <model>=<subscription|key|credits>` (repeatable; the model's ID or the part after its /) " +
+			"and `--default` to make the template the agent's default.",
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			var resp map[string]any
 			if err := orgKeyRequest(cmd, gf, http.MethodGet, "/v1/organizations/current/experimental-routers", nil, &resp); err != nil {

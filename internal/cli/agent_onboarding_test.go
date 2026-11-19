@@ -1115,7 +1115,7 @@ func TestEnsureClaudeAgentRouterExplainsModelsByPlan(t *testing.T) {
 		if !allowed {
 			want = "Switch between the checked models with /model.\nRun `dari accounts` to get auto-routing ($20/mo)"
 		}
-		if !strings.Contains(output.String(), "Choose models for Claude Code") || !strings.Contains(output.String(), want) {
+		if !strings.Contains(output.String(), "Choose Models for Claude Code") || !strings.Contains(output.String(), want) {
 			t.Errorf("allowed=%v: output missing %q:\n%s", allowed, want, output.String())
 		}
 	}
@@ -1187,7 +1187,7 @@ func TestEnsureSharedAgentRouterUsesDefaultPreset(t *testing.T) {
 			if agent == "opencode" {
 				name = "OpenCode"
 			}
-			if !strings.Contains(output.String(), "Choose models for "+name) || !strings.Contains(output.String(), name+" will use your default router") {
+			if !strings.Contains(output.String(), "Choose Models for "+name) || !strings.Contains(output.String(), name+" will use your default router") {
 				t.Fatalf("output does not identify %s setup: %s", name, output.String())
 			}
 		})
@@ -1786,7 +1786,7 @@ func TestAgentPickerPaymentIsChosenPerModel(t *testing.T) {
 	native := func(kind, provider, label string) agentModelSource {
 		return agentModelSource{kind: kind, provider: provider, modelProvider: provider, label: label}
 	}
-	anthropic := []agentModelSource{native("subscription", "anthropic", "Claude Code subscription"), native("managed", "anthropic", "Dari credits")}
+	anthropic := []agentModelSource{native("subscription", "anthropic", "Claude Code subscription"), native("managed", "anthropic", "Dari Credits")}
 	models := []agentModel{{ID: "anthropic/opus", Provider: "anthropic", SupportedLevels: []string{"high"}}, {ID: "anthropic/sonnet", Provider: "anthropic"}}
 	p := newAgentPickerState(models, []string{"anthropic/opus", "anthropic/sonnet"}, nil, nil, map[string][]agentModelSource{
 		"anthropic/opus": anthropic, "anthropic/sonnet": anthropic,

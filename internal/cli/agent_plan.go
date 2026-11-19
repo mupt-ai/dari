@@ -129,9 +129,9 @@ func getAutorouting(ctx context.Context, client *api.Client, stdin io.Reader, st
 	}
 	details = append(details, "")
 	for {
-		choice, err := runAgentChoiceTUI(stdin, stderr, "Get auto-routing", details, []agentChoiceOption{
-			{label: "I've subscribed, check again"},
-			{label: "Not now"},
+		choice, err := runAgentChoiceTUI(stdin, stderr, "Get Auto-Routing", details, []agentChoiceOption{
+			{label: "I've Subscribed, Check Again"},
+			{label: "Not Now"},
 		})
 		if err != nil || choice == 1 {
 			return false, err

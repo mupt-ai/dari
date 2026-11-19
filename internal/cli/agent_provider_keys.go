@@ -131,7 +131,7 @@ func connectAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader
 	// Credentials that need more than one key are added in the web app.
 	webApp := agentWebAppURL(ctx, client, "/credentials")
 	options = append(options,
-		agentChoiceOption{label: "AWS Bedrock, Microsoft Azure, or other " + ansiGray + "(opens the Dari web app)" + ansiReset, heading: "More"},
+		agentChoiceOption{label: "AWS Bedrock, Microsoft Azure, or Other " + ansiGray + "(opens the Dari web app)" + ansiReset, heading: "More"},
 		agentChoiceOption{label: "Back", gap: true},
 	)
 	// Esc on the key's input comes back to this list.
@@ -161,11 +161,19 @@ func connectAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader
 // personal subscription, a saved API key (the model's own provider or a
 // gateway that serves it), or Dari credits.
 type agentModelSource struct {
-	kind          string // "subscription", "key", or "managed"
+	// "subscription", "key", or "managed"; in a template's picker also
+	// "connect" (a subscription not yet connected) or "add-key", which enter
+	// runs rather than picks.
+	kind          string
 	provider      string // the provider that serves the model
 	modelProvider string // the model's own provider
 	credentialID  string // the saved key, for "key"
 	label         string
+}
+
+// action reports whether choosing the source runs a setup step first.
+func (source agentModelSource) action() bool {
+	return source.kind == "connect" || source.kind == "add-key"
 }
 
 // native reports whether the model stays on its own provider, as opposed to
@@ -173,6 +181,10 @@ type agentModelSource struct {
 func (source agentModelSource) native() bool {
 	return source.provider == source.modelProvider
 }
+
+// subscriptionOnlyProviders serve models only through a personal
+// subscription: no API key or Dari credits pay for them.
+var subscriptionOnlyProviders = map[string]bool{"opencode-go": true}
 
 // agentKeyContext is what deciding sources needs: the organization's saved
 // API keys and which providers serve which models.
@@ -221,18 +233,21 @@ func (c agentKeyContext) label(provider string) string {
 func (c agentKeyContext) sources(model agentModel, provider string) []agentModelSource {
 	var sources []agentModelSource
 	if plan, ok := c.subscriptions[provider]; ok {
-		sources = append(sources, agentModelSource{kind: "subscription", provider: provider, modelProvider: provider, label: plan + " subscription"})
+		sources = append(sources, agentModelSource{kind: "subscription", provider: provider, modelProvider: provider, label: plan + " Subscription"})
+	}
+	if subscriptionOnlyProviders[provider] {
+		return sources
 	}
 	if key, ok := c.saved[provider]; ok {
-		sources = append(sources, agentModelSource{kind: "key", provider: provider, modelProvider: provider, credentialID: key.ID, label: c.label(provider) + " key"})
+		sources = append(sources, agentModelSource{kind: "key", provider: provider, modelProvider: provider, credentialID: key.ID, label: c.label(provider) + " Key"})
 	}
 	for _, gateway := range agentKeyGateways {
 		if key, ok := c.saved[gateway.provider]; ok && slices.Contains(c.served[gateway.provider], model.ID) {
-			sources = append(sources, agentModelSource{kind: "key", provider: gateway.provider, modelProvider: provider, credentialID: key.ID, label: gateway.name + " key"})
+			sources = append(sources, agentModelSource{kind: "key", provider: gateway.provider, modelProvider: provider, credentialID: key.ID, label: gateway.name + " Key"})
 		}
 	}
 	if model.SupportsManagedKey || len(sources) == 0 {
-		sources = append(sources, agentModelSource{kind: "managed", provider: provider, modelProvider: provider, label: "Dari credits"})
+		sources = append(sources, agentModelSource{kind: "managed", provider: provider, modelProvider: provider, label: "Dari Credits"})
 	}
 	// A source the publisher blocks is none at all; a model left with none
 	// cannot run.

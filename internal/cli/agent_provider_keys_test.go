@@ -260,3 +260,37 @@ func TestAgentProviderKeysDirectKeyOnSubscriptionBecomesAPIFallback(t *testing.T
 		t.Fatalf("fallback models without subscription keys = %v, want nil", got)
 	}
 }
+
+func TestAttachAgentProviderKeysChangesOnlyThePickersSubscriptionChoices(t *testing.T) {
+	models, _ := providerKeysTestModels()
+	fable, opus, haiku := "anthropic/claude-fable-5-1", "anthropic/claude-opus-5", "anthropic/claude-haiku-5"
+	router := agentRouter{
+		ID:                    "rtr_winner",
+		EnabledModels:         []string{fable, opus, haiku},
+		ModelProviders:        map[string]string{fable: "anthropic", opus: "anthropic", haiku: "anthropic"},
+		SubscriptionProviders: []string{"anthropic"},
+		SubscriptionModels:    []string{fable, opus},
+	}
+	put := func(keys agentProviderKeys) agentRouterUpdateRequest {
+		var body agentRouterUpdateRequest
+		server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_winner"})
+		}))
+		defer server.Close()
+		if _, err := attachAgentProviderKeys(context.Background(), api.New(server.URL), router, models, keys); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	// This launch picked Sol (not on the router) on the subscription and Opus
+	// on credits: only Opus changes, and Fable stays on the subscription.
+	body := put(agentProviderKeys{subscriptionModels: []string{"openai/gpt-5.6-sol"}, offSubscription: []string{opus}})
+	if body.SubscriptionModels == nil || strings.Join(*body.SubscriptionModels, ",") != fable {
+		t.Fatalf("subscription models = %v, want only Fable", body.SubscriptionModels)
+	}
+	// Decisions that match the router's change nothing, so nothing is sent.
+	if body := put(agentProviderKeys{subscriptionModels: []string{fable}, offSubscription: []string{haiku}}); body.SubscriptionModels != nil {
+		t.Fatalf("subscription models = %v, want the router's kept", *body.SubscriptionModels)
+	}
+}

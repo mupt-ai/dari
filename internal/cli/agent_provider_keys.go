@@ -38,6 +38,9 @@ type agentProviderKeys struct {
 	// when other models of a subscription's provider are paid for another
 	// way, so the choice is made per model.
 	subscriptionModels []string
+	// offSubscription are the models of a subscription's provider the picker
+	// put on another payment source, set with subscriptionModels.
+	offSubscription []string
 }
 
 // fallbackModels adds the models that fall back to the user's key to the
@@ -262,10 +265,13 @@ func (c agentKeyContext) keys(choices []agentModelChoice) agentProviderKeys {
 			onSubscription = append(onSubscription, choice.ID)
 		} else {
 			mixed = true
+			keys.offSubscription = append(keys.offSubscription, choice.ID)
 		}
 	}
 	if mixed {
 		keys.subscriptionModels = onSubscription
+	} else {
+		keys.offSubscription = nil
 	}
 	return keys
 }
@@ -371,10 +377,20 @@ func attachAgentProviderKeys(ctx context.Context, client *api.Client, router age
 	maps.DeleteFunc(body.ProviderKeySources, func(provider, _ string) bool { return !slices.Contains(served, provider) })
 	body.ProviderCredentialIDs = keys.credentialIDs
 	body.SubscriptionAPIFallbackModels = keys.fallbackModels(router.SubscriptionAPIFallbackModels, body.EnabledModels)
-	// A per-model payment choice made in the picker is saved here too.
+	// A per-model payment choice made in the picker is saved here too, on top
+	// of the router's own: only the models the picker decided change.
 	if keys.subscriptionModels != nil {
-		served := slices.DeleteFunc(slices.Clone(keys.subscriptionModels), func(model string) bool { return !slices.Contains(body.EnabledModels, model) })
-		body.SubscriptionModels = &served
+		served := slices.DeleteFunc(slices.Clone(router.SubscriptionModels), func(model string) bool {
+			return slices.Contains(keys.offSubscription, model)
+		})
+		for _, model := range keys.subscriptionModels {
+			if slices.Contains(body.EnabledModels, model) && !slices.Contains(served, model) {
+				served = append(served, model)
+			}
+		}
+		if !sameModelSet(served, router.SubscriptionModels) {
+			body.SubscriptionModels = &served
+		}
 	}
 	return putAgentRouter(ctx, client, router.ID, body)
 }

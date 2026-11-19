@@ -111,7 +111,7 @@ func runAgentSetup(ctx context.Context, launch agentLaunch, stdin io.Reader, std
 		agentStep(stderr, "Removed Dari from "+target+"; "+applies)
 		return nil
 	}
-	key, baseURL, models, err := resolveAgentRouting(ctx, launch, stdin, stderr)
+	key, baseURL, models, err := resolveAgentRouting(ctx, &launch, stdin, stderr)
 	if err != nil {
 		return err
 	}

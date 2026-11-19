@@ -156,7 +156,7 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 	// OpenClaw and Hermes route on the setup in their own config, so their
 	// launches need no routing of their own.
 	if !agents.OnlyRequestsInfo(launch.args) && !routesOnlyWhenSetUp[launch.name] {
-		key, baseURL, models, err = resolveAgentRouting(ctx, launch, stdin, stderr)
+		key, baseURL, models, err = resolveAgentRouting(ctx, &launch, stdin, stderr)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -240,14 +240,16 @@ func inheritsStdio(stdin io.Reader, stdout, stderr io.Writer) bool {
 
 // resolveAgentRouting returns the key and base URL a launch routes through. In
 // gateway mode it makes no hosted calls and offers the gateway's models.
-// Otherwise it signs in, sets up the agent's router, and uses that router.
-func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reader, stderr io.Writer) (string, string, agents.Models, error) {
+// Otherwise it signs in, sets up the agent's router, and uses that router; an
+// experimental router's flag, which it takes out of the launch's arguments,
+// launches on that router instead.
+func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Reader, stderr io.Writer) (string, string, agents.Models, error) {
 	gateway, err := agentGateway(ctx, stdin, stderr)
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
 	if gateway != nil {
-		models, err := gatewayAgentModels(ctx, gateway, launch, stdin, stderr)
+		models, err := gatewayAgentModels(ctx, gateway, *launch, stdin, stderr)
 		if err != nil {
 			return "", "", agents.Models{}, err
 		}
@@ -264,7 +266,20 @@ func resolveAgentRouting(ctx context.Context, launch agentLaunch, stdin io.Reade
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
-	routerID, err := ensureAgentRouter(ctx, launch.name, access, stdin, stderr)
+	client, err := auth.OrgKeyClient(access.apiURL)
+	if err != nil {
+		return "", "", agents.Models{}, err
+	}
+	experiment, err := takeAgentExperiment(ctx, client, launch, stderr)
+	if err != nil {
+		return "", "", agents.Models{}, err
+	}
+	var routerID string
+	if experiment != nil {
+		routerID, err = applyAgentExperiment(ctx, client, launch.name, *experiment, stdin, stderr)
+	} else {
+		routerID, err = ensureAgentRouter(ctx, launch.name, access, stdin, stderr)
+	}
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}

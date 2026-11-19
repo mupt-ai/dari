@@ -1275,6 +1275,47 @@ var errAgentChoiceCanceled = errors.New("agent onboarding canceled")
 // errAgentQuit is q or ctrl+c on a choice, which leaves the whole command.
 var errAgentQuit = errors.New("agent onboarding canceled")
 
+// runAgentPaymentPicker asks only how each of models is paid for, when one
+// can be paid for more than one way; the models themselves are fixed.
+func runAgentPaymentPicker(
+	stdin io.Reader,
+	stderr io.Writer,
+	models []agentModel,
+	currentLevels map[string][]string,
+	sources map[string][]agentModelSource,
+) ([]agentModelChoice, error) {
+	p := newAgentPickerState(models, modelIDs(models), currentLevels, nil, sources)
+	p.paying, p.payOnly = true, true
+	if !p.needsPaying() {
+		return p.choices(), nil
+	}
+	session, err := startAgentTUISession(stdin, stderr)
+	if err != nil {
+		return nil, err
+	}
+	defer session.Close()
+	buf := make([]byte, 256)
+	for {
+		session.render(agentPickerLines("", nil, p))
+		n, readErr := session.file.Read(buf)
+		for _, key := range parseAgentPickerKeys(buf[:n]) {
+			done, canceled := p.handleKey(key)
+			if canceled {
+				return nil, errAgentQuit
+			}
+			if done {
+				return p.choices(), nil
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return nil, errors.New("payment selection canceled")
+			}
+			return nil, fmt.Errorf("read selection: %w", readErr)
+		}
+	}
+}
+
 func runAgentPicker(
 	stdin io.Reader,
 	stderr io.Writer,
@@ -1466,7 +1507,11 @@ func agentPayingLines(p *agentPickerState) []string {
 		}
 		lines = append(lines, agentFocused(agentCursor(focused)+name+"   "+strings.Join(choices, "   "), focused))
 	}
-	return append(lines, agentPickerFooter(p, focus, "Continue →", "↑↓ move", "← → choose", "esc back")...)
+	esc := "esc back"
+	if p.payOnly {
+		esc = "esc quit"
+	}
+	return append(lines, agentPickerFooter(p, focus, "Continue →", "↑↓ move", "← → choose", esc)...)
 }
 
 // agentPickerFooter is the picker's Continue line, its warning, and its keys.

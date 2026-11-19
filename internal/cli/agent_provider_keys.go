@@ -181,6 +181,9 @@ type agentKeyContext struct {
 	served        map[string][]string
 	labels        map[string]string
 	subscriptions map[string]string // router provider -> plan name, for connected plans
+	// blocked are the source kinds ("key", "managed") a template's publisher
+	// does not allow.
+	blocked map[string]bool
 }
 
 func loadAgentKeyContext(ctx context.Context, client *api.Client, subscribed []agentSubscriptionProvider) (agentKeyContext, error) {
@@ -231,6 +234,22 @@ func (c agentKeyContext) sources(model agentModel, provider string) []agentModel
 	if model.SupportsManagedKey || len(sources) == 0 {
 		sources = append(sources, agentModelSource{kind: "managed", provider: provider, modelProvider: provider, label: "Dari credits"})
 	}
+	// A source the publisher blocks is none at all; a model left with none
+	// cannot run.
+	return slices.DeleteFunc(sources, func(source agentModelSource) bool { return c.blocked[source.kind] })
+}
+
+// sourcesPreferring is sources with the one a router already pays with moved
+// first, when the model still offers it.
+func (c agentKeyContext) sourcesPreferring(model agentModel, provider string, want agentModelSource) []agentModelSource {
+	sources := c.sources(model, provider)
+	i := slices.IndexFunc(sources, func(source agentModelSource) bool {
+		return source.kind == want.kind && source.provider == want.provider
+	})
+	if i > 0 {
+		picked := sources[i]
+		sources = slices.Insert(slices.Delete(sources, i, i+1), 0, picked)
+	}
 	return sources
 }
 
@@ -246,7 +265,7 @@ func (c agentKeyContext) keys(choices []agentModelChoice) agentProviderKeys {
 			if !slices.Contains(keys.subscriptionProviders, source.provider) {
 				keys.subscriptionProviders = append(keys.subscriptionProviders, source.provider)
 			}
-			if key, ok := c.saved[source.provider]; ok {
+			if key, ok := c.saved[source.provider]; ok && !c.blocked["key"] {
 				keys.credentialIDs[source.provider] = key.ID
 				keys.apiFallbackModels = append(keys.apiFallbackModels, choice.ID)
 			}
@@ -276,8 +295,9 @@ func (c agentKeyContext) keys(choices []agentModelChoice) agentProviderKeys {
 	return keys
 }
 
-// withSources gives each choice its source: the one picked for it, or the
-// preferred one.
+// withSources gives each choice its source: the one it names when the model
+// still offers it, else the preferred one. A model no source can pay for
+// keeps none.
 func (c agentKeyContext) withSources(models []agentModel, choices []agentModelChoice, providers map[string]string) []agentModelChoice {
 	byID := map[string]agentModel{}
 	for _, model := range models {
@@ -285,8 +305,17 @@ func (c agentKeyContext) withSources(models []agentModel, choices []agentModelCh
 	}
 	sourced := slices.Clone(choices)
 	for i, choice := range sourced {
-		if choice.Source.kind == "" {
-			sourced[i].Source = c.sources(byID[choice.ID], providers[choice.ID])[0]
+		sources := c.sources(byID[choice.ID], providers[choice.ID])
+		named := slices.IndexFunc(sources, func(source agentModelSource) bool {
+			return source.kind == choice.Source.kind && source.provider == choice.Source.provider
+		})
+		switch {
+		case named >= 0:
+			sourced[i].Source = sources[named]
+		case len(sources) > 0:
+			sourced[i].Source = sources[0]
+		default:
+			sourced[i].Source = agentModelSource{}
 		}
 	}
 	return sourced

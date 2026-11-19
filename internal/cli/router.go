@@ -32,6 +32,9 @@ func init() {
 			newRouterCreateCmd(gf),
 			newRouterUpdateCmd(gf),
 			newRouterAssignAgentCmd(gf),
+			newRouterExperimentsCmd(gf),
+			newRouterPublishCmd(gf),
+			newRouterUnpublishCmd(gf),
 			newRouterDeleteCmd(gf),
 		)
 		root.AddCommand(cmd)

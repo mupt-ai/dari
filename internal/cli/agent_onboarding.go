@@ -106,6 +106,7 @@ type agentRouter struct {
 	ClientKey                     string              `json:"client_key"`
 	IsDefault                     bool                `json:"is_default"`
 	CodingAgents                  []string            `json:"coding_agents"`
+	ProviderKeySources            map[string]string   `json:"provider_key_sources"`
 	EnabledModels                 []string            `json:"enabled_models"`
 	ModelProviders                map[string]string   `json:"model_providers"`
 	ModelThinkingLevels           map[string][]string `json:"model_thinking_levels"`
@@ -389,9 +390,6 @@ func ensureAgentRouter(
 	if err != nil {
 		return "", err
 	}
-	defaultIDs := suggestion.modelIDs
-	recommendedLevels := suggestion.levels
-
 	models, err := listAgentModels(ctx, client)
 	if err != nil {
 		return "", err
@@ -399,7 +397,6 @@ func ensureAgentRouter(
 	if !setup.ownsRouter() {
 		models = includeCurrentAgentModels(models, defaultRouter)
 	}
-	var currentLevels map[string][]string
 	// Each model offers the subscriptions, keys, and credits that can pay for
 	// it, preferred first; the picker lets the user change any of them.
 	if !setup.ownsRouter() {
@@ -411,77 +408,32 @@ func ensureAgentRouter(
 	if err != nil {
 		return "", err
 	}
-	modelProviders := agentProvidersFor(models, modelIDs(models))
-	sources := map[string][]agentModelSource{}
-	for _, model := range models {
-		sources[model.ID] = keyContext.sources(model, modelProviders[model.ID])
+	// Recommended models are green in the picker, and checked in the
+	// numbered list a script gets.
+	intro := "The checked models are recommended."
+	if agentInputIsTerminal(stdin) {
+		intro = "Green circles are recommended; orange ones are your own choice."
 	}
-	// Models, then when Dari picks among them. Esc on the second comes back
-	// to the models as they were chosen; Esc on the models asks before
-	// leaving setup.
-	var choices []agentModelChoice
 	pinningDefault := false
 	if !setup.ownsRouter() {
 		pinningDefault = defaultRouter.SessionPinning
 	}
-	var sessionPinning bool
-	for {
-		routing, err := autoroutingAllowed(ctx, client)
-		if err != nil {
-			return "", err
-		}
-		// Recommended models are green in the picker, and checked in the
-		// numbered list a script gets.
-		recommendedNote := "The checked models are recommended."
-		if agentInputIsTerminal(stdin) {
-			recommendedNote = "Green circles are recommended; orange ones are your own choice."
-		}
-		note := []string{recommendedNote, "Auto-routing picks the best of the checked models for each request."}
-		if !routing {
-			offer := "Run `dari accounts` to get auto-routing ($20/mo) and have Dari pick for you."
-			if agentInputIsTerminal(stdin) {
-				offer = "Press a to get auto-routing ($20/mo) and have Dari pick for you."
-			}
-			note = []string{recommendedNote, "Switch between the checked models with /model.", offer}
-		}
-		choices, err = selectAgentModels(stdin, stderr, title, note, !routing, models, defaultIDs, currentLevels, recommendedLevels, sources)
-		if errors.Is(err, errAgentWantsAutorouting) {
-			// Esc on the auto-routing page comes back to the models.
-			if _, err := getAutorouting(ctx, client, stdin, stderr); err != nil && !errors.Is(err, errAgentChoiceCanceled) {
-				return "", err
-			}
-			continue
-		}
-		if errors.Is(err, errAgentChoiceCanceled) {
-			leave, err := runAgentChoiceTUI(stdin, stderr, "Leave setup?", []string{"  " + ansiGray + "Nothing is saved until you finish choosing models." + ansiReset, ""}, []agentChoiceOption{{label: "Keep choosing"}, {label: "Leave setup"}})
-			if (err == nil && leave == 0) || errors.Is(err, errAgentChoiceCanceled) {
-				continue
-			}
-			if err == nil {
-				err = errAgentQuit
-			}
-			return "", err
-		}
-		if err != nil {
-			return "", err
-		}
-		sessionPinning, err = chooseAgentSessionPinning(stdin, stderr, pinningDefault)
-		if errors.Is(err, errAgentChoiceCanceled) {
-			// Back to the models, as they were just chosen, which are no
-			// longer settled.
-			dropAgentStep("Models: ")
-			defaultIDs, currentLevels = nil, map[string][]string{}
-			for _, choice := range choices {
-				defaultIDs = append(defaultIDs, choice.ID)
-				currentLevels[choice.ID] = choice.Levels
-			}
-			continue
-		}
-		if err != nil {
-			return "", err
-		}
-		break
+	modelProviders := agentProvidersFor(models, modelIDs(models))
+	picked, err := pickAgentModels(ctx, client, stdin, stderr, agentModelPickInput{
+		title:             title,
+		intro:             intro,
+		models:            models,
+		defaultIDs:        suggestion.modelIDs,
+		recommendedLevels: suggestion.levels,
+		keyContext:        keyContext,
+		modelProviders:    modelProviders,
+		askPinning:        true,
+		pinningDefault:    pinningDefault,
+	})
+	if err != nil {
+		return "", err
 	}
+	choices, sessionPinning := picked.choices, picked.sessionPinning
 	choices = keyContext.withSources(models, choices, modelProviders)
 	agentStep(stderr, "Paying with "+agentSourceSummary(models, choices))
 	keys := keyContext.keys(choices)
@@ -548,6 +500,102 @@ func ensureAgentRouter(
 		}
 	}
 	return routerID, nil
+}
+
+// agentModelPickInput is what the models picker starts from.
+type agentModelPickInput struct {
+	title string
+	// intro is the picker's first note line.
+	intro  string
+	models []agentModel
+	// defaultIDs are the models checked when the picker opens.
+	defaultIDs        []string
+	currentLevels     map[string][]string
+	recommendedLevels map[string][]string
+	keyContext        agentKeyContext
+	modelProviders    map[string]string
+	// askPinning asks whether Dari picks per turn or per session; without it
+	// the pick keeps pinningDefault.
+	askPinning     bool
+	pinningDefault bool
+}
+
+// agentModelPick is what the models picker chose.
+type agentModelPick struct {
+	choices        []agentModelChoice
+	sessionPinning bool
+}
+
+// pickAgentModels runs the models picker, then session pinning when asked,
+// until the user finishes. Esc on the second page comes back to the models as
+// they were chosen; Esc on the models asks before leaving setup.
+func pickAgentModels(
+	ctx context.Context,
+	client *api.Client,
+	stdin io.Reader,
+	stderr io.Writer,
+	in agentModelPickInput,
+) (agentModelPick, error) {
+	sources := map[string][]agentModelSource{}
+	for _, model := range in.models {
+		sources[model.ID] = in.keyContext.sources(model, in.modelProviders[model.ID])
+	}
+	defaultIDs, currentLevels := in.defaultIDs, in.currentLevels
+	pick := agentModelPick{sessionPinning: in.pinningDefault}
+	for {
+		routing, err := autoroutingAllowed(ctx, client)
+		if err != nil {
+			return agentModelPick{}, err
+		}
+		note := []string{in.intro, "Auto-routing picks the best of the checked models for each request."}
+		if !routing {
+			offer := "Run `dari accounts` to get auto-routing ($20/mo) and have Dari pick for you."
+			if agentInputIsTerminal(stdin) {
+				offer = "Press a to get auto-routing ($20/mo) and have Dari pick for you."
+			}
+			note = []string{in.intro, "Switch between the checked models with /model.", offer}
+		}
+		pick.choices, err = selectAgentModels(stdin, stderr, in.title, note, !routing, in.models, defaultIDs, currentLevels, in.recommendedLevels, sources)
+		if errors.Is(err, errAgentWantsAutorouting) {
+			// Esc on the auto-routing page comes back to the models.
+			if _, err := getAutorouting(ctx, client, stdin, stderr); err != nil && !errors.Is(err, errAgentChoiceCanceled) {
+				return agentModelPick{}, err
+			}
+			continue
+		}
+		if errors.Is(err, errAgentChoiceCanceled) {
+			leave, err := runAgentChoiceTUI(stdin, stderr, "Leave setup?", []string{"  " + ansiGray + "Nothing is saved until you finish choosing models." + ansiReset, ""}, []agentChoiceOption{{label: "Keep choosing"}, {label: "Leave setup"}})
+			if (err == nil && leave == 0) || errors.Is(err, errAgentChoiceCanceled) {
+				continue
+			}
+			if err == nil {
+				err = errAgentQuit
+			}
+			return agentModelPick{}, err
+		}
+		if err != nil {
+			return agentModelPick{}, err
+		}
+		if !in.askPinning {
+			return pick, nil
+		}
+		pick.sessionPinning, err = chooseAgentSessionPinning(stdin, stderr, in.pinningDefault)
+		if errors.Is(err, errAgentChoiceCanceled) {
+			// Back to the models, as they were just chosen, which are no
+			// longer settled.
+			dropAgentStep("Models: ")
+			defaultIDs, currentLevels = nil, map[string][]string{}
+			for _, choice := range pick.choices {
+				defaultIDs = append(defaultIDs, choice.ID)
+				currentLevels[choice.ID] = choice.Levels
+			}
+			continue
+		}
+		if err != nil {
+			return agentModelPick{}, err
+		}
+		return pick, nil
+	}
 }
 
 // connectedAgentSubscriptions are the providers whose personal subscription
@@ -1130,6 +1178,8 @@ type agentPickerState struct {
 	// quit is set when the picker was left with q or ctrl+c, which leaves the
 	// command, rather than with esc, which goes back.
 	quit bool
+	// payOnly shows only the payment page, for models already decided.
+	payOnly bool
 }
 
 // agentPickerItem is one line the cursor can rest on.
@@ -1327,7 +1377,7 @@ func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
 		switch {
 		case p.open >= 0:
 			p.closeRow()
-		case p.paying:
+		case p.paying && !p.payOnly:
 			p.paying, p.cursor = false, 0
 		default:
 			return false, true

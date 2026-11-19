@@ -1,9 +1,12 @@
 package cli
 
 import (
+	"cmp"
 	"context"
+	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/mupt-ai/dari/internal/api"
 )
@@ -61,47 +64,123 @@ func agentSubscriptionProviders(agent string) []agentSubscriptionProvider {
 	return agentSetups[agent].subscriptions
 }
 
-// agentAccountLines is the Accounts page's summary: a Subscriptions section,
-// in the order routing uses them, then an API Keys section, each shown only
-// when it has something.
-func agentAccountLines(subscriptions []subscriptionCredential, keys []string, showProvider bool) []string {
-	if len(subscriptions) == 0 && len(keys) == 0 {
-		return []string{"  " + ansiGray + "No accounts connected yet." + ansiReset, ""}
-	}
-	lines := []string{}
-	if len(subscriptions) > 0 {
-		lines = append(lines, "", "  "+ansiBold+"Subscriptions"+ansiReset)
-		for _, subscription := range subscriptions {
-			lines = append(lines, subscriptionLines(subscription, showProvider)...)
-		}
-	}
-	if len(keys) > 0 {
-		lines = append(lines, "", "  "+ansiBold+"API Keys"+ansiReset)
-		for _, key := range keys {
-			lines = append(lines, "  "+ansiGray+"•"+ansiReset+" "+key)
-		}
-	}
-	return append(lines, "")
-}
-
 // subscriptionLines is one subscription: its provider, name, and plan, then
 // a line for each quota window, each model at its own limit, and its renewal.
 func subscriptionLines(subscription subscriptionCredential, showProvider bool) []string {
-	header := "  " + ansiGray + "•" + ansiReset + " "
-	if showProvider {
-		header += subscriptionProviderFor(subscription.OAuthProvider).name + "  "
-	}
-	header += subscriptionName(subscription)
-	if plan := subscription.SafeMetadata["plan"]; plan != "" {
-		header += "  " + ansiGray + plan + ansiReset
-	}
-	lines := []string{header}
-	for _, detail := range subscriptionDetails(subscription) {
-		detail = strings.Replace(detail, usageLimitReached, ansiRed+usageLimitReached+ansiGray, 1)
-		lines = append(lines, "    "+ansiGray+"› "+detail+ansiReset)
+	columns := subscriptionColumnsFor([]subscriptionCredential{subscription})
+	lines := []string{"  " + ansiGray + "•" + ansiReset + " " + subscriptionLabel(subscription, showProvider, columns)}
+	for _, detail := range subscriptionDetailLines(subscription, columns) {
+		lines = append(lines, "  "+detail)
 	}
 	return lines
 }
+
+// subscriptionColumns lays out a list of subscriptions: the provider and plan
+// columns, and where each name and each meter's use start, the same place.
+type subscriptionColumns struct {
+	provider, plan, name int
+}
+
+func subscriptionColumnsFor(subscriptions []subscriptionCredential) subscriptionColumns {
+	columns := subscriptionColumns{}
+	meterLabel := 0
+	for _, subscription := range subscriptions {
+		columns.provider = max(columns.provider, len([]rune(subscriptionProviderFor(subscription.OAuthProvider).name)))
+		columns.plan = max(columns.plan, len([]rune(subscriptionPlan(subscription))))
+		for _, m := range subscriptionMeters(subscription) {
+			meterLabel = max(meterLabel, len([]rune(m.label)))
+		}
+	}
+	kind := columns.provider
+	if columns.plan > 0 {
+		kind += 1 + columns.plan
+	}
+	columns.name = max(kind+2, meterLabel+2+usageMeterWidth+2)
+	return columns
+}
+
+// subscriptionPlan is the plan in parentheses, "(Pro)", or empty.
+func subscriptionPlan(subscription subscriptionCredential) string {
+	if plan := subscription.SafeMetadata["plan"]; plan != "" {
+		return "(" + plan + ")"
+	}
+	return ""
+}
+
+// subscriptionLabel is a subscription's provider, plan, and name, each in its
+// column.
+func subscriptionLabel(subscription subscriptionCredential, showProvider bool, columns subscriptionColumns) string {
+	if !showProvider {
+		label := subscriptionName(subscription)
+		if plan := subscriptionPlan(subscription); plan != "" {
+			label += " " + ansiGray + plan + ansiReset
+		}
+		return label
+	}
+	kind := padRight(subscriptionProviderFor(subscription.OAuthProvider).name, columns.provider)
+	if columns.plan > 0 {
+		kind += " " + padRight(subscriptionPlan(subscription), columns.plan)
+	}
+	return padRight(kind, columns.name) + subscriptionName(subscription)
+}
+
+func padRight(text string, width int) string {
+	return text + strings.Repeat(" ", max(0, width-len([]rune(text))))
+}
+
+type usageMeter struct {
+	label  string
+	used   float64
+	resets time.Time
+}
+
+// subscriptionMeters are a subscription's running quota windows and models
+// at their own limit.
+func subscriptionMeters(subscription subscriptionCredential) []usageMeter {
+	meters := []usageMeter{}
+	now := time.Now()
+	if subscription.Usage != nil {
+		for _, window := range subscription.Usage.Windows {
+			resets, err := time.Parse(time.RFC3339Nano, window.ResetsAt)
+			if err == nil && resets.After(now) {
+				meters = append(meters, usageMeter{window.Label, window.Utilization, resets})
+			}
+		}
+	}
+	for _, hold := range activeModelHolds(subscription, now) {
+		// A full Fable window already says its models are at their limit.
+		if fableWindowFull(subscription) && strings.HasPrefix(hold.Model, "anthropic/claude-fable-") {
+			continue
+		}
+		resets, _ := time.Parse(time.RFC3339Nano, hold.UnavailableUntil)
+		meters = append(meters, usageMeter{cmp.Or(hold.DisplayName, hold.Model), 1, resets})
+	}
+	return meters
+}
+
+// subscriptionDetailLines are a subscription's meters, their use starting
+// in the name column, then its renewal.
+func subscriptionDetailLines(subscription subscriptionCredential, columns subscriptionColumns) []string {
+	labelWidth := columns.name - 2 - usageMeterWidth - 2
+	lines := []string{}
+	for _, m := range subscriptionMeters(subscription) {
+		filled := min(usageMeterWidth, int(m.used*usageMeterWidth+0.5))
+		bar := ansiReset + strings.Repeat("▰", filled) + ansiGray + strings.Repeat("▱", usageMeterWidth-filled)
+		used := padRight(fmt.Sprintf("%.0f%% used", m.used*100), len(usageLimitReached))
+		if m.used >= 1 {
+			bar = ansiRed + strings.Repeat("▰", usageMeterWidth) + ansiGray
+			used = ansiRed + usageLimitReached + ansiGray
+		}
+		lines = append(lines, "  "+ansiGray+padRight(m.label, labelWidth)+"  "+bar+"  "+used+"  resets "+usageResetTime(m.resets)+ansiReset)
+	}
+	if renews, err := time.Parse(time.RFC3339, subscription.SafeMetadata["renews_at"]); err == nil && renews.After(time.Now()) {
+		// The plan's billing renewal, apart from its usage windows' resets.
+		lines = append(lines, "  "+ansiGray+"Plan renews "+renews.Local().Format("Jan 2")+ansiReset)
+	}
+	return lines
+}
+
+const usageMeterWidth = 10
 
 // subscriptionProviderFor names the provider of a stored subscription.
 func subscriptionProviderFor(oauthProvider string) agentSubscriptionProvider {

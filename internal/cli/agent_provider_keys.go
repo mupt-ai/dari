@@ -34,6 +34,13 @@ type agentProviderKeys struct {
 	// subscriptionProviders are the providers whose models run on the user's
 	// subscription.
 	subscriptionProviders []string
+	// subscriptionModels are the models the subscription serves, set only
+	// when other models of a subscription's provider are paid for another
+	// way, so the choice is made per model.
+	subscriptionModels []string
+	// offSubscription are the models of a subscription's provider the picker
+	// put on another payment source, set with subscriptionModels.
+	offSubscription []string
 }
 
 // fallbackModels adds the models that fall back to the user's key to the
@@ -101,32 +108,53 @@ func connectAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader
 	type keyProvider struct{ provider, name string }
 	offered := []keyProvider{}
 	options := []agentChoiceOption{}
-	offer := func(provider, name, note string) {
+	// Gateways, where one key serves most models, then the providers' own keys.
+	offer := func(provider, name, heading string) {
 		if _, ok := connected[provider]; ok || slices.ContainsFunc(offered, func(p keyProvider) bool { return p.provider == provider }) {
 			return
 		}
+		option := agentChoiceOption{label: name}
+		if !slices.ContainsFunc(options, func(o agentChoiceOption) bool { return o.heading == heading }) {
+			option.heading = heading
+		}
 		offered = append(offered, keyProvider{provider, name})
-		options = append(options, agentChoiceOption{label: name, note: note})
+		options = append(options, option)
 	}
 	for _, gateway := range agentKeyGateways {
-		offer(gateway.provider, gateway.name, "serves most models")
+		offer(gateway.provider, gateway.name, "Gateways")
 	}
 	for _, group := range catalog.Groups {
 		if group.Provider != "" && !slices.Contains(agentKeyCredentialsPageOnly, group.Provider) {
-			offer(group.Provider, cmp.Or(group.ProviderLabel, group.Provider), "")
+			offer(group.Provider, cmp.Or(group.ProviderLabel, group.Provider), "Providers")
 		}
 	}
-	options = append(options, agentChoiceOption{label: "Back"})
-	where := "on the Subscriptions & Keys page of the Dari web app"
-	if page := agentWebAppURL(ctx, client, "/credentials"); page != "" {
-		where = "at " + page
+	// Credentials that need more than one key are added in the web app.
+	webApp := agentWebAppURL(ctx, client, "/credentials")
+	options = append(options,
+		agentChoiceOption{label: "AWS Bedrock, Microsoft Azure, or other " + ansiGray + "(opens the Dari web app)" + ansiReset, heading: "More"},
+		agentChoiceOption{label: "Back", gap: true},
+	)
+	// Esc on the key's input comes back to this list.
+	for {
+		choice, err := runAgentChoiceTUI(stdin, stderr, "", nil, options)
+		if err != nil || choice == len(offered)+1 {
+			return false, err
+		}
+		if choice == len(offered) {
+			if webApp == "" || !openAgentBrowser(webApp) {
+				where := "on the Subscriptions & Keys page of the Dari web app"
+				if webApp != "" {
+					where = "at " + webApp
+				}
+				agentPrintln(stderr, "Add other credentials "+where)
+			}
+			continue
+		}
+		saved, err := saveAgentAPIKey(ctx, client, stdin, stderr, offered[choice].provider, offered[choice].name)
+		if saved || err != nil {
+			return saved, err
+		}
 	}
-	details := []string{"  " + ansiGray + "Add AWS Bedrock, Microsoft Azure, or other credentials " + where + ansiReset, ""}
-	choice, err := runAgentChoiceTUI(stdin, stderr, "Which API key?", details, options)
-	if err != nil || choice == len(offered) {
-		return false, err
-	}
-	return saveAgentAPIKey(ctx, client, stdin, stderr, offered[choice].provider, offered[choice].name)
 }
 
 // agentModelSource is where a model's requests are paid for: the user's
@@ -226,6 +254,24 @@ func (c agentKeyContext) keys(choices []agentModelChoice) agentProviderKeys {
 			keys.modelProviders[choice.ID] = source.provider
 			keys.credentialIDs[source.provider] = source.credentialID
 		}
+	}
+	// A subscription chosen for only some of its provider's models names them.
+	onSubscription, mixed := []string{}, false
+	for _, choice := range choices {
+		if !slices.Contains(keys.subscriptionProviders, choice.Source.modelProvider) {
+			continue
+		}
+		if choice.Source.kind == "subscription" {
+			onSubscription = append(onSubscription, choice.ID)
+		} else {
+			mixed = true
+			keys.offSubscription = append(keys.offSubscription, choice.ID)
+		}
+	}
+	if mixed {
+		keys.subscriptionModels = onSubscription
+	} else {
+		keys.offSubscription = nil
 	}
 	return keys
 }
@@ -331,6 +377,21 @@ func attachAgentProviderKeys(ctx context.Context, client *api.Client, router age
 	maps.DeleteFunc(body.ProviderKeySources, func(provider, _ string) bool { return !slices.Contains(served, provider) })
 	body.ProviderCredentialIDs = keys.credentialIDs
 	body.SubscriptionAPIFallbackModels = keys.fallbackModels(router.SubscriptionAPIFallbackModels, body.EnabledModels)
+	// A per-model payment choice made in the picker is saved here too, on top
+	// of the router's own: only the models the picker decided change.
+	if keys.subscriptionModels != nil {
+		served := slices.DeleteFunc(slices.Clone(router.SubscriptionModels), func(model string) bool {
+			return slices.Contains(keys.offSubscription, model)
+		})
+		for _, model := range keys.subscriptionModels {
+			if slices.Contains(body.EnabledModels, model) && !slices.Contains(served, model) {
+				served = append(served, model)
+			}
+		}
+		if !sameModelSet(served, router.SubscriptionModels) {
+			body.SubscriptionModels = &served
+		}
+	}
 	return putAgentRouter(ctx, client, router.ID, body)
 }
 

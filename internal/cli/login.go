@@ -84,7 +84,8 @@ func (ui *browserLoginUI) wait(
 		return auth.CallbackResult{}, err
 	}
 	ui.session = session
-	header := pageHeader(session.width, ui.pageSubtitle())
+	session.titled = true
+	header := ui.pageSubtitle()
 
 	waitCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -112,7 +113,7 @@ func (ui *browserLoginUI) wait(
 	tick := 0
 	for {
 		spinner := loginSpinnerFrames[(tick/4)%len(loginSpinnerFrames)]
-		session.renderPage(header, loginPageLines(loginURL, opened, input.value, inputErr, spinner, session.width))
+		session.renderPage(header, loginPageLines(loginURL, opened, input.value, inputErr, spinner, session.cols()))
 		select {
 		case res := <-results:
 			return received(res)

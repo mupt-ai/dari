@@ -270,34 +270,32 @@ func TestMuseCodeSubscriptionRetriesWhileMetaApprovalIsPending(t *testing.T) {
 	}
 }
 
-func TestAgentAccountLinesListSubscriptionsInRoutingOrderThenKeys(t *testing.T) {
-	label := "Work"
+func TestAgentChoiceLinesNumberGroupedAccounts(t *testing.T) {
 	resets := time.Now().Add(2 * time.Hour)
-	lines := agentAccountLines(personalSubscriptions([]subscriptionCredential{
-		{Name: "CLAUDE_2", OAuthProvider: claudeSubscription.id, CredentialScope: "user", CreatedAt: "2026-02", Label: &label},
-		{Name: "CODEX", OAuthProvider: codexSubscription.id, CredentialScope: "user", CreatedAt: "2026-01", SubscriptionActive: true, SafeMetadata: map[string]string{"account_email": "me@example.test", "plan": "Plus"}},
-		{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, CredentialScope: "user", CreatedAt: "2026-01", Usage: &subscriptionUsage{Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339), Windows: []subscriptionUsageWindow{{Label: "5 Hour", Minutes: 300, Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339)}}}},
-		{Name: "TEAM", OAuthProvider: codexSubscription.id, CredentialScope: "organization"},
-		{Name: "MUSE", OAuthProvider: museSubscription.id, CredentialScope: "user", CreatedAt: "2026-03"},
-	}), []string{"Vercel AI Gateway"}, true)
+	claude := subscriptionCredential{Name: "CLAUDE", OAuthProvider: claudeSubscription.id, Usage: &subscriptionUsage{Windows: []subscriptionUsageWindow{{Label: "5 Hour", Utilization: 0.4, ResetsAt: resets.Format(time.RFC3339)}}}}
+	lines := agentChoiceLines("", nil, nil, []agentChoiceOption{
+		{heading: "Subscriptions", label: subscriptionLabel(claude, true, subscriptionColumnsFor([]subscriptionCredential{claude})), details: subscriptionDetailLines(claude, subscriptionColumnsFor([]subscriptionCredential{claude}))},
+		{heading: "API Keys", label: "Vercel AI Gateway"},
+		{heading: "Settings", label: "Done"},
+		{label: "Add a subscription"},
+	}, 2, "esc close", 0)
 	got := stripANSI(strings.Join(lines, "\n"))
-	want := "\n  Subscriptions\n" +
-		"  • Claude Code  CLAUDE\n" +
-		"    › 5 Hour · 40% used · Resets " + usageResetTime(resets) + "\n" +
-		"  • Claude Code  Work\n" +
-		"  • Muse Code  MUSE\n" +
-		"  • ChatGPT  me@example.test  Plus\n" +
-		"\n  API Keys\n" +
-		"  • Vercel AI Gateway\n"
+	meter := "      5 Hour  ▰▰▰▰▱▱▱▱▱▱  40% used       resets " + usageResetTime(resets)
+	// Every rule ends where the widest line does.
+	rule := func(heading string) string {
+		return "◆ " + heading + " " + strings.Repeat("─", len([]rune(meter))-len([]rune(heading))-3)
+	}
+	want := rule("Subscriptions") + "\n\n" +
+		"  [1] Claude Code         CLAUDE\n" +
+		meter + "\n" +
+		"\n" + rule("API Keys") + "\n\n" +
+		"  [2] Vercel AI Gateway\n" +
+		"\n" + rule("Settings") + "\n\n" +
+		"❯ [3] Done\n" +
+		"  [4] Add a subscription\n\n" +
+		"  ↑↓ move · enter confirm · esc close"
 	if got != want {
 		t.Fatalf("lines:\n%s\nwant:\n%s", got, want)
-	}
-	// Only sections with something to show appear.
-	if keysOnly := stripANSI(strings.Join(agentAccountLines(nil, []string{"OpenAI"}, true), "\n")); strings.Contains(keysOnly, "Subscriptions") {
-		t.Fatalf("keys only: %q", keysOnly)
-	}
-	if empty := stripANSI(strings.Join(agentAccountLines(nil, nil, false), "\n")); !strings.Contains(empty, "No accounts connected yet.") {
-		t.Fatalf("empty list: %q", empty)
 	}
 }
 
@@ -308,7 +306,7 @@ func TestSubscriptionLinesMarkEveryLimitReached(t *testing.T) {
 		SafeMetadata:  map[string]string{"account_email": "you@example.com", "plan": "Max"},
 		ModelHolds:    []subscriptionModelHold{{Model: "anthropic/claude-fable-5", DisplayName: "Claude Fable 5", UnavailableUntil: resets.Format(time.RFC3339)}},
 	}, false)
-	if len(lines) != 2 || stripANSI(lines[0]) != "  • you@example.com  Max" {
+	if len(lines) != 2 || stripANSI(lines[0]) != "  • you@example.com (Max)" {
 		t.Fatalf("lines = %q", lines)
 	}
 	if !strings.Contains(lines[1], ansiRed+"Limit reached") {
@@ -388,5 +386,48 @@ func TestSubscriptionDetailsShowEachWindowAsTheAPINamesIt(t *testing.T) {
 	}})
 	if want := "Claude Fable Weekly · Limit reached · Resets " + usageResetTime(fableWeek); len(got) != 3 || got[2] != want {
 		t.Fatalf("full Fable details = %q, want last %q", got, want)
+	}
+}
+
+// With no one to press Enter, as when an agent runs the command, connecting
+// waits for the approval by itself.
+func TestDeviceCodeSubscriptionWaitsForApprovalWithoutATerminal(t *testing.T) {
+	useTestAPIKey(t)
+	completions := 0
+	server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/organizations/current/credentials/oauth/sessions":
+			_ = json.NewEncoder(w).Encode(agentSubscriptionOAuthStart{SessionToken: "session", AuthorizationURL: "https://auth.meta.com/oauth/device/?code=BLXG-CHNZ", UserCode: "BLXG-CHNZ"})
+		case "POST /v1/organizations/current/credentials/oauth/sessions/complete":
+			completions++
+			if completions < 3 {
+				w.WriteHeader(http.StatusBadRequest)
+				_ = json.NewEncoder(w).Encode(map[string]any{"detail": "Meta approval is still pending. Enter the code at Meta, finish approval, then try again."})
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	var output strings.Builder
+	original, poll := openAgentBrowser, agentApprovalPoll
+	openAgentBrowser, agentApprovalPoll = func(string) bool { return false }, time.Millisecond
+	t.Cleanup(func() { openAgentBrowser, agentApprovalPoll = original, poll })
+	// Empty stdin: the wait for Enter ends at once.
+	if err := connectAgentPersonalSubscription(context.Background(), museSubscription, api.New(server.URL), strings.NewReader(""), &output, ""); err != nil {
+		t.Fatal(err)
+	}
+	if completions != 3 || !strings.Contains(output.String(), "Waiting for the approval at Meta") {
+		t.Fatalf("completions = %d, output: %s", completions, output.String())
+	}
+}
+
+func TestAgentChoiceLinesShowASpinnerForTheBusyOption(t *testing.T) {
+	lines := agentChoiceLines("", nil, nil, []agentChoiceOption{{label: "One"}, {label: "Two", busy: "⠋"}}, 1, "esc back", 0)
+	got := stripANSI(strings.Join(lines, "\n"))
+	if !strings.Contains(got, "  [1] One\n❯  ⠋  Two") {
+		t.Fatalf("lines:\n%s", got)
 	}
 }

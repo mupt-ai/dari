@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mupt-ai/dari/internal/api"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -286,6 +288,40 @@ type subscriptionUsage struct {
 	Windows     []subscriptionUsageWindow `json:"windows"`
 }
 
+// subscriptionReset is a banked limit reset of a ChatGPT or Claude Code plan.
+type subscriptionReset struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// Null for a reset the provider gives no end date.
+	ExpiresAt *string `json:"expires_at"`
+	// Usable is whether the provider would honor it now.
+	Usable bool `json:"usable"`
+}
+
+// listSubscriptionResets lists a subscription's resets, and when they were
+// read when the provider refused to list them now and an earlier list stands
+// in ("" when they are live).
+func listSubscriptionResets(ctx context.Context, client *api.Client, name string) ([]subscriptionReset, string, error) {
+	var listed struct {
+		Resets []subscriptionReset `json:"resets"`
+		ReadAt *string             `json:"read_at"`
+	}
+	err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials/"+url.PathEscape(name)+"/resets", nil, &listed)
+	readAt := ""
+	if listed.ReadAt != nil {
+		readAt = *listed.ReadAt
+	}
+	return listed.Resets, readAt, api.HumanError(err)
+}
+
+func useSubscriptionReset(ctx context.Context, client *api.Client, name, resetID string) (string, error) {
+	var used struct {
+		Result string `json:"result"`
+	}
+	err := client.Do(ctx, http.MethodPost, "/v1/organizations/current/credentials/"+url.PathEscape(name)+"/resets/"+url.PathEscape(resetID)+"/use", nil, &used)
+	return used.Result, api.HumanError(err)
+}
+
 type subscriptionModelHold struct {
 	Model string `json:"model"`
 	// DisplayName is the model's catalog name; servers before it was added
@@ -320,6 +356,8 @@ func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
 		newSubscriptionCredentialCmd(gf, "disconnect", "Disconnect a subscription from Dari",
 			http.MethodDelete, func(name string) string { return url.PathEscape(name) + "?scope=user" }),
 		newSubscriptionAutoResetCmd(gf),
+		newSubscriptionResetsCmd(gf),
+		newSubscriptionUseResetCmd(gf),
 		newSubscriptionRenameCmd(gf),
 	)
 	return cmd
@@ -351,6 +389,8 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 					"last_used_at":       subscription.LastUsedAt,
 					"usage":              subscription.Usage,
 					"auto_redeem_resets": subscription.AutoRedeemResets,
+					// Where the plan itself is managed, at its vendor.
+					"manage_url": subscriptionProviderFor(subscription.OAuthProvider).billingURL,
 				})
 			}
 			return printJSON(map[string]any{"subscriptions": rows})
@@ -490,7 +530,8 @@ func listSubscriptionCredentials(cmd *cobra.Command, gf *globalFlags) ([]subscri
 	var resp struct {
 		Credentials []subscriptionCredential `json:"credentials"`
 	}
-	if err := subscriptionRequest(cmd, gf, http.MethodGet, "/v1/organizations/current/credentials", nil, &resp); err != nil {
+	// As the Accounts page does: usage that is read only on request is read again when stale.
+	if err := subscriptionRequest(cmd, gf, http.MethodGet, "/v1/organizations/current/credentials?refresh_usage=true", nil, &resp); err != nil {
 		return nil, err
 	}
 	return personalSubscriptions(resp.Credentials), nil
@@ -584,5 +625,84 @@ func resolveCredentialValue(name string, explicit *string, useStdin bool) (strin
 			return "", errors.New("credential value must be non-empty")
 		}
 		return string(raw), nil
+	}
+}
+
+// requireHostedResets refuses the banked-reset commands on a gateway, which
+// does not serve them.
+func requireHostedResets() error {
+	gateway, err := currentGateway()
+	if err != nil {
+		return err
+	}
+	if gateway != nil {
+		return errors.New("banked resets are only available on the hosted Dari API; they are not supported with a gateway")
+	}
+	return nil
+}
+
+func newSubscriptionResetsCmd(gf *globalFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "resets <codex|claude-code|NAME>",
+		Short: "List a ChatGPT or Claude Code subscription's banked limit resets, the soonest to expire first",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireHostedResets(); err != nil {
+				return err
+			}
+			name, err := resolveSubscriptionName(cmd, gf, args[0])
+			if err != nil {
+				return err
+			}
+			var resp map[string]any
+			if err := subscriptionRequest(cmd, gf, http.MethodGet,
+				"/v1/organizations/current/credentials/"+url.PathEscape(name)+"/resets", nil, &resp); err != nil {
+				return err
+			}
+			return printJSON(resp)
+		},
+	}
+}
+
+func newSubscriptionUseResetCmd(gf *globalFlags) *cobra.Command {
+	return &cobra.Command{
+		Use:   "use-reset <codex|claude-code|NAME> [RESET_ID]",
+		Short: "Spend one banked limit reset now; without RESET_ID, the usable one that expires first",
+		Long: "Spend one banked limit reset now, clearing the subscription's usage limits. " +
+			"The result is the provider's answer: \"reset\" when it reset the plan; otherwise the reset is " +
+			"usually kept (for example \"nothing_to_reset\" when the plan is not at a limit).",
+		Args: cobra.RangeArgs(1, 2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := requireHostedResets(); err != nil {
+				return err
+			}
+			name, err := resolveSubscriptionName(cmd, gf, args[0])
+			if err != nil {
+				return err
+			}
+			resetID := ""
+			if len(args) == 2 {
+				resetID = strings.TrimSpace(args[1])
+			} else {
+				var listed struct {
+					Resets []subscriptionReset `json:"resets"`
+				}
+				if err := subscriptionRequest(cmd, gf, http.MethodGet,
+					"/v1/organizations/current/credentials/"+url.PathEscape(name)+"/resets", nil, &listed); err != nil {
+					return err
+				}
+				usable := slices.IndexFunc(listed.Resets, func(r subscriptionReset) bool { return r.Usable })
+				if usable < 0 {
+					return fmt.Errorf("%s has no banked reset it can use now", name)
+				}
+				resetID = listed.Resets[usable].ID
+			}
+			var resp map[string]any
+			if err := subscriptionRequest(cmd, gf, http.MethodPost,
+				"/v1/organizations/current/credentials/"+url.PathEscape(name)+"/resets/"+url.PathEscape(resetID)+"/use", nil, &resp); err != nil {
+				return err
+			}
+			return printJSON(resp)
+		},
 	}
 }

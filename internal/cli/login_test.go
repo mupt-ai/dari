@@ -12,7 +12,7 @@ import (
 const testLoginURL = "https://app.dari.dev/login?cli_callback=http%3A%2F%2F127.0.0.1%3A52141%2Fcallback&cli_code_challenge=challenge123&cli_state=state123"
 
 func TestLoginPageShowsTheBrowserURLAndPasteFallback(t *testing.T) {
-	page := strings.Join(loginPageLines(testLoginURL, true, "", nil, "⠸", 80), "\n")
+	page := stripANSI(strings.Join(loginPageLines(testLoginURL, true, "", nil, "⠸", 80), "\n"))
 	for _, want := range []string{
 		"Sign in to Dari",
 		"Opened your browser. Finish signing in there.",

@@ -7,9 +7,14 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 )
@@ -27,7 +32,9 @@ const (
 	ansiCyan  = "\033[38;5;117m"
 	ansiGreen = "\033[38;5;114m"
 	ansiGray  = "\033[38;5;245m"
-	ansiRed   = "\033[38;5;203m"
+	// ansiSilver is a lighter gray, for Dari's mark.
+	ansiSilver = "\033[38;5;250m"
+	ansiRed    = "\033[38;5;203m"
 )
 
 func agentInputIsTerminal(stream any) bool {
@@ -43,6 +50,24 @@ func agentStep(stderr io.Writer, text string) {
 	}
 	agentPrintln(stderr, text)
 }
+
+// dropAgentStep takes back the last summary line held for the normal screen
+// when it starts with prefix, for a step that was gone back over.
+func dropAgentStep(prefix string) {
+	for i := len(agentScreen.lines) - 1; i >= 0; i-- {
+		if strings.Contains(stripAgentANSI(agentScreen.lines[i]), prefix) {
+			agentScreen.lines = slices.Delete(agentScreen.lines, i, i+1)
+			return
+		}
+	}
+}
+
+// stripAgentANSI drops color codes from a line.
+func stripAgentANSI(line string) string {
+	return ansiSGR.ReplaceAllString(line, "")
+}
+
+var ansiSGR = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 // agentScreen keeps onboarding on the alternate screen from its first page to
 // its last once held, so answering one prompt never flashes the normal
@@ -75,12 +100,13 @@ func holdAgentScreen() {
 // releaseAgentScreen returns to the normal screen and prints the lines held
 // for it.
 func releaseAgentScreen() {
+	stopAgentSpinner()
 	if agentScreen.signals != nil {
 		signal.Stop(agentScreen.signals)
 		close(agentScreen.signals)
 	}
 	if agentScreen.active {
-		fmt.Fprint(agentScreen.stderr, "\033[?25h\033[?1049l")
+		fmt.Fprint(agentScreen.stderr, "\033[?25h\033[?1007l\033[?1049l")
 		for _, line := range agentScreen.lines {
 			fmt.Fprintln(agentScreen.stderr, line)
 		}
@@ -102,12 +128,169 @@ func agentPromptLine(prompt string) string {
 	return ansiCoral + "◆" + ansiReset + " " + ansiBold + prompt + ansiReset
 }
 
+// agentHintLine is a page's keys on one line, each key bright and what it
+// does gray.
 func agentHintLine(hints ...string) string {
-	return "  " + ansiGray + strings.Join(hints, " · ") + ansiReset
+	parts := make([]string, len(hints))
+	for i, hint := range hints {
+		key, what, ok := strings.Cut(hint, " ")
+		if ok && slices.Contains(agentHintKeys, key) {
+			parts[i] = ansiReset + ansiBold + key + ansiReset + ansiGray + " " + what
+		} else {
+			parts[i] = hint
+		}
+	}
+	return "  " + ansiGray + strings.Join(parts, " · ") + ansiReset
 }
+
+// agentHintKeys are the keys agentHintLine brightens.
+var agentHintKeys = []string{"↑↓", "←", "→", "enter", "esc", "space", "ctrl+c", "q", "a", "tab"}
 
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
+// agentSetupHeader puts the small dari.dev title on every page while an
+// agent is being set up.
+var agentSetupHeader bool
+
+// agentSpinnerFrames spin while something the user started is still running:
+// three dots turning in the middle two rows of the Braille cell, so the
+// spinner sits level with the text beside it. (The usual frames use the top
+// three rows and ride high.)
+var agentSpinnerFrames = []string{"⠴", "⠦", "⠖", "⠲"}
+
+// agentSpinner is the running spinner; agentSpinnerMu guards it, since an
+// interrupt can stop it from the signal goroutine.
+var (
+	agentSpinnerMu sync.Mutex
+	agentSpinner   struct{ stop, done chan struct{} }
+)
+
+// startAgentSpinner draws a spinner frame through draw every 100ms until
+// stopAgentSpinner, starting only once the wait is long enough to notice.
+func startAgentSpinner(draw func(frame string)) {
+	stopAgentSpinner()
+	stop, done := make(chan struct{}), make(chan struct{})
+	agentSpinnerMu.Lock()
+	agentSpinner.stop, agentSpinner.done = stop, done
+	agentSpinnerMu.Unlock()
+	go func() {
+		defer close(done)
+		select {
+		case <-stop:
+			return
+		case <-time.After(150 * time.Millisecond):
+		}
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for i := 0; ; i++ {
+			draw(agentSpinnerFrames[i%len(agentSpinnerFrames)])
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+}
+
+// stopAgentSpinner stops the spinner and waits for its last frame, so the
+// next page draws over it.
+func stopAgentSpinner() {
+	agentSpinnerMu.Lock()
+	stop, done := agentSpinner.stop, agentSpinner.done
+	agentSpinner.stop, agentSpinner.done = nil, nil
+	agentSpinnerMu.Unlock()
+	if stop == nil {
+		return
+	}
+	close(stop)
+	<-done
+}
+
+// showAgentLoading draws a spinner and what is loading on the held screen
+// before a command's first page, which then draws over it.
+func showAgentLoading(stderr io.Writer, text string) {
+	if !agentScreen.held || agentScreen.active {
+		return
+	}
+	fmt.Fprint(stderr, "\033[?1049h\033[?1007h\033[?25l")
+	agentScreen.active, agentScreen.stderr = true, stderr
+	startAgentSpinner(func(frame string) {
+		fmt.Fprint(stderr, "\033[H\033[K\r\n"+agentPageMargin+ansiCoral+frame+ansiReset+" "+ansiGray+text+ansiReset+"\033[K\r\n\033[J")
+	})
+}
+
+// agentBox draws rows in a rounded box of the given inner width, or the
+// widest row's when width is 0, its edge in the given color.
+func agentBox(rows []string, width int, edge string) []string {
+	return agentBoxWith(rows, width, func(int, int, int, int) string { return edge })
+}
+
+// agentBoxWith is agentBox with each edge cell's color from color(x, y, w, h),
+// for a box w cells wide and h tall.
+func agentBoxWith(rows []string, width int, color func(x, y, w, h int) string) []string {
+	if width <= 0 {
+		for _, row := range rows {
+			width = max(width, ansiVisibleWidth(row))
+		}
+	}
+	// A row too long for the box continues on the next lines, broken where
+	// its columns are; only a column too long by itself ends in an ellipsis.
+	wrapped := []string{}
+	for _, row := range rows {
+		wrapped = append(wrapped, wrapColumns(row, width)...)
+	}
+	w, h := width+4, len(wrapped)+2
+	rule := func(y int, left, right string) string {
+		var b strings.Builder
+		b.WriteString(color(0, y, w, h) + left)
+		for x := 1; x < w-1; x++ {
+			b.WriteString(color(x, y, w, h) + "─")
+		}
+		b.WriteString(color(w-1, y, w, h) + right + ansiReset)
+		return b.String()
+	}
+	lines := []string{rule(0, "╭", "╮")}
+	for i, row := range wrapped {
+		lines = append(lines, color(0, i+1, w, h)+"│"+ansiReset+" "+row+strings.Repeat(" ", max(0, width-ansiVisibleWidth(row)))+" "+color(w-1, i+1, w, h)+"│"+ansiReset)
+	}
+	return append(lines, rule(h-1, "╰", "╯"))
+}
+
+// wrapColumns breaks a row that is wider than width at its column gaps (two
+// or more spaces), each later line indented like the row.
+func wrapColumns(row string, width int) []string {
+	if ansiVisibleWidth(row) <= width {
+		return []string{row}
+	}
+	body := strings.TrimLeft(row, " ")
+	indent := row[:len(row)-len(body)]
+	clip := func(text string) string {
+		if ansiVisibleWidth(text) <= width {
+			return text
+		}
+		return clipANSI(text, max(width-1, 0)) + ansiReset + ansiGray + "…" + ansiReset
+	}
+	lines, line := []string{}, ""
+	for _, column := range columnGaps.Split(body, -1) {
+		if column == "" || ansiVisibleWidth(column) == 0 && line != "" {
+			line += column
+			continue
+		}
+		if line == "" {
+			line = indent + column
+		} else if ansiVisibleWidth(line+"  "+column) <= width {
+			line += "  " + column
+		} else {
+			lines = append(lines, clip(line))
+			line = indent + column
+		}
+	}
+	return append(lines, clip(line))
+}
+
+var columnGaps = regexp.MustCompile(` {2,}`)
+
 func agentCursor(active bool) string {
 	if active {
 		return ansiCoral + "❯ " + ansiReset
@@ -119,8 +302,21 @@ type agentTUISession struct {
 	file     *os.File
 	stderr   io.Writer
 	oldState *term.State
-	// width and height are what remains inside the page margin.
-	width, height int
+	// The page's size: what remains inside the page margins, and the rows
+	// under the title. The resize goroutine sets them, so they are atomic.
+	cells, rowCount atomic.Int32
+	// titled puts the small dari.dev title on this session's pages, as a
+	// command's own page (sign-in) has it.
+	titled bool
+	// The last page drawn, drawn again when the terminal is resized.
+	mu       sync.Mutex
+	subtitle string
+	build    func(width int) []string
+	resized  chan os.Signal
+	// resizeStop ends the resize goroutine; resizeGone is closed when it has.
+	resizeStop, resizeGone chan struct{}
+	// panel draws the title beside the page, on a command's first page only.
+	panel bool
 }
 
 // agentPageMargin indents every page, under a header, from the terminal's
@@ -128,6 +324,8 @@ type agentTUISession struct {
 const agentPageMargin = "  "
 
 func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, error) {
+	// A new page ends the last one's wait.
+	stopAgentSpinner()
 	file, ok := stdin.(*os.File)
 	if !ok {
 		return nil, errors.New("interactive onboarding requires a terminal")
@@ -140,19 +338,64 @@ func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, 
 	discardAgentInput(fd)
 	session := &agentTUISession{file: file, stderr: stderr, oldState: oldState}
 	if w, h, err := term.GetSize(fd); err == nil {
-		session.width, session.height = w-len(agentPageMargin), h-6
+		session.setSize(w, h)
 	}
 	if !agentScreen.active {
-		fmt.Fprint(stderr, "\033[?1049h")
+		// The alternate screen, with the mouse wheel sent as arrow keys so it
+		// moves the cursor, which scrolls a tall page.
+		fmt.Fprint(stderr, "\033[?1049h\033[?1007h")
 		agentScreen.active, agentScreen.stderr = true, stderr
 	}
 	fmt.Fprint(stderr, "\033[?25l")
+	// A resized terminal gets the page laid out again for its new size. The
+	// size can settle a moment after the signal, so it is read again briefly.
+	session.resized = make(chan os.Signal, 1)
+	session.resizeStop, session.resizeGone = make(chan struct{}), make(chan struct{})
+	signal.Notify(session.resized, syscall.SIGWINCH)
+	go func() {
+		defer close(session.resizeGone)
+		for {
+			select {
+			case <-session.resizeStop:
+				return
+			case <-session.resized:
+			}
+			for range 6 {
+				select {
+				case <-session.resizeStop:
+					return
+				case <-time.After(50 * time.Millisecond):
+				}
+				if w, h, err := term.GetSize(fd); err == nil {
+					if session.cols() != w-2*len(agentPageMargin) || session.rows() != h-6 {
+						session.setSize(w, h)
+						session.draw()
+					}
+				}
+			}
+		}
+	}()
 	return session, nil
 }
+
+// setSize records the terminal's size as the page's.
+func (session *agentTUISession) setSize(w, h int) {
+	session.cells.Store(int32(w - 2*len(agentPageMargin)))
+	session.rowCount.Store(int32(h - 6))
+}
+
+// cols and rows are the page's size.
+func (session *agentTUISession) cols() int { return int(session.cells.Load()) }
+func (session *agentTUISession) rows() int { return int(session.rowCount.Load()) }
 
 // Close returns to the normal screen so the caller can print its summary,
 // unless onboarding holds the screen for its next page.
 func (session *agentTUISession) Close() {
+	// Stop the resize goroutine first, so nothing draws after the screen is
+	// given back.
+	signal.Stop(session.resized)
+	close(session.resizeStop)
+	<-session.resizeGone
 	_ = term.Restore(int(session.file.Fd()), session.oldState)
 	if !agentScreen.held {
 		releaseAgentScreen()
@@ -186,21 +429,250 @@ func pageHeader(width int, subtitle string) []string {
 // render draws a page from the top of the screen. Raw mode disables output
 // post-processing, so lines end in \r\n.
 func (session *agentTUISession) render(lines []string) {
-	session.renderPage(agentPageHeader(session.width), lines)
+	session.renderPage("Setting up your coding agent", lines)
 }
 
-func (session *agentTUISession) renderPage(header, lines []string) {
+// renderPage draws a page under the dari.dev title and its subtitle.
+func (session *agentTUISession) renderPage(subtitle string, lines []string) {
+	session.renderLayout(subtitle, func(int) []string { return lines })
+}
+
+// renderLayout draws a page that lays itself out for a width, again whenever
+// the terminal is resized.
+func (session *agentTUISession) renderLayout(subtitle string, build func(width int) []string) {
+	session.mu.Lock()
+	session.subtitle, session.build = subtitle, build
+	session.mu.Unlock()
+	session.draw()
+}
+
+// sidePanelMinWidth is the narrowest title panel worth drawing beside a page.
+const sidePanelMinWidth = 36
+
+// draw lays out the last page for the terminal's size: the title in a panel
+// beside the page when there is room for one, and above it otherwise. No
+// line runs past the terminal's edge.
+func (session *agentTUISession) draw() {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if session.build == nil {
+		return
+	}
+	lines := session.build(session.cols())
+	pageWidth := 0
+	for _, line := range lines {
+		pageWidth = max(pageWidth, ansiVisibleWidth(line))
+	}
+	// A page taller than the terminal scrolls by itself; the title beside or
+	// above it stays put. Unknown rows (the size can't be read): nothing scrolls.
+	rows := 0
+	if session.rows() > 0 {
+		rows = session.rows() + 6 - 2
+	}
+	fit := func(lines []string, rows int) []string {
+		if rows <= 0 {
+			return lines
+		}
+		return scrollToFocus(lines, rows)
+	}
+	const gap = 4
+	var page []string
+	if panel := min(session.cols()-pageWidth-gap-1, 72); session.panel && panel >= sidePanelMinWidth {
+		lines = fit(lines, rows)
+		// Taller than the page when the terminal has room, so the mark fits.
+		height := max(len(lines), len(dariLogo)+7)
+		if rows > 0 {
+			height = max(len(lines), min(height, rows))
+		}
+		page = besidePanel(lines, pageWidth, gap, titlePanel(panel, height, session.subtitle))
+	} else if header := pageHeader(session.cols(), session.subtitle); session.panel && (rows <= 0 || rows-len(header) >= 10) {
+		page = append(header, fit(lines, rows-len(header))...)
+	} else if header := pageHeader(session.cols(), session.subtitle); (agentSetupHeader || session.titled) && (rows <= 0 || rows-len(header) >= len(lines)) {
+		// Setup's pages keep the small title when the whole page fits under it.
+		page = append(header, fit(lines, rows-len(header))...)
+	} else {
+		// Pages past the first carry no title, nor does a first page with
+		// too few rows to spare for one.
+		page = fit(lines, rows)
+	}
 	var frame strings.Builder
 	frame.WriteString("\033[H\033[K\r\n")
-	for _, line := range append(header, lines...) {
-		frame.WriteString(agentPageMargin + line + ansiReset + "\033[K\r\n")
+	for _, line := range page {
+		frame.WriteString(agentPageMargin + clipANSI(line, session.cols()) + ansiReset + "\033[K\r\n")
 	}
 	frame.WriteString("\033[J")
 	_, _ = session.stderr.Write([]byte(frame.String()))
 }
 
+// agentFocusMark marks the lines scrolling keeps in view: the option under
+// the cursor. It is an escape sequence with no effect on what shows.
+const agentFocusMark = "\033[28m"
+
+// scrollToFocus fits a page taller than rows by showing the part around the
+// marked lines, keeping its last line (the key hints) and saying what is
+// above and below.
+func scrollToFocus(page []string, rows int) []string {
+	if rows < 4 || len(page) <= rows {
+		return page
+	}
+	// The keys at the bottom stay put: the lines after the last blank line,
+	// when there are only a few.
+	split := len(page) - 1
+	for i := len(page) - 1; i > 0 && i >= len(page)-6; i-- {
+		if strings.TrimSpace(stripAgentANSI(page[i])) == "" {
+			split = i + 1
+			break
+		}
+	}
+	body, keys := page[:split], page[split:]
+	// A line above and below say whether more is there.
+	window := rows - 2 - len(keys)
+	if window < 1 {
+		return page[len(page)-rows:]
+	}
+	first, last := -1, -1
+	for i, line := range body {
+		if strings.Contains(line, agentFocusMark) {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	start := 0
+	if first >= 0 {
+		// The focus and a line of what follows it, starting no lower than
+		// the focus itself.
+		start = min(max(last+2-window, 0), first)
+	}
+	start = min(start, len(body)-window)
+	above, below := "", ""
+	if start > 0 {
+		above = ansiGray + "  ↑ more" + ansiReset
+	}
+	if start+window < len(body) {
+		below = ansiGray + "  ↓ more" + ansiReset
+	}
+	shown := append([]string{above}, body[start:start+window]...)
+	return append(append(shown, below), keys...)
+}
+
+// titlePanel is a rounded panel of the given size with the dari.dev title and
+// subtitle at its center, under Dari's mark when there is room for it.
+func titlePanel(width, height int, subtitle string) []string {
+	inner := width - 2
+	title := ansiCoral + "⑂" + ansiReset + " " + ansiBold + "dari.dev" + ansiReset
+	content := []string{title, ansiGray + subtitle + ansiReset}
+	// The largest mark the panel has room for.
+	for _, logo := range [][]string{dariLogo, dariLogoSmall} {
+		logoWidth := 0
+		for _, line := range logo {
+			logoWidth = max(logoWidth, len([]rune(line)))
+		}
+		if inner < logoWidth+2 || height-2 < len(logo)+5 {
+			continue
+		}
+		content = []string{}
+		for _, line := range logo {
+			content = append(content, ansiSilver+padRight(line, logoWidth)+ansiReset)
+		}
+		content = append(content, "", title, ansiGray+subtitle+ansiReset)
+		break
+	}
+	center := func(text string) string {
+		pad := max(inner-ansiVisibleWidth(text), 0)
+		return ansiGray + "│" + ansiReset + strings.Repeat(" ", pad/2) + text + strings.Repeat(" ", pad-pad/2) + ansiGray + "│" + ansiReset
+	}
+	lines := []string{ansiGray + "╭" + strings.Repeat("─", inner) + "╮" + ansiReset}
+	top := (height - 2 - len(content)) / 2
+	for row := 0; row < height-2; row++ {
+		if i := row - top; i >= 0 && i < len(content) {
+			lines = append(lines, center(content[i]))
+		} else {
+			lines = append(lines, center(""))
+		}
+	}
+	return append(lines, ansiGray+"╰"+strings.Repeat("─", inner)+"╯"+ansiReset)
+}
+
+// besidePanel sets the page's lines in a column of pageWidth and the panel
+// to their right.
+func besidePanel(lines []string, pageWidth, gap int, panel []string) []string {
+	out := []string{}
+	for i := 0; i < max(len(lines), len(panel)); i++ {
+		left := ""
+		if i < len(lines) {
+			left = lines[i]
+		}
+		right := ""
+		if i < len(panel) {
+			right = panel[i]
+		}
+		out = append(out, left+ansiReset+strings.Repeat(" ", pageWidth-ansiVisibleWidth(left)+gap)+right)
+	}
+	return out
+}
+
+// clipANSI cuts a styled line to width visible cells, keeping its escape
+// sequences.
+func clipANSI(line string, width int) string {
+	if width <= 0 || ansiVisibleWidth(line) <= width {
+		return line
+	}
+	var out strings.Builder
+	visible := 0
+	for i := 0; i < len(line); {
+		if line[i] == '\033' {
+			j := i + 1
+			if j < len(line) && line[j] == ']' {
+				// OSC, through its ST.
+				for j < len(line) && !(line[j] == '\\' && line[j-1] == '\033') {
+					j++
+				}
+			} else {
+				for j < len(line) && !((line[j] >= 'A' && line[j] <= 'Z') || (line[j] >= 'a' && line[j] <= 'z')) {
+					j++
+				}
+			}
+			j = min(j+1, len(line))
+			out.WriteString(line[i:j])
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if visible >= width {
+			i += size
+			continue
+		}
+		out.WriteRune(r)
+		visible++
+		i += size
+	}
+	return out.String()
+}
+
 // clipText shortens plain text to width cells, marking the cut with an
 // ellipsis.
+// wrapWords breaks text into lines of at most width cells, at its spaces.
+func wrapWords(text string, width int) []string {
+	lines, line := []string{}, ""
+	for _, word := range strings.Fields(text) {
+		if line != "" && len([]rune(line))+1+len([]rune(word)) > width {
+			lines = append(lines, line)
+			line = word
+			continue
+		}
+		if line != "" {
+			line += " "
+		}
+		line += word
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func clipText(text string, width int) string {
 	if width < 1 {
 		return ""
@@ -281,12 +753,46 @@ type agentChoiceOption struct {
 	// done replaces the prompt once this option is chosen; empty prints
 	// nothing.
 	done string
+	// heading starts a group of options with a bold title; gap starts one
+	// with only a blank line.
+	heading string
+	gap     bool
+	// details are lines shown under the option, such as a plan's usage.
+	details []string
+	// boxed draws a rounded box around the option and its details.
+	boxed bool
+	// busy is a spinner frame shown in place of the number while the
+	// option's action runs.
+	busy string
 }
 
 // runAgentChoiceTUI asks one question, with optional detail lines between the
 // prompt and its options. Arrow keys and Enter choose, as does typing an
 // option's number.
+// runAgentChoiceTUI is a page nested in another: esc goes back to it, which
+// the caller sees as errAgentChoiceCanceled.
 func runAgentChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption) (int, error) {
+	return runAgentChoicePage(stdin, stderr, prompt, nil, details, options, "esc back")
+}
+
+// runAgentRootChoiceTUI is a command's first page, which esc closes.
+func runAgentRootChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption) (int, error) {
+	return runAgentChoicePage(stdin, stderr, prompt, nil, details, options, "esc close")
+}
+
+// runAgentChoicePageClosing is a setup step that esc leaves setup from,
+// labeled so.
+func runAgentChoicePageClosing(stdin io.Reader, stderr io.Writer, prompt string, details []string, options []agentChoiceOption) (int, error) {
+	return runAgentChoicePage(stdin, stderr, prompt, nil, details, options, "esc close")
+}
+
+// runAgentSummaryChoiceTUI is a nested page that opens with summary rows in a
+// box sized to the terminal.
+func runAgentSummaryChoiceTUI(stdin io.Reader, stderr io.Writer, summary, details []string, options []agentChoiceOption) (int, error) {
+	return runAgentChoicePage(stdin, stderr, "", summary, details, options, "esc back")
+}
+
+func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, summary, details []string, options []agentChoiceOption, escHint string) (int, error) {
 	if len(options) == 0 {
 		return 0, errors.New("interactive selection has no options")
 	}
@@ -297,20 +803,37 @@ func runAgentChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details
 	choice, err := func() (int, error) {
 		defer session.Close()
 		cursor := 0
+		wrap := escHint != "esc close"
 		buf := make([]byte, 256)
 		for {
-			session.render(agentChoiceLines(prompt, details, options, cursor))
+			at := cursor
+			session.panel = escHint == "esc close"
+			session.renderLayout("Setting up your coding agent", func(width int) []string {
+				return agentChoiceLines(prompt, summary, details, options, at, escHint, width)
+			})
 			n, readErr := session.file.Read(buf)
 			for _, key := range parseAgentPickerKeys(buf[:n]) {
 				switch key {
+				// A command's first page stops at its ends: it is the tall one,
+				// and jumping from one end to the other is hard to follow.
 				case "up", "k":
-					cursor = (cursor - 1 + len(options)) % len(options)
+					if cursor > 0 {
+						cursor--
+					} else if wrap {
+						cursor = len(options) - 1
+					}
 				case "down", "j":
-					cursor = (cursor + 1) % len(options)
+					if cursor < len(options)-1 {
+						cursor++
+					} else if wrap {
+						cursor = 0
+					}
 				case "enter":
 					return cursor, nil
-				case "quit", "esc":
-					return 0, errors.New("agent onboarding canceled")
+				case "esc":
+					return 0, errAgentChoiceCanceled
+				case "quit":
+					return 0, errAgentQuit
 				default:
 					if index := int(key[0] - '1'); len(key) == 1 && index >= 0 && index < len(options) {
 						return index, nil
@@ -325,26 +848,145 @@ func runAgentChoiceTUI(stdin io.Reader, stderr io.Writer, prompt string, details
 	if err == nil && options[choice].done != "" {
 		agentStep(stderr, options[choice].done)
 	}
+	// While what was chosen runs, a spinner stands in for its number, until
+	// the next page draws or the screen is given back.
+	if err == nil && agentScreen.held {
+		startAgentSpinner(func(frame string) {
+			session.renderLayout("Setting up your coding agent", func(width int) []string {
+				busy := slices.Clone(options)
+				busy[choice].busy = frame
+				return agentChoiceLines(prompt, summary, details, busy, choice, escHint, width)
+			})
+		})
+	}
 	return choice, err
 }
 
-func agentChoiceLines(prompt string, details []string, options []agentChoiceOption, cursor int) []string {
-	lines := append([]string{agentPromptLine(prompt)}, details...)
+func agentChoiceLines(prompt string, summary, details []string, options []agentChoiceOption, cursor int, escHint string, width int) []string {
+	// A page whose options are grouped under headings may have no title.
+	lines := []string{}
+	if prompt != "" {
+		lines = append(lines, agentPromptLine(prompt))
+		// A blank line between a title and the options right under it.
+		if len(details) == 0 && len(summary) == 0 && len(options) > 0 && options[0].heading == "" {
+			lines = append(lines, "")
+		}
+	}
+	// Boxes shrink to fit a narrow terminal: 4 cells go to their edges.
+	fit := func(inner int) int {
+		if width > 0 {
+			return max(min(inner, width-4), 8)
+		}
+		return inner
+	}
+	if len(summary) > 0 {
+		inner := 0
+		for _, row := range summary {
+			inner = max(inner, ansiVisibleWidth(row))
+		}
+		lines = append(lines, agentBox(slices.Clone(summary), fit(inner), ansiGray)...)
+	}
+	lines = append(lines, details...)
+	headings := []int{}
+	// Boxed options share one width, the widest of them.
+	boxWidth := 0
 	for index, option := range options {
-		label := fmt.Sprintf("%d. %s", index+1, option.label)
+		if option.boxed {
+			number := len(fmt.Sprintf("[%d] ", index+1))
+			boxWidth = max(boxWidth, number+ansiVisibleWidth(option.label))
+			for _, detail := range option.details {
+				boxWidth = max(boxWidth, number+ansiVisibleWidth(strings.TrimPrefix(detail, "  ")))
+			}
+		}
+	}
+	for index, option := range options {
+		if option.heading != "" {
+			if len(lines) > 0 {
+				lines = append(lines, "")
+			}
+			// The rule is drawn once the page's width is known.
+			headings = append(headings, len(lines))
+			lines = append(lines, option.heading, "")
+		} else if option.gap {
+			lines = append(lines, "")
+		}
+		// The number under the cursor takes the cursor's color.
+		number := fmt.Sprintf("[%d]", index+1)
+		numberWidth := len(number)
+		if option.busy != "" {
+			number = strings.Repeat(" ", (numberWidth-1)/2) + option.busy + strings.Repeat(" ", numberWidth/2)
+		}
+		label := number + " " + option.label
 		if index == cursor {
-			label = ansiBold + label + ansiReset
+			label = ansiCoral + number + ansiReset + " " + ansiBold + option.label + ansiReset
+		}
+		if option.boxed {
+			// The box holds its number, in line with the other numbers; the box
+			// under the cursor takes the cursor's color in place of the ❯.
+			edge := ansiGray
+			if index == cursor {
+				edge = ansiCoral
+			}
+			indent := strings.Repeat(" ", numberWidth+1)
+			// What wraps of the first row continues under the label, not the number.
+			first := wrapColumns(label, fit(boxWidth))
+			rows := []string{first[0]}
+			for _, more := range first[1:] {
+				rows = append(rows, indent+more)
+			}
+			for _, detail := range option.details {
+				rows = append(rows, indent+strings.TrimPrefix(detail, "  "))
+			}
+			box := agentBox(rows, fit(boxWidth), edge)
+			if index == cursor {
+				// The whole box is what scrolling keeps in view.
+				box[0] += agentFocusMark
+				box[len(box)-1] += agentFocusMark
+			}
+			lines = append(lines, box...)
+			continue
 		}
 		line := agentCursor(index == cursor) + label
+		if index == cursor {
+			line += agentFocusMark
+		}
 		if option.note != "" {
 			line += "  " + ansiGreen + option.note + ansiReset
 		}
 		lines = append(lines, line)
 		if option.description != "" {
-			lines = append(lines, "     "+ansiGray+option.description+ansiReset)
+			// The description starts under the label, past the cursor and the
+			// number, and wraps within the page.
+			indent := strings.Repeat(" ", 2+numberWidth+1)
+			room := 1 << 20
+			if width > 0 {
+				room = max(width-len(indent), 20)
+			}
+			for _, text := range wrapWords(option.description, room) {
+				lines = append(lines, indent+ansiGray+text+ansiReset)
+			}
+			// Options with a description are set apart from the next.
+			lines = append(lines, "")
+		}
+		for _, detail := range option.details {
+			lines = append(lines, "    "+detail)
 		}
 	}
-	return append(lines, agentHintLine("↑↓ move", "enter confirm", "esc cancel"))
+	// Each heading's rule runs to the right edge of the widest line.
+	ruleEnd := 0
+	for i, line := range lines {
+		if !slices.Contains(headings, i) {
+			ruleEnd = max(ruleEnd, ansiVisibleWidth(line))
+		}
+	}
+	if width > 0 {
+		ruleEnd = min(ruleEnd, width)
+	}
+	for _, i := range headings {
+		title := agentPromptLine(lines[i])
+		lines[i] = title + " " + ansiGray + strings.Repeat("─", max(3, ruleEnd-ansiVisibleWidth(title)-1)) + ansiReset
+	}
+	return append(lines, "", agentHintLine("↑↓ move", "enter confirm", escHint))
 }
 
 func agentOpenedLine(provider agentSubscriptionProvider, opened bool) string {
@@ -396,7 +1038,7 @@ func agentOAuthLines(provider agentSubscriptionProvider, authorizationURL string
 		"",
 		"  Paste the code "+provider.vendor+" shows after you approve:",
 		agentCursor(true)+inputDisplay(value, width, "code#state"),
-		agentHintLine("enter submit", "ctrl+c cancel"),
+		agentHintLine("enter submit", "esc back"),
 	)
 }
 
@@ -416,8 +1058,11 @@ func runAgentCodeInputTUI(
 	input := agentCodeInputState{}
 	buf := make([]byte, 256)
 	for {
-		session.render(agentOAuthLines(provider, authorizationURL, opened, input.value, session.width))
+		session.render(agentOAuthLines(provider, authorizationURL, opened, input.value, session.cols()))
 		n, readErr := session.file.Read(buf)
+		if n == 1 && buf[0] == 0x1b {
+			return "", errAgentChoiceCanceled
+		}
 		submitted, canceled := input.update(buf[:n])
 		if canceled {
 			return "", fmt.Errorf("%s authorization canceled", provider.name)
@@ -448,11 +1093,11 @@ func runAgentDeviceCodeTUI(
 	}
 	defer session.Close()
 
-	status := agentHintLine("enter after approving", "ctrl+c cancel")
+	status := agentHintLine("enter after approving", "esc back")
 	buf := make([]byte, 256)
 	for {
 		lines := []string{agentPromptLine("Connect " + provider.name), agentOpenedLine(provider, opened)}
-		lines = append(lines, agentURLLines(authorizationURL, session.width)...)
+		lines = append(lines, agentURLLines(authorizationURL, session.cols())...)
 		session.render(append(lines,
 			"",
 			"  Enter this code at "+provider.vendor+":  "+ansiCoral+ansiBold+userCode+ansiReset,
@@ -461,6 +1106,8 @@ func runAgentDeviceCodeTUI(
 		n, readErr := session.file.Read(buf)
 		for _, key := range parseAgentPickerKeys(buf[:n]) {
 			switch key {
+			case "esc":
+				return errAgentChoiceCanceled
 			case "quit":
 				return fmt.Errorf("%s authorization canceled", provider.name)
 			case "enter":
@@ -468,7 +1115,7 @@ func runAgentDeviceCodeTUI(
 				if !pending {
 					return err
 				}
-				status = agentHintLine("Still waiting for approval. Press enter to check again", "ctrl+c cancel")
+				status = agentHintLine("Still waiting for approval. Press enter to check again", "esc back")
 			}
 		}
 		if readErr != nil {
@@ -496,20 +1143,23 @@ func runAgentTextInputTUI(stdin io.Reader, stderr io.Writer, title string, detai
 	input := agentCodeInputState{}
 	status := ""
 	buf := make([]byte, 4096)
-	for {
+	page := func(cursor string) []string {
 		lines := append([]string{agentPromptLine(title)}, details...)
 		if len(details) > 0 {
 			lines = append(lines, "")
 		}
-		display := secretDisplay(input.value, session.width)
+		display := secretDisplay(input.value, session.cols())
 		if placeholder != "" {
-			display = inputDisplay(input.value, session.width, placeholder)
+			display = inputDisplay(input.value, session.cols(), placeholder)
 		}
-		lines = append(lines, agentCursor(true)+display)
+		lines = append(lines, cursor+display)
 		if status != "" {
 			lines = append(lines, "  "+ansiRed+status+ansiReset)
 		}
-		session.render(append(lines, agentHintLine("enter save", "esc back")))
+		return append(lines, "", agentHintLine("enter save", "esc back"))
+	}
+	for {
+		session.render(page(agentCursor(true)))
 		n, readErr := session.file.Read(buf)
 		// A lone escape byte is the esc key; arrows and other keys arrive as
 		// longer sequences in one read.
@@ -526,7 +1176,12 @@ func runAgentTextInputTUI(stdin io.Reader, stderr io.Writer, title string, detai
 				status = "Enter a value, or press esc to go back."
 				continue
 			}
-			if err := submit(value); err != nil {
+			// A spinner stands in for the cursor while the value is saved.
+			status = ""
+			startAgentSpinner(func(frame string) { session.render(page(ansiCoral + frame + " " + ansiReset)) })
+			err := submit(value)
+			stopAgentSpinner()
+			if err != nil {
 				status = err.Error()
 				continue
 			}
@@ -613,6 +1268,13 @@ func inputDisplay(input string, width int, placeholder string) string {
 // for the Autorouting plan instead of choosing.
 var errAgentWantsAutorouting = errors.New("autorouting requested")
 
+// errAgentChoiceCanceled is Esc on a choice; a page nested in another treats
+// it as going back.
+var errAgentChoiceCanceled = errors.New("agent onboarding canceled")
+
+// errAgentQuit is q or ctrl+c on a choice, which leaves the whole command.
+var errAgentQuit = errors.New("agent onboarding canceled")
+
 func runAgentPicker(
 	stdin io.Reader,
 	stderr io.Writer,
@@ -637,15 +1299,18 @@ func runAgentPicker(
 		defer session.Close()
 		buf := make([]byte, 256)
 		for {
-			session.render(agentPickerLines(title, note, p, agentPickerVisibleRows(session.height)))
+			session.render(agentPickerLines(title, note, p))
 			n, readErr := session.file.Read(buf)
 			for _, key := range parseAgentPickerKeys(buf[:n]) {
-				if key == "a" && offerAutorouting && !p.editing {
+				if key == "a" && offerAutorouting {
 					return nil, errAgentWantsAutorouting
 				}
 				done, canceled := p.handleKey(key)
+				if canceled && p.quit {
+					return nil, errAgentQuit
+				}
 				if canceled {
-					return nil, errors.New("model selection canceled")
+					return nil, errAgentChoiceCanceled
 				}
 				if done {
 					return p.choices(), nil
@@ -666,13 +1331,6 @@ func runAgentPicker(
 }
 
 // agentPickerVisibleRows leaves room for the prompt, hints, and a level list.
-func agentPickerVisibleRows(height int) int {
-	if height <= 0 {
-		return 12
-	}
-	return max(height-12, 5)
-}
-
 func agentPickerSummary(p *agentPickerState) string {
 	names := []string{}
 	for _, row := range p.rows {
@@ -686,80 +1344,171 @@ func agentPickerSummary(p *agentPickerState) string {
 	return strings.Join(names, ", ")
 }
 
-func agentPickerLines(title string, note []string, p *agentPickerState, visible int) []string {
+// agentProviderNames name the providers the model picker groups by.
+var agentProviderNames = map[string]string{
+	"anthropic": "Anthropic", "openai": "OpenAI", "google": "Google", "xai": "xAI", "meta": "Meta",
+	"deepseek": "DeepSeek", "deepseek-ai": "DeepSeek", "fireworks": "Fireworks", "mistral": "Mistral", "moonshotai": "Moonshot AI",
+	"zai-org": "Z.ai", "qwen": "Qwen", "opencode": "OpenCode",
+}
+
+// agentPickerLines draws the model picker's page: the models and their
+// thinking levels, or how each chosen model is paid for.
+func agentPickerLines(title string, note []string, p *agentPickerState) []string {
+	if p.paying {
+		return agentPayingLines(p)
+	}
 	lines := []string{agentPromptLine(title)}
+	// The note starts where the title's text does, past the ◆.
 	for _, line := range note {
 		lines = append(lines, "  "+ansiGray+line+ansiReset)
 	}
-	if p.cursor < p.offset {
-		p.offset = p.cursor
-	}
-	if p.cursor >= p.offset+visible {
-		p.offset = p.cursor - visible + 1
-	}
-	end := min(p.offset+visible, len(p.rows))
-	nameWidth, levelWidth := 0, 0
+	items := p.items()
+	focus := items[min(max(p.cursor, 0), len(items)-1)]
+	// A recommended model's circle is green; its thinking levels come last
+	// on its line, so their length shifts nothing.
+	nameWidth := 0
 	for _, row := range p.rows {
-		nameWidth = max(nameWidth, len(row.model.DisplayName))
-		levelWidth = max(levelWidth, len(cmp.Or(strings.Join(row.checkedLevels(), ", "), "default")))
+		nameWidth = max(nameWidth, len([]rune(row.model.DisplayName)))
 	}
-	if p.offset > 0 {
-		lines = append(lines, "  "+ansiGray+fmt.Sprintf("↑ %d more", p.offset)+ansiReset)
-	}
-	for i := p.offset; i < end; i++ {
-		row := p.rows[i]
-		active := i == p.cursor && !p.editing
-		name := fmt.Sprintf("%-*s", nameWidth, row.model.DisplayName)
+	// Where the thinking levels start, which an open model's choices line up
+	// under.
+	levelColumn := 2 + 2 + nameWidth + 3
+	provider := ""
+	for i, row := range p.rows {
+		if row.model.Provider != provider {
+			provider = row.model.Provider
+			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset, "")
+		}
+		focused := item(focus, "model", i, 0)
+		name := padRight(row.model.DisplayName, nameWidth)
 		switch {
-		case active:
+		case focused:
 			name = ansiBold + name + ansiReset
 		case !row.selected:
 			name = ansiGray + name + ansiReset
 		}
-		levels := strings.Join(row.checkedLevels(), ", ")
-		if levels == "" {
-			levels = "default"
-		}
-		levels = fmt.Sprintf("%-*s", levelWidth, levels)
-		source := ""
-		if len(row.sources) > 0 {
-			source = "  " + row.sources[row.source].label
-			if !row.selected {
-				source = "  " + ansiGray + row.sources[row.source].label + ansiReset
+		open := " "
+		if len(row.levelOpts) > 1 {
+			open = ansiGray + "▸" + ansiReset
+			if i == p.open {
+				open = ansiGray + "▾" + ansiReset
 			}
 		}
-		note := ""
-		if row.usesRecommended() {
-			note = "  " + ansiGreen + "recommended" + ansiReset
+		levels := cmp.Or(strings.Join(row.checkedLevels(), ", "), "default")
+		line := agentCursor(focused) + agentPickerCircle(row.selected, len(row.recommended) > 0, !row.usesRecommended()) + " " + name + " " + open + " " + ansiCyan + levels + ansiReset
+		lines = append(lines, agentFocused(line, focused))
+		if i != p.open {
+			continue
 		}
-		lines = append(lines, agentCursor(active)+agentCheckbox(row.selected)+" "+name+"  "+ansiCyan+levels+ansiReset+source+note)
-		if p.editing && i == p.cursor {
-			for j, level := range row.levelOpts {
-				rec := ""
-				if row.recommended[level] {
-					rec = "  " + ansiGreen + "recommended" + ansiReset
-				}
-				label := level
-				if j == p.levelCursor {
-					label = ansiBold + label + ansiReset
-				}
-				lines = append(lines, "    "+agentCursor(j == p.levelCursor)+agentCheckbox(row.checked[level])+" "+label+rec)
+		// The open model's levels, between two short rules under its own.
+		width := 0
+		for _, level := range row.levelOpts {
+			width = max(width, len(level))
+		}
+		rule := strings.Repeat(" ", levelColumn-2) + ansiGray + strings.Repeat("─", width+2) + ansiReset
+		lines = append(lines, rule)
+		for j, level := range row.levelOpts {
+			focused := item(focus, "level", i, j)
+			label := level
+			if focused {
+				label = ansiBold + label + ansiReset
 			}
+			lines = append(lines, agentFocused(strings.Repeat(" ", levelColumn-4)+agentCursor(focused)+agentPickerCircle(row.checked[level], row.recommended[level], false)+" "+label, focused))
+		}
+		lines = append(lines, rule)
+	}
+	return append(lines, agentPickerFooter(p, focus, "Continue →", "↑↓ move", "enter select", "→ thinking levels", "← close", "esc back")...)
+}
+
+// agentPayingLines is the picker's second page: each chosen model that can
+// be paid for more than one way, with its choices on its line.
+func agentPayingLines(p *agentPickerState) []string {
+	lines := []string{agentPromptLine("How should each model be paid for?")}
+	items := p.items()
+	focus := items[min(max(p.cursor, 0), len(items)-1)]
+	// Choices line up in columns across the models.
+	nameWidth, choiceWidths := 0, []int{}
+	for _, it := range items {
+		if it.kind != "source" {
+			continue
+		}
+		nameWidth = max(nameWidth, len([]rune(p.rows[it.row].model.DisplayName)))
+		for j, source := range p.rows[it.row].sources {
+			if j == len(choiceWidths) {
+				choiceWidths = append(choiceWidths, 0)
+			}
+			choiceWidths[j] = max(choiceWidths[j], len([]rune(source.label)))
 		}
 	}
-	if end < len(p.rows) {
-		lines = append(lines, "  "+ansiGray+fmt.Sprintf("↓ %d more", len(p.rows)-end)+ansiReset)
+	provider := ""
+	for _, it := range items {
+		if it.kind != "source" {
+			continue
+		}
+		row := p.rows[it.row]
+		if row.model.Provider != provider {
+			provider = row.model.Provider
+			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset, "")
+		}
+		focused := it == focus
+		name := padRight(row.model.DisplayName, nameWidth)
+		if focused {
+			name = ansiBold + name + ansiReset
+		}
+		choices := []string{}
+		for j, source := range row.sources {
+			label := padRight(source.label, choiceWidths[j])
+			dot := ansiGray + "○ " + label + ansiReset
+			if j == row.source {
+				dot = ansiCoral + "●" + ansiReset + " " + label
+			}
+			choices = append(choices, dot)
+		}
+		lines = append(lines, agentFocused(agentCursor(focused)+name+"   "+strings.Join(choices, "   "), focused))
 	}
-	if p.editing {
-		return append(lines, agentHintLine("↑↓ move", "space toggle thinking level", "← done"))
+	return append(lines, agentPickerFooter(p, focus, "Continue →", "↑↓ move", "← → choose", "esc back")...)
+}
+
+// agentPickerFooter is the picker's Continue line, its warning, and its keys.
+func agentPickerFooter(p *agentPickerState, focus agentPickerItem, label string, hints ...string) []string {
+	// Continue reads as a button: bold, and in the cursor's color under it.
+	focused := focus.kind == "continue"
+	label = ansiBold + label + ansiReset
+	if focused {
+		label = ansiBold + ansiCoral + strings.TrimPrefix(label, ansiBold)
 	}
-	hints := []string{"↑↓ move", "space toggle", "→ thinking levels", "s payment", "enter confirm", "esc cancel"}
-	// Payment is chosen per model only where a model has more than one
-	// source, never on a gateway.
-	if !slices.ContainsFunc(p.rows, func(row agentPickerRow) bool { return len(row.sources) > 0 }) {
-		hints = slices.Delete(hints, 3, 4)
+	lines := []string{"", agentFocused(agentCursor(focused)+label, focused)}
+	if p.warning != "" {
+		lines = append(lines, "  "+ansiRed+p.warning+ansiReset)
 	}
-	return append(lines, agentHintLine(hints...))
+	return append(lines, "", agentHintLine(hints...))
+}
+
+func item(focus agentPickerItem, kind string, row, index int) bool {
+	return focus == agentPickerItem{kind: kind, row: row, index: index}
+}
+
+// agentFocused marks the line under the cursor for scrolling to keep in view.
+func agentFocused(line string, focused bool) string {
+	if focused {
+		return line + agentFocusMark
+	}
+	return line
+}
+
+// agentPickerCircle is a model's or level's circle: green when it is chosen
+// as recommended, orange when chosen otherwise (a recommended model whose
+// levels were changed included).
+func agentPickerCircle(checked, recommended, changed bool) string {
+	switch {
+	case !checked && recommended:
+		return ansiGreen + "○" + ansiReset
+	case !checked:
+		return ansiGray + "○" + ansiReset
+	case recommended && !changed:
+		return ansiGreen + "◉" + ansiReset
+	}
+	return ansiCoral + "◉" + ansiReset
 }
 
 func agentCheckbox(checked bool) string {

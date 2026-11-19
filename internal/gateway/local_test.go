@@ -148,3 +148,19 @@ func TestGatewayReleaseURL(t *testing.T) {
 		}
 	}
 }
+
+func TestStartFailureIsTheGatewaysOwnLastWord(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "gateway.log")
+	content := "dari-gateway listening {\"port\":7340}\n" +
+		"dari-gateway: Provider API keys were rejected: anthropic (401). Fix or unset each key before starting the gateway.\n" +
+		"dari-gateway stores subscription tokens unencrypted; set DARI_GATEWAY_ENCRYPTION_KEY {\"x\":1}\n"
+	if err := os.WriteFile(log, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := startFailure(log); got != "Provider API keys were rejected: anthropic (401). Fix or unset each key before starting the gateway." {
+		t.Fatalf("reason = %q", got)
+	}
+	if got := startFailure(filepath.Join(t.TempDir(), "missing.log")); got != "" {
+		t.Fatalf("missing log = %q", got)
+	}
+}

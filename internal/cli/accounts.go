@@ -28,7 +28,7 @@ func init() {
 			Long: "With no subcommand, opens the Accounts page wherever coding agents route, which needs a terminal.\n" +
 				"The subcommands work without one, for scripts and agents, and print JSON. `subscription`\n" +
 				"works hosted or on a gateway; `provider` and `list` manage organization credentials on hosted Dari;\n" +
-				"`auto-routing` sets the local gateway's Dari API key.",
+				"`auto-routing` and `key` set the local gateway's Dari API key and provider API keys.",
 			Args: cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
 				return runAccounts(cmd.Context(), gf, cmd.InOrStdin(), cmd.ErrOrStderr())
@@ -39,6 +39,7 @@ func init() {
 			newProviderCredentialsCmd(gf),
 			newCredentialsListCmd(gf),
 			newAccountsAutoRoutingCmd(),
+			newAccountsLocalKeyCmd(),
 		)
 		root.AddCommand(cmd)
 	})
@@ -63,6 +64,63 @@ func newAccountsAutoRoutingCmd() *cobra.Command {
 				gw.settings.AutoRoutingKey = ""
 			}
 			return saveLocalGateway(cmd.Context(), gw, cmd.ErrOrStderr())
+		},
+	}
+}
+
+// newAccountsLocalKeyCmd lists, saves, and removes the local gateway's
+// provider API keys, as the Accounts page does.
+func newAccountsLocalKeyCmd() *cobra.Command {
+	names := []string{}
+	for _, key := range localProviderKeys {
+		names = append(names, strings.ToLower(strings.ReplaceAll(key.name, " ", "-")))
+	}
+	return &cobra.Command{
+		Use:   "key [PROVIDER <api-key|off>]",
+		Short: "Local gateway only: list provider API keys, or save or remove one",
+		Long: "With no arguments, lists the providers and whether each has a key saved (never the key itself).\n" +
+			"With a provider and a key, saves it; with `off`, removes it. Providers: " + strings.Join(names, ", ") + ".\n" +
+			"Hosted Dari keeps provider keys as organization credentials: use `dari accounts provider`.",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 0 && len(args) != 2 {
+				return errors.New("expected no arguments, or a provider and an API key (or off)")
+			}
+			return nil
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 2 && strings.TrimSpace(args[1]) == "" {
+				return errors.New("the API key is empty; pass the key, or off to remove the saved one")
+			}
+			gw, err := localGateway()
+			if err != nil {
+				return err
+			}
+			if len(args) == 2 {
+				want := strings.ToLower(strings.TrimSpace(args[0]))
+				index := slices.IndexFunc(localProviderKeys, func(key struct{ name, article, env string }) bool {
+					return want == strings.ToLower(strings.ReplaceAll(key.name, " ", "-")) || want == strings.ToLower(key.name) || want == strings.ToLower(key.env)
+				})
+				if index < 0 {
+					return fmt.Errorf("unknown provider %q: expected one of %s", args[0], strings.Join(names, ", "))
+				}
+				env, value := localProviderKeys[index].env, strings.TrimSpace(args[1])
+				if strings.EqualFold(value, "off") {
+					delete(gw.settings.ProviderKeys, env)
+				} else {
+					if gw.settings.ProviderKeys == nil {
+						gw.settings.ProviderKeys = map[string]string{}
+					}
+					gw.settings.ProviderKeys[env] = value
+				}
+				if err := saveLocalGateway(cmd.Context(), gw, cmd.ErrOrStderr()); err != nil {
+					return err
+				}
+			}
+			keys := []map[string]any{}
+			for i, key := range localProviderKeys {
+				keys = append(keys, map[string]any{"provider": names[i], "name": key.name, "saved": gw.settings.ProviderKeys[key.env] != ""})
+			}
+			return printJSON(map[string]any{"keys": keys})
 		},
 	}
 }
@@ -164,11 +222,28 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		defer releaseAgentScreen()
 	}
 	result := accountsResult{}
+	// reopen is the subscription whose page to show again once the list reloads.
+	reopen := ""
+	// The page reloads only after something may have changed; going back
+	// shows the last listing at once.
+	var raw json.RawMessage
+	stale, routing := true, true
+	resets := map[string]*resetsFetch{}
+	showAgentLoading(stderr, "Loading accounts")
 	for {
-		var raw json.RawMessage
-		// OpenCode Go reports plan usage only when asked.
-		if err := page.client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials?refresh_usage=true", nil, &raw); err != nil {
-			return result, api.HumanError(err)
+		if stale {
+			// OpenCode Go reports plan usage only when asked.
+			if err := page.client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials?refresh_usage=true", nil, &raw); err != nil {
+				return result, api.HumanError(err)
+			}
+			if page.hosted {
+				var err error
+				if routing, err = autoroutingAllowed(ctx, page.client); err != nil {
+					return result, err
+				}
+			}
+			resets = map[string]*resetsFetch{}
+			stale = false
 		}
 		var listed struct {
 			Credentials []subscriptionCredential `json:"credentials"`
@@ -179,6 +254,28 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		subscriptions := slices.DeleteFunc(personalSubscriptions(listed.Credentials), func(c subscriptionCredential) bool {
 			return !slices.ContainsFunc(page.providers, func(p agentSubscriptionProvider) bool { return p.id == c.OAuthProvider })
 		})
+		// Each subscription's banked resets load while the list shows, so its
+		// page opens without waiting.
+		if page.hosted {
+			for _, subscription := range subscriptions {
+				if p := subscriptionProviderFor(subscription.OAuthProvider); (p == codexSubscription || p == claudeSubscription) && resets[subscription.Name] == nil {
+					resets[subscription.Name] = fetchSubscriptionResets(ctx, page.client, subscription.Name)
+				}
+			}
+		}
+		if i := slices.IndexFunc(subscriptions, func(c subscriptionCredential) bool { return c.Name == reopen }); i >= 0 {
+			outcome, err := page.manageSubscription(ctx, subscriptions[i], subscriptions, resets[reopen], stdin, stderr)
+			if err != nil {
+				return result, err
+			}
+			stale = outcome != subscriptionPageBack
+			if outcome == subscriptionPageActed {
+				continue
+			}
+		}
+		reopen = ""
+		// changed is cleared by an action that only looked.
+		changed := true
 		keys := map[string]agentProviderCredential{}
 		if page.hosted {
 			var listedKeys struct {
@@ -189,19 +286,34 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 			}
 			keys = agentAPIKeys(listedKeys.Credentials)
 		}
-		keyNames := []string{}
+		// Each key is a page of its own: its name and how to remove it.
+		type accountKey struct {
+			name   string
+			remove func() error
+		}
+		accountKeys := []accountKey{}
 		for _, provider := range slices.Sorted(maps.Keys(keys)) {
-			keyNames = append(keyNames, cmp.Or(keys[provider].Label, keys[provider].Name, provider))
+			key := keys[provider]
+			accountKeys = append(accountKeys, accountKey{cmp.Or(key.Label, key.Name, provider), func() error {
+				return api.HumanError(page.client.Do(ctx, http.MethodDelete,
+					"/v1/organizations/current/credentials/provider-credentials/"+url.PathEscape(key.ID), nil, nil))
+			}})
 		}
 		if page.local() {
 			for _, key := range localProviderKeys {
 				if page.gw.settings.ProviderKeys[key.env] != "" {
-					keyNames = append(keyNames, key.name)
+					accountKeys = append(accountKeys, accountKey{key.name, func() error {
+						delete(page.gw.settings.ProviderKeys, key.env)
+						return saveLocalGateway(ctx, page.gw, stderr)
+					}})
 				}
 			}
 		}
-		lines := agentAccountLines(subscriptions, keyNames, len(page.providers) > 1)
-		connected := len(subscriptions) > 0 || len(keys) > 0
+		connected := len(subscriptions) > 0 || len(accountKeys) > 0
+		var lines []string
+		if len(subscriptions) == 0 && len(accountKeys) == 0 {
+			lines = []string{"  " + ansiGray + "No accounts connected yet." + ansiReset}
+		}
 
 		options := []agentChoiceOption{}
 		actions := []func() (bool, error){}
@@ -212,21 +324,47 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		leave := func() (bool, error) { return true, nil }
 		finish := agentChoiceOption{label: "Done"}
 		if page.onboarding {
-			finish = agentChoiceOption{label: "Continue", done: fmt.Sprintf("Accounts: %d connected", len(subscriptions)+len(keys))}
+			finish = agentChoiceOption{label: "Continue", done: fmt.Sprintf("Accounts: %d connected", len(subscriptions)+len(accountKeys))}
 			if !connected {
 				finish = agentChoiceOption{label: "Use Dari managed billing", done: "Using Dari managed billing"}
 			}
 		}
-		if !page.onboarding || connected {
-			add(finish, leave)
-		}
-		for _, subscription := range subscriptions {
-			add(agentChoiceOption{label: subscriptionName(subscription)}, func() (bool, error) {
-				return false, page.manageSubscription(ctx, subscription, stdin, stderr)
+		// The accounts themselves come first, each numbered where it is shown,
+		// in columns shared by the whole list.
+		columns := subscriptionColumnsFor(subscriptions)
+		for i, subscription := range subscriptions {
+			option := agentChoiceOption{
+				label:   subscriptionLabel(subscription, len(page.providers) > 1, columns),
+				details: subscriptionDetailLines(subscription, columns),
+				boxed:   true,
+			}
+			if i == 0 {
+				option.heading = "Subscriptions"
+			}
+			add(option, func() (bool, error) {
+				outcome, err := page.manageSubscription(ctx, subscription, subscriptions, resets[subscription.Name], stdin, stderr)
+				changed = outcome != subscriptionPageBack
+				if outcome == subscriptionPageActed {
+					reopen = subscription.Name
+				}
+				return false, err
 			})
 		}
-		add(agentChoiceOption{label: "Add a subscription"}, func() (bool, error) {
+		for i, key := range accountKeys {
+			option := agentChoiceOption{label: key.name}
+			if i == 0 {
+				option.heading = "API Keys"
+			}
+			add(option, func() (bool, error) {
+				removed, err := manageAPIKey(stdin, stderr, key.name, key.remove)
+				changed = removed
+				return false, err
+			})
+		}
+		// Done closes the Settings section, after what can still be added.
+		add(agentChoiceOption{label: "Add a subscription", heading: "Settings"}, func() (bool, error) {
 			provider, ok, err := page.addSubscription(ctx, subscriptions, stdin, stderr)
+			changed = ok
 			if ok && !slices.Contains(result.added, provider) {
 				result.added = append(result.added, provider)
 			}
@@ -236,15 +374,12 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		case page.hosted:
 			add(agentChoiceOption{label: "Add an API key"}, func() (bool, error) {
 				saved, err := connectAgentAPIKey(ctx, page.client, stdin, stderr, keys)
+				changed = saved
 				if saved {
 					result.keysAdded++
 				}
 				return false, err
 			})
-			routing, err := autoroutingAllowed(ctx, page.client)
-			if err != nil {
-				return result, err
-			}
 			if !routing {
 				add(agentChoiceOption{label: "Get auto-routing"}, func() (bool, error) {
 					_, err := getAutorouting(ctx, page.client, stdin, stderr)
@@ -267,15 +402,28 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				return false, err
 			})
 		}
-		if page.onboarding && !connected {
-			add(finish, leave)
-		}
+		finish.gap = true
+		add(finish, leave)
 
-		choice, err := runAgentChoiceTUI(stdin, stderr, "Accounts", lines, options)
+		// The page is a command's first page, which esc closes; in onboarding
+		// it is a step of setup, which esc leaves.
+		choose := runAgentRootChoiceTUI
+		if page.onboarding {
+			choose = runAgentChoicePageClosing
+		}
+		choice, err := choose(stdin, stderr, "", lines, options)
+		if errors.Is(err, errAgentChoiceCanceled) && !page.onboarding {
+			return result, nil
+		}
 		if err != nil {
 			return result, err
 		}
 		done, err := actions[choice]()
+		stale = stale || changed
+		// Esc on a page this one opened comes back here.
+		if errors.Is(err, errAgentChoiceCanceled) {
+			continue
+		}
 		if done || err != nil {
 			return result, err
 		}
@@ -287,33 +435,46 @@ func (page accountsPage) local() bool { return page.gw != nil && page.gw.local }
 // addSubscription connects a provider's account, or buys another one first.
 // It reports the provider when one was connected.
 func (page accountsPage) addSubscription(ctx context.Context, subscriptions []subscriptionCredential, stdin io.Reader, stderr io.Writer) (agentSubscriptionProvider, bool, error) {
+	// Two groups, connecting an account and buying one, each listing the
+	// providers by name.
 	options := []agentChoiceOption{}
 	type choice struct {
 		provider agentSubscriptionProvider
 		buy      bool
 	}
 	choices := []choice{}
+	nameWidth := 0
 	for _, provider := range page.providers {
-		label := "Connect a " + provider.name + " account"
-		if slices.ContainsFunc(subscriptions, func(c subscriptionCredential) bool { return c.OAuthProvider == provider.id }) {
-			label = "Connect another " + provider.name + " account"
+		nameWidth = max(nameWidth, len([]rune(provider.name)))
+	}
+	for i, provider := range page.providers {
+		option := agentChoiceOption{label: provider.name}
+		if i == 0 {
+			option.heading = "Connect an Account"
 		}
-		options = append(options, agentChoiceOption{label: label})
+		if slices.ContainsFunc(subscriptions, func(c subscriptionCredential) bool { return c.OAuthProvider == provider.id }) {
+			option.label = padRight(provider.name, nameWidth) + "  " + ansiGray + "another account" + ansiReset
+		}
+		options = append(options, option)
 		choices = append(choices, choice{provider: provider})
 	}
+	first := true
 	for _, provider := range page.providers {
 		if provider.buyURL == "" {
 			continue
 		}
-		label := "Buy a " + provider.name + " subscription"
-		if slices.ContainsFunc(subscriptions, func(c subscriptionCredential) bool { return c.OAuthProvider == provider.id }) {
-			label = "Buy another " + provider.name + " subscription"
+		option := agentChoiceOption{label: provider.name}
+		if first {
+			option.heading, first = "Buy a Subscription", false
 		}
-		options = append(options, agentChoiceOption{label: label})
+		options = append(options, option)
 		choices = append(choices, choice{provider: provider, buy: true})
 	}
-	options = append(options, agentChoiceOption{label: "Back"})
-	picked, err := runAgentChoiceTUI(stdin, stderr, "Add a subscription", nil, options)
+	options = append(options, agentChoiceOption{label: "Back", gap: true})
+	picked, err := runAgentChoiceTUI(stdin, stderr, "", nil, options)
+	if errors.Is(err, errAgentChoiceCanceled) {
+		return agentSubscriptionProvider{}, false, nil
+	}
 	if err != nil || picked == len(choices) {
 		return agentSubscriptionProvider{}, false, err
 	}
@@ -330,67 +491,203 @@ func (page accountsPage) addSubscription(ctx context.Context, subscriptions []su
 	return selected.provider, true, nil
 }
 
-// manageSubscription is one subscription's page: its plan at the vendor, its
-// name, its connection, a usage-limit hold, and banked limit resets.
-func (page accountsPage) manageSubscription(ctx context.Context, subscription subscriptionCredential, stdin io.Reader, stderr io.Writer) error {
+// manageSubscription is one subscription's page: its usage in a box like the
+// list's, its banked resets to use, and its settings. It shows itself again
+// after anything that changed nothing, and otherwise reports how it was left.
+func (page accountsPage) manageSubscription(ctx context.Context, subscription subscriptionCredential, all []subscriptionCredential, prefetched *resetsFetch, stdin io.Reader, stderr io.Writer) (subscriptionPageOutcome, error) {
 	name := subscriptionName(subscription)
 	provider := subscriptionProviderFor(subscription.OAuthProvider)
 	path := "/v1/organizations/current/credentials/" + url.PathEscape(subscription.Name)
-	options := []agentChoiceOption{}
-	actions := []func() error{}
-	add := func(label string, action func() error) {
-		options = append(options, agentChoiceOption{label: label})
-		actions = append(actions, action)
+	resettable := page.hosted && (provider == codexSubscription || provider == claudeSubscription)
+	var resets []subscriptionReset
+	var resetsErr error
+	readAt := ""
+	if resettable {
+		if prefetched == nil {
+			prefetched = fetchSubscriptionResets(ctx, page.client, subscription.Name)
+		}
+		resets, resetsErr = prefetched.wait()
+		readAt = prefetched.readAt
 	}
-	if provider.billingURL != "" {
-		add("Manage plan at "+provider.vendor, func() error {
-			if openAgentBrowser(provider.billingURL) {
-				agentStep(stderr, "Opened "+provider.vendor+"; sign in as "+name+" if another account is open")
-			} else {
-				agentPrintln(stderr, "Manage the plan, signed in as "+name+", at:\n  "+provider.billingURL)
+	// Every subscription's page lays out its box the same: the list's columns,
+	// and the width of the widest subscription's box.
+	columns := subscriptionColumnsFor(all)
+	summary := func(subscription subscriptionCredential) []string {
+		rows := []string{subscriptionLabel(subscription, true, columns)}
+		// Without a number before the name, the meters start where it does.
+		for _, detail := range subscriptionDetailLines(subscription, columns) {
+			rows = append(rows, strings.TrimPrefix(detail, "  "))
+		}
+		return rows
+	}
+	boxWidth := 0
+	for _, other := range all {
+		for _, row := range summary(other) {
+			boxWidth = max(boxWidth, ansiVisibleWidth(row))
+		}
+	}
+	rows := summary(subscription)
+	rows[0] += strings.Repeat(" ", max(0, boxWidth-ansiVisibleWidth(rows[0])))
+	details := []string{}
+	if resettable && resetsErr != nil {
+		details = append(details, "", "  "+ansiGray+"Couldn't read banked resets: "+resetsErr.Error()+ansiReset)
+	} else if resettable && len(resets) == 0 {
+		details = append(details, "", "  "+ansiGray+"No banked resets"+ansiReset)
+	}
+
+	for {
+		options := []agentChoiceOption{}
+		// Each action reports whether it changed anything.
+		actions := []func() (bool, error){}
+		add := func(option agentChoiceOption, action func() (bool, error)) {
+			options = append(options, option)
+			actions = append(actions, action)
+		}
+		// Each reset is chosen where it is listed, its expiry beside it.
+		labelWidth := 0
+		for _, reset := range resets {
+			labelWidth = max(labelWidth, len([]rune(reset.Label)))
+		}
+		for i, reset := range resets {
+			note := strings.TrimPrefix(resetExpiry(reset), " · ")
+			if !reset.Usable {
+				note = strings.TrimPrefix(note+" · not usable yet", " · ")
 			}
-			return nil
-		})
-	}
-	add("Rename", func() error {
-		_, err := runAgentTextInputTUI(stdin, stderr, "Rename "+name, []string{"  " + ansiGray + "Leave empty to show the account email." + ansiReset, ""}, name, func(label string) error {
-			var updated map[string]any
-			return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/label", map[string]string{"label": strings.TrimSpace(label)}, &updated))
-		})
-		return err
-	})
-	add("Reconnect", func() error {
-		return connectAgentPersonalSubscription(ctx, provider, page.client, stdin, stderr, subscription.Name)
-	})
-	if subscriptionStatus(subscription) == "held" || len(activeModelHolds(subscription, time.Now())) > 0 {
-		add("Mark available", func() error {
-			var updated map[string]any
-			return api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
-		})
-	}
-	if page.hosted && (provider == codexSubscription || provider == claudeSubscription) {
-		label := "Use banked resets when every " + provider.name + " subscription is exhausted"
-		if subscription.AutoRedeemResets {
-			label = "Stop using banked resets"
+			option := agentChoiceOption{label: padRight(reset.Label, labelWidth) + "  " + ansiGray + note + ansiReset}
+			if i == 0 {
+				option.heading = fmt.Sprintf("Banked Resets (%d)", len(resets))
+				// A list the provider would not give again now says how old it is.
+				if read, err := time.Parse(time.RFC3339Nano, readAt); err == nil {
+					option.heading += ansiReset + ansiGray + " · as of " + usageResetTime(read)
+				}
+			}
+			add(option, func() (bool, error) {
+				return page.useReset(ctx, subscription, reset, stdin, stderr)
+			})
 		}
-		add(label, func() error {
-			var updated map[string]any
-			return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
-		})
-	}
-	add("Disconnect", func() error {
-		confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", nil, []agentChoiceOption{{label: "Keep it"}, {label: "Disconnect", done: name + " disconnected"}})
-		if err != nil || confirm == 0 {
-			return err
+		if resettable {
+			// The setting shows its state, and changing it asks first, so a
+			// stray number key changes nothing.
+			state, turn, keep := ansiGray+"Off"+ansiReset, "Turn on", "Keep off"
+			if subscription.AutoRedeemResets {
+				state, turn, keep = ansiGreen+"On"+ansiReset, "Turn off", "Keep on"
+			}
+			toggle := agentChoiceOption{label: "Use automatically: " + state}
+			if len(resets) == 0 {
+				toggle.heading = "Banked Resets"
+			}
+			add(toggle, func() (bool, error) {
+				explain := []string{
+					"  " + ansiGray + "When every " + provider.name + " subscription is at its limit, Dari spends one" + ansiReset,
+					"  " + ansiGray + "banked reset so requests keep going. Now: " + ansiReset + state,
+					"",
+				}
+				confirm, err := runAgentChoiceTUI(stdin, stderr, "Use banked resets automatically?", explain, []agentChoiceOption{{label: keep}, {label: turn}})
+				if err != nil || confirm == 0 {
+					return false, err
+				}
+				var updated map[string]any
+				return true, api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
+			})
 		}
-		return api.HumanError(page.client.Do(ctx, http.MethodDelete, path+"?scope=user", nil, nil))
-	})
-	options = append(options, agentChoiceOption{label: "Back"})
-	choice, err := runAgentChoiceTUI(stdin, stderr, name, append(subscriptionLines(subscription, true), ""), options)
-	if err != nil || choice == len(actions) {
-		return err
+		settings := len(options)
+		if provider.billingURL != "" {
+			add(agentChoiceOption{label: "Manage plan at " + provider.vendor}, func() (bool, error) {
+				if openAgentBrowser(provider.billingURL) {
+					agentStep(stderr, "Opened "+provider.vendor+"; sign in as "+name+" if another account is open")
+				} else {
+					agentPrintln(stderr, "Manage the plan, signed in as "+name+", at:\n  "+provider.billingURL)
+				}
+				return false, nil
+			})
+		}
+		add(agentChoiceOption{label: "Rename"}, func() (bool, error) {
+			return runAgentTextInputTUI(stdin, stderr, "Rename "+name, []string{"  " + ansiGray + "Leave empty to show the account email." + ansiReset}, name, func(label string) error {
+				var updated map[string]any
+				return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/label", map[string]string{"label": strings.TrimSpace(label)}, &updated))
+			})
+		})
+		if subscriptionStatus(subscription) == "held" || len(activeModelHolds(subscription, time.Now())) > 0 {
+			add(agentChoiceOption{label: "Mark available"}, func() (bool, error) {
+				var updated map[string]any
+				return true, api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
+			})
+		}
+		// Reconnect and Disconnect, the connection's own actions, sit together.
+		add(agentChoiceOption{label: "Reconnect"}, func() (bool, error) {
+			err := connectAgentPersonalSubscription(ctx, provider, page.client, stdin, stderr, subscription.Name)
+			return err == nil, err
+		})
+		disconnected := false
+		add(agentChoiceOption{label: "Disconnect"}, func() (bool, error) {
+			details := []string{"  " + ansiGray + "Routing stops using this subscription. You can connect it again later." + ansiReset, ""}
+			confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", details, []agentChoiceOption{{label: "Keep it"}, {label: "Disconnect", done: name + " disconnected"}})
+			if err != nil || confirm == 0 {
+				return false, err
+			}
+			disconnected = true
+			return true, api.HumanError(page.client.Do(ctx, http.MethodDelete, path+"?scope=user", nil, nil))
+		})
+		options[settings].heading = "Settings"
+		options = append(options, agentChoiceOption{label: "Back", gap: true})
+
+		// The summary box's left edge lines up with the sections' ◆, its text
+		// with their titles.
+		choice, err := runAgentSummaryChoiceTUI(stdin, stderr, rows, details, options)
+		if errors.Is(err, errAgentChoiceCanceled) || (err == nil && choice == len(actions)) {
+			return subscriptionPageBack, nil
+		}
+		if err != nil {
+			return subscriptionPageBack, err
+		}
+		changed, err := actions[choice]()
+		if errors.Is(err, errAgentChoiceCanceled) {
+			changed, err = false, nil
+		}
+		switch {
+		case err != nil:
+			return subscriptionPageActed, err
+		case disconnected:
+			return subscriptionPageLeft, nil
+		case changed:
+			return subscriptionPageActed, nil
+		}
 	}
-	return actions[choice]()
+}
+
+// subscriptionPageOutcome is how a subscription's page was left.
+type subscriptionPageOutcome int
+
+const (
+	// subscriptionPageBack changed nothing.
+	subscriptionPageBack subscriptionPageOutcome = iota
+	// subscriptionPageActed may have changed the subscription; its page shows
+	// again, reloaded.
+	subscriptionPageActed
+	// subscriptionPageLeft disconnected it.
+	subscriptionPageLeft
+)
+
+// resetsFetch is a subscription's banked resets, loading in the background.
+type resetsFetch struct {
+	done   chan struct{}
+	resets []subscriptionReset
+	readAt string
+	err    error
+}
+
+func fetchSubscriptionResets(ctx context.Context, client *api.Client, name string) *resetsFetch {
+	fetch := &resetsFetch{done: make(chan struct{})}
+	go func() {
+		defer close(fetch.done)
+		fetch.resets, fetch.readAt, fetch.err = listSubscriptionResets(ctx, client, name)
+	}()
+	return fetch
+}
+
+func (fetch *resetsFetch) wait() ([]subscriptionReset, error) {
+	<-fetch.done
+	return fetch.resets, fetch.err
 }
 
 // addLocalKey saves a provider API key into the local gateway's settings.
@@ -501,4 +798,87 @@ func usageResetTime(resets time.Time) string {
 		return local.Format("3:04pm")
 	}
 	return local.Format("Jan 2 3:04pm")
+}
+
+// useReset spends one banked reset after the user confirms, then shows
+// what the provider answered. It reports whether it asked the provider.
+func (page accountsPage) useReset(ctx context.Context, subscription subscriptionCredential, reset subscriptionReset, stdin io.Reader, stderr io.Writer) (bool, error) {
+	name := subscriptionName(subscription)
+	expiry := strings.TrimPrefix(resetExpiry(reset), " · ")
+	if !reset.Usable {
+		_, err := runAgentChoiceTUI(stdin, stderr, reset.Label+" can't be used yet", []string{"  " + ansiGray + cmp.Or(expiry, "No expiry") + ansiReset, ""}, []agentChoiceOption{{label: "Back"}})
+		return false, err
+	}
+	details := []string{"  " + ansiGray + "Clears " + name + "'s usage limits now." + ansiReset}
+	if expiry != "" {
+		details = append(details, "  "+ansiGray+"This reset "+strings.ToLower(expiry[:1])+expiry[1:]+"."+ansiReset)
+	}
+	confirm, err := runAgentChoiceTUI(stdin, stderr, "Use "+reset.Label+"?", append(details, ""), []agentChoiceOption{{label: "Keep it"}, {label: "Use it"}})
+	if err != nil || confirm == 0 {
+		return false, err
+	}
+	// Whatever happened, the answer shows here and the page reloads after it.
+	result, err := useSubscriptionReset(ctx, page.client, subscription.Name, reset.ID)
+	text := resetResultText(result)
+	if err != nil {
+		text = "Couldn't use that reset: " + err.Error()
+	}
+	_, err = runAgentChoiceTUI(stdin, stderr, text, nil, []agentChoiceOption{{label: "Back"}})
+	if errors.Is(err, errAgentChoiceCanceled) {
+		err = nil
+	}
+	return true, err
+}
+
+func resetExpiry(reset subscriptionReset) string {
+	if reset.ExpiresAt == nil {
+		return ""
+	}
+	expires, err := time.Parse(time.RFC3339Nano, *reset.ExpiresAt)
+	if err != nil {
+		return ""
+	}
+	return " · Expires " + expires.Local().Format("Jan 2")
+}
+
+// resetResultText says what a reset did, in the provider's own terms.
+func resetResultText(result string) string {
+	switch result {
+	case "reset":
+		return "Usage limits reset"
+	case "nothing_to_reset", "not_limited":
+		return "Nothing to reset: the plan isn't at a limit, so the reset was kept"
+	case "no_credit", "already_used", "unavailable":
+		return "That reset is no longer available; it was used or expired"
+	case "not_usable":
+		return "That reset can't be used yet"
+	case "already_redeemed":
+		return "That reset was already used"
+	case "cooldown":
+		return "Claude allows another reset only later; the reset was kept"
+	case "ineligible":
+		return "This plan can't use that reset now"
+	}
+	return "Reset not confirmed: " + result
+}
+
+// manageAPIKey is one API key's page, which can remove it. It reports
+// whether it did.
+func manageAPIKey(stdin io.Reader, stderr io.Writer, name string, remove func() error) (bool, error) {
+	for {
+		choice, err := runAgentChoiceTUI(stdin, stderr, name, nil, []agentChoiceOption{{label: "Remove"}, {label: "Back", gap: true}})
+		if err != nil || choice == 1 {
+			return false, err
+		}
+		details := []string{"  " + ansiGray + "Routers stop using this key. You can add it again later." + ansiReset, ""}
+		confirm, err := runAgentChoiceTUI(stdin, stderr, "Remove "+name+"?", details, []agentChoiceOption{{label: "Keep it"}, {label: "Remove", done: name + " removed"}})
+		// Esc or Keep it comes back to the key's page.
+		if errors.Is(err, errAgentChoiceCanceled) || (err == nil && confirm == 0) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		return true, remove()
+	}
 }

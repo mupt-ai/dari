@@ -37,7 +37,7 @@ export function anthropicMessagesToInteraction(
   }
 
   const tools = anthropicTools(payload.tools);
-  toolsByWireName(tools);
+  const declaredTools = toolsByWireName(tools);
   const toolChoice = anthropicToolChoice(payload.tool_choice);
   const maxOutputTokens = requiredPositiveInteger(payload.max_tokens, "max_tokens");
   const stream = optionalBoolean(payload.stream, "stream") ?? false;
@@ -47,7 +47,7 @@ export function anthropicMessagesToInteraction(
     sourceProtocol: "anthropic_messages",
     model,
     instructions: anthropicSystem(payload.system),
-    items: anthropicItems(payload.messages),
+    items: anthropicItems(payload.messages, declaredTools),
     tools,
     toolChoice,
     parallelToolCalls: parallelToolCalls(payload.tool_choice),
@@ -66,7 +66,9 @@ export function anthropicMessagesToInteraction(
   };
 }
 
-function anthropicItems(value: unknown): InteractionItem[] {
+// `declaredTools` resolves `tool_addition` references by name: the request's
+// tools, then each tool an earlier `tool_addition` defined.
+function anthropicItems(value: unknown, declaredTools: Map<string, InteractionTool>): InteractionItem[] {
   if (!Array.isArray(value) || value.length === 0) {
     throw invalidRequest("messages must be a non-empty array.", "messages");
   }
@@ -80,7 +82,7 @@ function anthropicItems(value: unknown): InteractionItem[] {
     if (role !== "system" && role !== "user" && role !== "assistant") {
       throw invalidRequest(`Unsupported Anthropic message role '${role}'.`, `messages.${messageIndex}.role`);
     }
-    appendAnthropicMessage(items, role, rawMessage.content, messageIndex);
+    appendAnthropicMessage(items, role, rawMessage.content, messageIndex, declaredTools);
   }
   return items;
 }
@@ -89,7 +91,8 @@ function appendAnthropicMessage(
   items: InteractionItem[],
   role: "system" | "user" | "assistant",
   value: unknown,
-  messageIndex: number
+  messageIndex: number,
+  declaredTools: Map<string, InteractionTool>
 ): void {
   if (typeof value === "string") {
     items.push({
@@ -264,16 +267,33 @@ function appendAnthropicMessage(
     }
     if (type === "tool_addition") {
       if (role !== "system") throw invalidRequest("tool_addition blocks require the system role.", param);
-      const tool = isRecord(rawBlock.tool) ? rawBlock.tool : undefined;
-      if (tool?.type !== "tool_definition") {
-        throw invalidRequest(`${param}.tool must be a tool_definition.`, `${param}.tool`);
-      }
-      toolsAdded.push(anthropicTool(tool.definition, `${param}.tool.definition`));
+      toolsAdded.push(anthropicToolAddition(rawBlock.tool, `${param}.tool`, declaredTools));
       continue;
     }
     throw new HttpError(400, `Anthropic content block type '${type}' is not supported.`, "unsupported_content_block", param);
   }
   flushMessage();
+}
+
+/* A `tool_addition` carries the tool by value (`tool_definition`) or names a
+   tool already declared (`tool_reference`), which Claude Code sends for a
+   deferred tool it loads mid-session. A referenced tool is added by value,
+   no longer deferred, so every provider path sees its full definition. */
+function anthropicToolAddition(value: unknown, param: string, declaredTools: Map<string, InteractionTool>): InteractionTool {
+  if (!isRecord(value)) throw invalidRequest(`${param} must be an object.`, param);
+  const type = requiredString(value.type, `${param}.type`);
+  if (type === "tool_definition") {
+    const tool = anthropicTool(value.definition, `${param}.definition`);
+    if (tool.kind !== "hosted" && tool.kind !== "server_tool") declaredTools.set(tool.name, tool);
+    return tool;
+  }
+  if (type === "tool_reference") {
+    const name = requiredString(value.name, `${param}.name`);
+    const tool = declaredTools.get(name);
+    if (tool === undefined) throw invalidRequest(`${param} references undeclared tool '${name}'.`, `${param}.name`);
+    return tool.kind === "function" ? { ...tool, deferLoading: undefined } : tool;
+  }
+  throw new HttpError(400, `Anthropic tool_addition tool type '${type}' is not supported.`, "unsupported_content_block", `${param}.type`);
 }
 
 /* PDFs stay native documents; they route only to models that read PDFs.

@@ -977,6 +977,36 @@ test("Claude Code's tool additions reach Claude in place, leaving the tool list 
   expect((responses.tools as Array<{ name: string }>).map((tool) => tool.name)).toEqual(["Bash", "mcp__linear__list_issues"]);
 });
 
+test("Claude Code's tool additions by reference reach Claude by value, leaving the tool list as it was", async () => {
+  const turn = (messages: unknown[]) => anthropicMessagesToInteraction({
+    model: "dari/routing",
+    max_tokens: 4096,
+    tools: [
+      { name: "Bash", input_schema: { type: "object", properties: {} } },
+      { name: "mcp__linear__list_issues", description: "List issues.", input_schema: { type: "object", properties: {} }, defer_loading: true },
+    ],
+    messages,
+  });
+  const user = { role: "user", content: "List the issues." };
+  const added = { role: "system", content: [{ type: "tool_addition", tool: { type: "tool_reference", name: "mcp__linear__list_issues" } }] };
+  const tools = (payload: Record<string, unknown>) => (payload.tools as Array<{ name: string }>).map((tool) => tool.name);
+  const additions = (payload: Record<string, unknown>) =>
+    (payload.messages as Array<{ content: unknown }>)
+      .flatMap((message) => Array.isArray(message.content) ? message.content as Array<Record<string, any>> : [])
+      .filter((block) => block.type === "tool_addition")
+      .map((block) => block.tool.definition.name);
+  const haiku = modelConfig("anthropic", "claude-haiku-5-5", "anthropic-messages", 200_000, ["off", "low", "high"], "off");
+
+  const before = await captureInteractionPayload(turn([user]), "anthropic/claude-haiku-5-5", haiku);
+  const after = await captureInteractionPayload(turn([user, added]), "anthropic/claude-haiku-5-5", haiku);
+  expect(tools(after)).toEqual(tools(before));
+  expect(additions(after)).toEqual(["mcp__linear__list_issues"]);
+
+  const gpt = modelConfig("openai", "gpt-5.5", "openai-responses", 1_000_000, ["low", "medium", "high"], "medium");
+  const responses = await captureInteractionPayload(turn([user, added]), "openai/gpt-5.5", gpt);
+  expect(tools(responses)).toContain("mcp__linear__list_issues");
+});
+
 async function captureInteractionPayload(
   request: InteractionRequest,
   modelName: string,

@@ -197,6 +197,38 @@ test("Anthropic Messages ingress keeps Claude Code's tool additions on their sys
   })).toThrow("tool_addition blocks require the system role.");
 });
 
+test("Anthropic Messages ingress resolves tool additions that reference a declared tool", () => {
+  const schema = { type: "object", properties: {} };
+  const request = anthropicMessagesToInteraction({
+    model: "dari/routing",
+    max_tokens: 4096,
+    tools: [{ name: "mcp__linear__list_issues", description: "List issues.", input_schema: schema, defer_loading: true }],
+    messages: [
+      { role: "user", content: "List the issues." },
+      { role: "system", content: [{ type: "tool_addition", tool: { type: "tool_definition", definition: { name: "mcp__linear__get_issue", input_schema: schema } } }] },
+      { role: "system", content: [
+        { type: "tool_addition", tool: { type: "tool_reference", name: "mcp__linear__list_issues" } },
+        { type: "tool_addition", tool: { type: "tool_reference", name: "mcp__linear__get_issue" } },
+      ] },
+    ],
+  });
+  expect(request.items[2]).toEqual({
+    type: "message",
+    role: "system",
+    content: [],
+    contentShape: "parts",
+    toolsAdded: [
+      { kind: "function", name: "mcp__linear__list_issues", description: "List issues.", parameters: schema },
+      { kind: "function", name: "mcp__linear__get_issue", parameters: schema },
+    ],
+  });
+  expect(() => anthropicMessagesToInteraction({
+    model: "dari/routing",
+    max_tokens: 4096,
+    messages: [{ role: "system", content: [{ type: "tool_addition", tool: { type: "tool_reference", name: "Missing" } }] }],
+  })).toThrow("references undeclared tool 'Missing'");
+});
+
 test("Anthropic Messages ingress accepts an empty content array, as Anthropic does after Claude Code compaction", () => {
   const request = anthropicMessagesToInteraction({
     model: "dari/routing",

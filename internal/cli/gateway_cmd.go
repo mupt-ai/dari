@@ -125,7 +125,8 @@ func newGatewayStatusCmd() *cobra.Command {
 				fmt.Fprintln(out, "Mode:      Fully local")
 				fmt.Fprintf(out, "Endpoint:  %s\n", gw.url)
 				fmt.Fprintf(out, "Runtime:   local gateway %s\n", running)
-				fmt.Fprintln(out, "Activity:  unavailable (hosted mode only)")
+				fmt.Fprintln(out, "Activity:  served by the gateway")
+				fmt.Fprintf(out, "Hosted:    %s (`dari router`, `api-keys`, `org` act on it)\n", hostedAccount())
 				if version := gateway.InstalledVersion(); version != "" {
 					fmt.Fprintf(out, "Version:   v%s\n", version)
 				}
@@ -142,7 +143,8 @@ func newGatewayStatusCmd() *cobra.Command {
 				fmt.Fprintln(out, "Mode:      Self-hosted")
 				fmt.Fprintf(out, "Endpoint:  %s\n", gw.url)
 				fmt.Fprintln(out, "Runtime:   external gateway")
-				fmt.Fprintln(out, "Activity:  unavailable (hosted mode only)")
+				fmt.Fprintln(out, "Activity:  served by the gateway")
+				fmt.Fprintf(out, "Hosted:    %s (`dari router`, `api-keys`, `org` act on it)\n", hostedAccount())
 				fmt.Fprintf(out, "Configured via: %s\n", source)
 			}
 			return nil

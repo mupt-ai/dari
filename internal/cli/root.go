@@ -77,7 +77,7 @@ func newRootCmd(version string) *cobra.Command {
 		Short: "Route coding agents through Dari and manage your routers.",
 		Long: "Launch a coding agent with Dari, or use Dari commands to manage routing.\n\n" +
 			"Agent launchers pass their arguments through to the agent. Hosted Dari Commands\n" +
-			"need hosted routing; a local or self-hosted gateway has nothing for them to manage.",
+			"manage your hosted Dari org, whichever way your agents route.",
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		Version:       version,
@@ -103,6 +103,7 @@ func newRootCmd(version string) *cobra.Command {
 			return
 		}
 		maybePrintUpdateNotice(cmd, version)
+		printHostedNote(cmd)
 	}
 
 	// Subcommands are registered by their respective files via init().
@@ -114,8 +115,8 @@ func newRootCmd(version string) *cobra.Command {
 // root. Each command file appends to this slice from its init().
 var commandRegistrars []func(*cobra.Command, *globalFlags)
 
-// hostedGroup lists commands that need hosted Dari: a local or self-hosted
-// gateway has no orgs, routers, keys, activity, or evals to manage.
+// hostedGroup lists commands that manage the hosted Dari org, whichever way
+// coding agents route.
 const hostedGroup = "hosted"
 
 func registerCommands(root *cobra.Command, gf *globalFlags) {
@@ -136,6 +137,36 @@ func registerCommands(root *cobra.Command, gf *globalFlags) {
 			command.GroupID = "dari"
 		}
 	}
+}
+
+// printHostedNote says, when agents route through a gateway, that a hosted
+// command acts on the hosted org, which the gateway does not use.
+func printHostedNote(cmd *cobra.Command) {
+	top := cmd
+	for top.HasParent() && top.Parent().HasParent() {
+		top = top.Parent()
+	}
+	if top.GroupID != hostedGroup || top.Name() == "auth" {
+		return
+	}
+	if gw, err := currentGateway(); gw == nil || err != nil {
+		return
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "Hosted Dari (%s): your gateway doesn't use this; it authenticates with DARI_GATEWAY_KEYS.\n", hostedAccount())
+}
+
+// hostedAccount names who hosted commands act as: the current org, or the
+// DARI_API_KEY in the environment.
+func hostedAccount() string {
+	if auth.EnvAPIKeyValue() != "" {
+		return "DARI_API_KEY"
+	}
+	if s, err := state.Load(); err == nil {
+		if org := s.CurrentOrg(); org != nil {
+			return org.Name
+		}
+	}
+	return "not signed in"
 }
 
 // resolveAPIURL implements flag → env → state → default precedence.

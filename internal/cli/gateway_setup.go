@@ -307,16 +307,20 @@ func saveLocalGateway(ctx context.Context, gw *gatewayConfig, stderr io.Writer) 
 	if err != nil {
 		return err
 	}
+	wasRunning := gateway.Healthy(ctx)
 	if err := gateway.Save(gw.settings); err != nil {
 		return err
 	}
 	if err := gateway.Restart(ctx, gw.settings, cliVersion); err != nil {
 		// A change the gateway refuses, such as a rejected API key, is not
-		// kept: the settings before it are restored and served again.
+		// kept: the settings before it are restored, and a gateway that was
+		// running is started again on them, since the refused one has exited.
 		if saved {
 			if restoreErr := gateway.Save(previous); restoreErr == nil {
 				gw.settings = previous
-				_ = gateway.Restart(ctx, previous, cliVersion)
+				if wasRunning {
+					_ = gateway.EnsureRunning(ctx, previous, cliVersion, func(string) {})
+				}
 			}
 		}
 		return fmt.Errorf("not saved: %w", err)

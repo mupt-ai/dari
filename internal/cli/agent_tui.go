@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -157,14 +158,21 @@ var agentSetupHeader bool
 // three rows and ride high.)
 var agentSpinnerFrames = []string{"⠴", "⠦", "⠖", "⠲"}
 
-var agentSpinner struct{ stop, done chan struct{} }
+// agentSpinner is the running spinner; agentSpinnerMu guards it, since an
+// interrupt can stop it from the signal goroutine.
+var (
+	agentSpinnerMu sync.Mutex
+	agentSpinner   struct{ stop, done chan struct{} }
+)
 
 // startAgentSpinner draws a spinner frame through draw every 100ms until
 // stopAgentSpinner, starting only once the wait is long enough to notice.
 func startAgentSpinner(draw func(frame string)) {
 	stopAgentSpinner()
 	stop, done := make(chan struct{}), make(chan struct{})
+	agentSpinnerMu.Lock()
 	agentSpinner.stop, agentSpinner.done = stop, done
+	agentSpinnerMu.Unlock()
 	go func() {
 		defer close(done)
 		select {
@@ -188,12 +196,15 @@ func startAgentSpinner(draw func(frame string)) {
 // stopAgentSpinner stops the spinner and waits for its last frame, so the
 // next page draws over it.
 func stopAgentSpinner() {
-	if agentSpinner.stop == nil {
+	agentSpinnerMu.Lock()
+	stop, done := agentSpinner.stop, agentSpinner.done
+	agentSpinner.stop, agentSpinner.done = nil, nil
+	agentSpinnerMu.Unlock()
+	if stop == nil {
 		return
 	}
-	close(agentSpinner.stop)
-	<-agentSpinner.done
-	agentSpinner.stop, agentSpinner.done = nil, nil
+	close(stop)
+	<-done
 }
 
 // showAgentLoading draws a spinner and what is loading on the held screen
@@ -291,13 +302,19 @@ type agentTUISession struct {
 	file     *os.File
 	stderr   io.Writer
 	oldState *term.State
-	// width and height are what remains inside the page margins, left and right.
-	width, height int
+	// The page's size: what remains inside the page margins, and the rows
+	// under the title. The resize goroutine sets them, so they are atomic.
+	cells, rowCount atomic.Int32
+	// titled puts the small dari.dev title on this session's pages, as a
+	// command's own page (sign-in) has it.
+	titled bool
 	// The last page drawn, drawn again when the terminal is resized.
 	mu       sync.Mutex
 	subtitle string
 	build    func(width int) []string
 	resized  chan os.Signal
+	// resizeStop ends the resize goroutine; resizeGone is closed when it has.
+	resizeStop, resizeGone chan struct{}
 	// panel draws the title beside the page, on a command's first page only.
 	panel bool
 }
@@ -321,7 +338,7 @@ func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, 
 	discardAgentInput(fd)
 	session := &agentTUISession{file: file, stderr: stderr, oldState: oldState}
 	if w, h, err := term.GetSize(fd); err == nil {
-		session.width, session.height = w-2*len(agentPageMargin), h-6
+		session.setSize(w, h)
 	}
 	if !agentScreen.active {
 		// The alternate screen, with the mouse wheel sent as arrow keys so it
@@ -330,35 +347,55 @@ func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, 
 		agentScreen.active, agentScreen.stderr = true, stderr
 	}
 	fmt.Fprint(stderr, "\033[?25l")
-	// A resized terminal gets the page laid out again for its new size.
+	// A resized terminal gets the page laid out again for its new size. The
+	// size can settle a moment after the signal, so it is read again briefly.
 	session.resized = make(chan os.Signal, 1)
+	session.resizeStop, session.resizeGone = make(chan struct{}), make(chan struct{})
 	signal.Notify(session.resized, syscall.SIGWINCH)
 	go func() {
-		for range session.resized {
-			// The size can settle a moment after the signal, so look again
-			// briefly and draw for each new size.
+		defer close(session.resizeGone)
+		for {
+			select {
+			case <-session.resizeStop:
+				return
+			case <-session.resized:
+			}
 			for range 6 {
+				select {
+				case <-session.resizeStop:
+					return
+				case <-time.After(50 * time.Millisecond):
+				}
 				if w, h, err := term.GetSize(fd); err == nil {
-					session.mu.Lock()
-					changed := session.width != w-2*len(agentPageMargin) || session.height != h-6
-					session.width, session.height = w-2*len(agentPageMargin), h-6
-					session.mu.Unlock()
-					if changed {
+					if session.cols() != w-2*len(agentPageMargin) || session.rows() != h-6 {
+						session.setSize(w, h)
 						session.draw()
 					}
 				}
-				time.Sleep(50 * time.Millisecond)
 			}
 		}
 	}()
 	return session, nil
 }
 
+// setSize records the terminal's size as the page's.
+func (session *agentTUISession) setSize(w, h int) {
+	session.cells.Store(int32(w - 2*len(agentPageMargin)))
+	session.rowCount.Store(int32(h - 6))
+}
+
+// cols and rows are the page's size.
+func (session *agentTUISession) cols() int { return int(session.cells.Load()) }
+func (session *agentTUISession) rows() int { return int(session.rowCount.Load()) }
+
 // Close returns to the normal screen so the caller can print its summary,
 // unless onboarding holds the screen for its next page.
 func (session *agentTUISession) Close() {
+	// Stop the resize goroutine first, so nothing draws after the screen is
+	// given back.
 	signal.Stop(session.resized)
-	close(session.resized)
+	close(session.resizeStop)
+	<-session.resizeGone
 	_ = term.Restore(int(session.file.Fd()), session.oldState)
 	if !agentScreen.held {
 		releaseAgentScreen()
@@ -421,7 +458,7 @@ func (session *agentTUISession) draw() {
 	if session.build == nil {
 		return
 	}
-	lines := session.build(session.width)
+	lines := session.build(session.cols())
 	pageWidth := 0
 	for _, line := range lines {
 		pageWidth = max(pageWidth, ansiVisibleWidth(line))
@@ -429,8 +466,8 @@ func (session *agentTUISession) draw() {
 	// A page taller than the terminal scrolls by itself; the title beside or
 	// above it stays put. Unknown rows (the size can't be read): nothing scrolls.
 	rows := 0
-	if session.height > 0 {
-		rows = session.height + 6 - 2
+	if session.rows() > 0 {
+		rows = session.rows() + 6 - 2
 	}
 	fit := func(lines []string, rows int) []string {
 		if rows <= 0 {
@@ -440,7 +477,7 @@ func (session *agentTUISession) draw() {
 	}
 	const gap = 4
 	var page []string
-	if panel := min(session.width-pageWidth-gap-1, 72); session.panel && panel >= sidePanelMinWidth {
+	if panel := min(session.cols()-pageWidth-gap-1, 72); session.panel && panel >= sidePanelMinWidth {
 		lines = fit(lines, rows)
 		// Taller than the page when the terminal has room, so the mark fits.
 		height := max(len(lines), len(dariLogo)+7)
@@ -448,9 +485,9 @@ func (session *agentTUISession) draw() {
 			height = max(len(lines), min(height, rows))
 		}
 		page = besidePanel(lines, pageWidth, gap, titlePanel(panel, height, session.subtitle))
-	} else if header := pageHeader(session.width, session.subtitle); session.panel && (rows <= 0 || rows-len(header) >= 10) {
+	} else if header := pageHeader(session.cols(), session.subtitle); session.panel && (rows <= 0 || rows-len(header) >= 10) {
 		page = append(header, fit(lines, rows-len(header))...)
-	} else if header := pageHeader(session.width, session.subtitle); agentSetupHeader && (rows <= 0 || rows-len(header) >= len(lines)) {
+	} else if header := pageHeader(session.cols(), session.subtitle); (agentSetupHeader || session.titled) && (rows <= 0 || rows-len(header) >= len(lines)) {
 		// Setup's pages keep the small title when the whole page fits under it.
 		page = append(header, fit(lines, rows-len(header))...)
 	} else {
@@ -461,7 +498,7 @@ func (session *agentTUISession) draw() {
 	var frame strings.Builder
 	frame.WriteString("\033[H\033[K\r\n")
 	for _, line := range page {
-		frame.WriteString(agentPageMargin + clipANSI(line, session.width) + ansiReset + "\033[K\r\n")
+		frame.WriteString(agentPageMargin + clipANSI(line, session.cols()) + ansiReset + "\033[K\r\n")
 	}
 	frame.WriteString("\033[J")
 	_, _ = session.stderr.Write([]byte(frame.String()))
@@ -532,7 +569,7 @@ func titlePanel(width, height int, subtitle string) []string {
 		for _, line := range logo {
 			logoWidth = max(logoWidth, len([]rune(line)))
 		}
-		if inner < logoWidth+4 || height-2 < len(logo)+5 {
+		if inner < logoWidth+2 || height-2 < len(logo)+5 {
 			continue
 		}
 		content = []string{}
@@ -1021,7 +1058,7 @@ func runAgentCodeInputTUI(
 	input := agentCodeInputState{}
 	buf := make([]byte, 256)
 	for {
-		session.render(agentOAuthLines(provider, authorizationURL, opened, input.value, session.width))
+		session.render(agentOAuthLines(provider, authorizationURL, opened, input.value, session.cols()))
 		n, readErr := session.file.Read(buf)
 		if n == 1 && buf[0] == 0x1b {
 			return "", errAgentChoiceCanceled
@@ -1060,7 +1097,7 @@ func runAgentDeviceCodeTUI(
 	buf := make([]byte, 256)
 	for {
 		lines := []string{agentPromptLine("Connect " + provider.name), agentOpenedLine(provider, opened)}
-		lines = append(lines, agentURLLines(authorizationURL, session.width)...)
+		lines = append(lines, agentURLLines(authorizationURL, session.cols())...)
 		session.render(append(lines,
 			"",
 			"  Enter this code at "+provider.vendor+":  "+ansiCoral+ansiBold+userCode+ansiReset,
@@ -1111,9 +1148,9 @@ func runAgentTextInputTUI(stdin io.Reader, stderr io.Writer, title string, detai
 		if len(details) > 0 {
 			lines = append(lines, "")
 		}
-		display := secretDisplay(input.value, session.width)
+		display := secretDisplay(input.value, session.cols())
 		if placeholder != "" {
-			display = inputDisplay(input.value, session.width, placeholder)
+			display = inputDisplay(input.value, session.cols(), placeholder)
 		}
 		lines = append(lines, cursor+display)
 		if status != "" {
@@ -1321,8 +1358,9 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 		return agentPayingLines(p)
 	}
 	lines := []string{agentPromptLine(title)}
+	// The note lines up with the model names, past the cursor and checkbox.
 	for _, line := range note {
-		lines = append(lines, "  "+ansiGray+line+ansiReset)
+		lines = append(lines, "    "+ansiGray+line+ansiReset)
 	}
 	items := p.items()
 	focus := items[min(max(p.cursor, 0), len(items)-1)]

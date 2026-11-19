@@ -290,9 +290,10 @@ type subscriptionUsage struct {
 
 // subscriptionReset is a banked limit reset of a ChatGPT or Claude Code plan.
 type subscriptionReset struct {
-	ID        string `json:"id"`
-	Label     string `json:"label"`
-	ExpiresAt string `json:"expires_at"`
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	// Null for a reset the provider gives no end date.
+	ExpiresAt *string `json:"expires_at"`
 	// Usable is whether the provider would honor it now.
 	Usable bool `json:"usable"`
 }

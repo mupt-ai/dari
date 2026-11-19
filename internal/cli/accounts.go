@@ -831,7 +831,10 @@ func (page accountsPage) useReset(ctx context.Context, subscription subscription
 }
 
 func resetExpiry(reset subscriptionReset) string {
-	expires, err := time.Parse(time.RFC3339Nano, reset.ExpiresAt)
+	if reset.ExpiresAt == nil {
+		return ""
+	}
+	expires, err := time.Parse(time.RFC3339Nano, *reset.ExpiresAt)
 	if err != nil {
 		return ""
 	}

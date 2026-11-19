@@ -201,6 +201,17 @@ Set `session_pinning: true` in `router.yml`, or pass `--session-pinning` to `dar
 
 Set `native_compaction: true` in `router.yml`, or pass `--native-compaction` to `dari router create` or `dari router update`, to let Codex compact context server-side with the provider's native compaction; requests carrying compaction state are routed only to models that support it. It is off by default; `--native-compaction=false` turns it off on update.
 
+## Activity
+
+`dari activity` reads routed traffic for the current org. Conversation and step pages hold at most 100; page with `--offset`.
+
+```bash
+dari activity people --from <rfc3339> --to <rfc3339>
+dari activity conversations --from <rfc3339> --to <rfc3339> --user-id usr_...
+dari activity conversations get <conversation_ref> --user-turns   # what the person typed
+dari activity request rreq_... [--part client-response|selector-output]
+```
+
 ## Examples
 
 - Managed-router manifests: https://github.com/mupt-ai/dari/tree/main/packages/router/examples/managed

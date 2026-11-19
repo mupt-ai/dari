@@ -111,6 +111,10 @@ func (c *Client) Do(ctx context.Context, method, path string, body, out any) err
 	if out == nil || len(raw) == 0 {
 		return nil
 	}
+	if bytesOut, ok := out.(*[]byte); ok {
+		*bytesOut = raw
+		return nil
+	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}

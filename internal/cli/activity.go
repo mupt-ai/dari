@@ -1,9 +1,11 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +25,7 @@ func init() {
 			newActivityModelsCmd(gf),
 			newActivityPeopleCmd(gf),
 			newActivityConversationsCmd(gf),
+			newActivityRequestCmd(gf),
 			newActivityCapabilitiesCmd(gf, "tools"),
 			newActivityCapabilitiesCmd(gf, "skills"),
 		)
@@ -303,7 +306,7 @@ func newActivityConversationsCmd(gf *globalFlags) *cobra.Command {
 	f.StringVar(&search, "search", "", "Search conversation identifiers and titles")
 	f.StringVar(&sortBy, "sort-by", "last_active", "Sort by last_active, messages, model_steps, model_switches, spend, or tokens")
 	f.StringVar(&sortDirection, "sort-direction", "desc", "Sort direction: asc or desc")
-	f.IntVar(&limit, "limit", 50, "Maximum conversations to return")
+	f.IntVar(&limit, "limit", 50, "Maximum conversations to return (at most 100)")
 	f.IntVar(&offset, "offset", 0, "Number of conversations to skip")
 	cmd.AddCommand(newActivityConversationGetCmd(gf))
 	return cmd
@@ -312,13 +315,22 @@ func newActivityConversationsCmd(gf *globalFlags) *cobra.Command {
 func newActivityConversationGetCmd(gf *globalFlags) *cobra.Command {
 	var organizationID, requestClass, agentID string
 	var limit, offset int
+	var userTurns bool
 	cmd := &cobra.Command{
 		Use:   "get <conversation_ref>",
 		Short: "Show the routed steps in one conversation",
+		Long:  "Show the routed steps in one conversation. With --user-turns, print instead what the person typed, in order, read from the conversation's latest user message.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if limit < 1 || offset < 0 {
-				return fmt.Errorf("--limit must be positive and --offset cannot be negative")
+			if userTurns {
+				turns, err := conversationUserTurns(cmd, gf, organizationID, args[0])
+				if err != nil {
+					return err
+				}
+				return printJSON(turns)
+			}
+			if err := validateActivityPage(limit, offset); err != nil {
+				return err
 			}
 			query := url.Values{"limit": {strconv.Itoa(limit)}, "offset": {strconv.Itoa(offset)}}
 			if requestClass != "" && !containsString([]string{"main", "subagent", "workflow", "auxiliary", "compaction", "side_reply", "unknown"}, requestClass) {
@@ -334,9 +346,127 @@ func newActivityConversationGetCmd(gf *globalFlags) *cobra.Command {
 	f.StringVar(&organizationID, "organization-id", "", "Read an explicit organization using browser login")
 	f.StringVar(&requestClass, "request-class", "", "Select main, subagent, workflow, auxiliary, compaction, side_reply, or unknown")
 	f.StringVar(&agentID, "agent-id", "", "Select one agent's loop")
-	f.IntVar(&limit, "limit", 100, "Maximum steps to return")
+	f.IntVar(&limit, "limit", 100, "Maximum steps to return (at most 100)")
 	f.IntVar(&offset, "offset", 0, "Number of steps to skip")
+	f.BoolVar(&userTurns, "user-turns", false, "Print only the messages the person sent, oldest first")
 	return cmd
+}
+
+var activityRequestParts = []string{"client-request", "client-response", "selector-output"}
+
+func newActivityRequestCmd(gf *globalFlags) *cobra.Command {
+	var organizationID, part string
+	cmd := &cobra.Command{
+		Use:   "request <request_id>",
+		Short: "Show the stored request, response, or selector output of one routed step",
+		Long:  "Show the stored body of one routed step, by the step id (rreq_...) that `dari activity conversations get` lists. The request holds the full conversation the agent sent, including what the person typed.",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if !containsString(activityRequestParts, part) {
+				return fmt.Errorf("invalid --part %q: expected %s", part, strings.Join(activityRequestParts, ", "))
+			}
+			var body []byte
+			if err := fetchActivity(cmd, gf, organizationID, "requests/"+url.PathEscape(args[0])+"/"+part, nil, &body); err != nil {
+				return err
+			}
+			// Selector output is stored as plain text; the other parts are JSON.
+			if !json.Valid(body) {
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), string(body))
+				return err
+			}
+			var decoded any
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				return err
+			}
+			return printJSON(decoded)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&organizationID, "organization-id", "", "Read an explicit organization using browser login")
+	f.StringVar(&part, "part", "client-request", "Show client-request, client-response, or selector-output")
+	return cmd
+}
+
+type activityStep struct {
+	ID          string    `json:"id"`
+	RequestKind string    `json:"request_kind"`
+	ReceivedAt  time.Time `json:"received_at"`
+	RequestURL  string    `json:"client_request_url"`
+}
+
+type activityUserTurns struct {
+	ConversationRef string   `json:"conversation_ref"`
+	RequestID       string   `json:"request_id"`
+	UserTurns       []string `json:"user_turns"`
+}
+
+var systemReminder = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+
+// conversationUserTurns reads the main agent's latest user message, whose
+// stored request carries every earlier turn, and keeps the person's text.
+func conversationUserTurns(cmd *cobra.Command, gf *globalFlags, organizationID, ref string) (activityUserTurns, error) {
+	result := activityUserTurns{ConversationRef: ref, UserTurns: []string{}}
+	var latest *activityStep
+	for offset := 0; ; {
+		var page struct {
+			Steps      []activityStep `json:"steps"`
+			HasMore    bool           `json:"has_more"`
+			NextOffset int            `json:"next_offset"`
+		}
+		query := url.Values{"limit": {"100"}, "offset": {strconv.Itoa(offset)}, "request_class": {"main"}}
+		if err := fetchActivity(cmd, gf, organizationID, "conversations/"+url.PathEscape(ref), query, &page); err != nil {
+			return result, err
+		}
+		for i := range page.Steps {
+			step := page.Steps[i]
+			if step.RequestKind == "user_message" && step.RequestURL != "" && (latest == nil || step.ReceivedAt.After(latest.ReceivedAt)) {
+				latest = &step
+			}
+		}
+		if !page.HasMore || page.NextOffset <= offset {
+			break
+		}
+		offset = page.NextOffset
+	}
+	if latest == nil {
+		return result, nil
+	}
+	result.RequestID = latest.ID
+	var request struct {
+		Items    []map[string]any `json:"items"`
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := fetchActivity(cmd, gf, organizationID, "requests/"+url.PathEscape(latest.ID)+"/client-request", nil, &request); err != nil {
+		return result, err
+	}
+	for _, message := range append(request.Items, request.Messages...) {
+		if message["role"] != "user" || (message["type"] != nil && message["type"] != "message") {
+			continue
+		}
+		text := strings.TrimSpace(systemReminder.ReplaceAllString(messageText(message["content"]), ""))
+		if text != "" {
+			result.UserTurns = append(result.UserTurns, text)
+		}
+	}
+	return result, nil
+}
+
+func messageText(content any) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case []any:
+		var parts []string
+		for _, part := range value {
+			if block, ok := part.(map[string]any); ok {
+				if text, ok := block["text"].(string); ok && (block["type"] == "text" || block["type"] == "input_text") {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
 }
 
 func newActivityCapabilitiesCmd(gf *globalFlags, mode string) *cobra.Command {
@@ -429,8 +559,18 @@ func validateActivityList(scope string, scopes []string, sortBy string, sortOpti
 	if direction != "asc" && direction != "desc" {
 		return fmt.Errorf("invalid --sort-direction %q: expected asc or desc", direction)
 	}
-	if limit < 1 || offset < 0 {
-		return fmt.Errorf("--limit must be positive and --offset cannot be negative")
+	return validateActivityPage(limit, offset)
+}
+
+// activityMaxPage is the largest page Activity serves.
+const activityMaxPage = 100
+
+func validateActivityPage(limit, offset int) error {
+	if limit < 1 || limit > activityMaxPage {
+		return fmt.Errorf("--limit must be between 1 and %d; page with --offset for more", activityMaxPage)
+	}
+	if offset < 0 {
+		return fmt.Errorf("--offset cannot be negative")
 	}
 	return nil
 }
@@ -448,6 +588,14 @@ func containsString(values []string, target string) bool {
 // routes through, or from hosted Dari's routing service, which serves
 // Activity for the hosted API.
 func requestActivity(cmd *cobra.Command, gf *globalFlags, organizationID, endpoint string, query url.Values) error {
+	var response any
+	if err := fetchActivity(cmd, gf, organizationID, endpoint, query, &response); err != nil {
+		return err
+	}
+	return printJSON(response)
+}
+
+func fetchActivity(cmd *cobra.Command, gf *globalFlags, organizationID, endpoint string, query url.Values, response any) error {
 	gw, err := currentGateway()
 	if err != nil {
 		return err
@@ -467,13 +615,12 @@ func requestActivity(cmd *cobra.Command, gf *globalFlags, organizationID, endpoi
 	if len(query) > 0 {
 		path += "?" + query.Encode()
 	}
-	var response any
 	switch {
 	case gw != nil:
 		if err := gw.ensure(cmd.Context(), cmd.ErrOrStderr()); err != nil {
 			return err
 		}
-		if err := api.New(gw.url).WithBearer(gw.key).Do(cmd.Context(), http.MethodGet, path, nil, &response); err != nil {
+		if err := api.New(gw.url).WithBearer(gw.key).Do(cmd.Context(), http.MethodGet, path, nil, response); err != nil {
 			return err
 		}
 	case organizationID == "":
@@ -486,7 +633,7 @@ func requestActivity(cmd *cobra.Command, gf *globalFlags, organizationID, endpoi
 			return err
 		}
 		client.BaseURL = activityBaseURL(apiURL)
-		if err := client.Do(cmd.Context(), http.MethodGet, path, nil, &response); err != nil {
+		if err := client.Do(cmd.Context(), http.MethodGet, path, nil, response); err != nil {
 			return err
 		}
 	default:
@@ -494,11 +641,11 @@ func requestActivity(cmd *cobra.Command, gf *globalFlags, organizationID, endpoi
 		if err != nil {
 			return err
 		}
-		if _, err := auth.DoAuthenticatedOn(cmd.Context(), apiURL, activityBaseURL(apiURL), http.MethodGet, path, nil, &response); err != nil {
+		if _, err := auth.DoAuthenticatedOn(cmd.Context(), apiURL, activityBaseURL(apiURL), http.MethodGet, path, nil, response); err != nil {
 			return err
 		}
 	}
-	return printJSON(response)
+	return nil
 }
 
 // activityBaseURL is the service that serves hosted Activity: the routing

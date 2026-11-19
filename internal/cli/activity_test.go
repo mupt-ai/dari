@@ -31,6 +31,78 @@ func TestConversationGetFiltersAgentLoop(t *testing.T) {
 	}
 }
 
+func TestConversationGetUserTurnsReadsLatestUserMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/organizations/current/routing/activity/conversations/conv_1":
+			if r.URL.Query().Get("request_class") != "main" {
+				t.Errorf("request_class = %q", r.URL.Query().Get("request_class"))
+			}
+			if r.URL.Query().Get("offset") == "0" {
+				_, _ = io.WriteString(w, `{"has_more":true,"next_offset":2,"steps":[
+					{"id":"rreq_old","request_kind":"user_message","received_at":"2026-11-18T01:00:00Z","client_request_url":"x"},
+					{"id":"rreq_tool","request_kind":"tool_continuation","received_at":"2026-11-18T03:00:00Z","client_request_url":"x"}]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"has_more":false,"steps":[
+				{"id":"rreq_new","request_kind":"user_message","received_at":"2026-11-18T01:00:00.5Z","client_request_url":"x"}]}`)
+		case "/v1/organizations/current/routing/activity/requests/rreq_new/client-request":
+			_, _ = io.WriteString(w, `{"items":[
+				{"type":"message","role":"user","content":[{"type":"text","text":"<system-reminder>ctx</system-reminder>fix the bug"}]},
+				{"type":"tool_result","role":"user","content":"ignored"},
+				{"type":"message","role":"assistant","content":[{"type":"text","text":"done"}]},
+				{"type":"message","role":"user","content":"open a pr"}]}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	useTestAPIKey(t)
+	cmd := newRootCmd("dev")
+	cmd.SetArgs([]string{"--api-url", srv.URL, "activity", "conversations", "get", "conv_1", "--user-turns"})
+	output, err := captureStdoutBytes(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got activityUserTurns
+	if err := json.Unmarshal(output, &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, output)
+	}
+	want := activityUserTurns{ConversationRef: "conv_1", RequestID: "rreq_new", UserTurns: []string{"fix the bug", "open a pr"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %#v, want %#v", got, want)
+	}
+}
+
+func TestActivityRequestPrintsPlainTextSelectorOutput(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, "model: openai/gpt-6-luna")
+	}))
+	defer srv.Close()
+	useTestAPIKey(t)
+	cmd := newRootCmd("dev")
+	cmd.SetArgs([]string{"--api-url", srv.URL, "activity", "request", "rreq_1", "--part", "selector-output"})
+	output, err := captureStdoutBytes(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(output)) != "model: openai/gpt-6-luna" {
+		t.Fatalf("output = %q", output)
+	}
+}
+
+func TestActivityPageLimitNamesTheCap(t *testing.T) {
+	useTestAPIKey(t)
+	cmd := newRootCmd("dev")
+	cmd.SetArgs([]string{"--api-url", "http://127.0.0.1:1", "activity", "conversations", "get", "conv_1", "--limit", "500"})
+	err := captureStdout(t, cmd.Execute)
+	if err == nil || !strings.Contains(err.Error(), "between 1 and 100") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestActivityModelsUsesAuthenticatedCurrentOrgRouteAndPreservesFilters(t *testing.T) {
 	var gotQuery map[string][]string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +217,11 @@ func TestActivityCommandsExposeActivityAPIRoutes(t *testing.T) {
 			args:      []string{"activity", "conversations", "get", "conv/a", "--limit", "25"},
 			wantPath:  "/v1/organizations/current/routing/activity/conversations/conv%2Fa",
 			wantQuery: map[string]string{"limit": "25"},
+		},
+		{
+			name:     "request body",
+			args:     []string{"activity", "request", "rreq_1", "--part", "client-response"},
+			wantPath: "/v1/organizations/current/routing/activity/requests/rreq_1/client-response",
 		},
 		{
 			name:      "people series",

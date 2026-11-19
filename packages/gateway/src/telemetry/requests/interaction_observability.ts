@@ -104,6 +104,7 @@ function interactionObservabilityMetadata(
     openai_reasoning: 0,
     anthropic_thinking: 0,
     anthropic_redacted_thinking: 0,
+    google_thought_signatures: 0,
   };
 
   for (const item of request.items) {

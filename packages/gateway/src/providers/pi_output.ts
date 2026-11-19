@@ -3,7 +3,7 @@ import { isRecord } from "@mupt-ai/dari-router/policy-engine";
 import { HttpError } from "../http/errors.js";
 import { providerToolCallIdentity, toolsByWireName } from "../interaction/tool_identity.js";
 import { isAnthropicEffort } from "../interaction/provider_continuation_state.js";
-import { isBedrockApi, isOpenAIResponsesApi } from "./model_capabilities.js";
+import { isBedrockApi, isGoogleApi, isOpenAIResponsesApi } from "./model_capabilities.js";
 import type {
   InteractionItem,
   InteractionOutput,
@@ -29,11 +29,13 @@ export function piMessageToInteractionOutput(
   if (content !== undefined && !Array.isArray(content)) throw invalidProviderOutput("content must be an array.");
 
   let pendingServerToolCall: { id: string; name: string; input: Record<string, unknown> } | null = null;
+  const toolCallSignatures: Record<string, string> = {};
   for (const block of content ?? []) {
     if (!isRecord(block)) throw invalidProviderOutput("content blocks must be objects.");
     if (block.type === "text") {
       if (typeof block.text !== "string") throw invalidProviderOutput("text content is missing text.");
-      const signature = textSignature(block.textSignature);
+      // Gemini's text signatures are thought signatures, not item identity.
+      const signature = isGoogleApi(source.api) ? null : textSignature(block.textSignature);
       items.push({
         type: "message",
         ...(signature?.id ? { id: signature.id } : {}),
@@ -50,7 +52,10 @@ export function piMessageToInteractionOutput(
       continue;
     }
     if (block.type === "toolCall") {
-      items.push(toolCallItem(block, source, tools));
+      const item = toolCallItem(block, source, tools);
+      items.push(item);
+      const thoughtSignature = optionalString(block.thoughtSignature);
+      if (thoughtSignature && isGoogleApi(source.api)) toolCallSignatures[item.callId] = thoughtSignature;
       continue;
     }
     if (block.type === "serverToolCall") {
@@ -112,6 +117,19 @@ export function piMessageToInteractionOutput(
       continue;
     }
     throw invalidProviderOutput(`content block type '${String(block.type ?? "unknown")}' is not supported.`);
+  }
+
+  // Gemini rejects a replayed step whose function call lost its signature.
+  // Clients only round-trip reasoning state, so the signatures ride in one
+  // reasoning item after the calls, keeping every other item's index.
+  if (Object.keys(toolCallSignatures).length > 0) {
+    items.push({
+      type: "reasoning",
+      summary: [],
+      content: [],
+      source,
+      continuation: { kind: "google_thought_signatures", source, toolCallSignatures },
+    });
   }
 
   if (items.length === 0) {

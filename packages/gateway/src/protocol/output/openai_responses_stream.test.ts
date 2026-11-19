@@ -505,6 +505,27 @@ test("reconciles Codex terminal events that omit their streamed output array", a
   ]);
 });
 
+test("streams Gemini tool call signatures as a reasoning item after the calls", async () => {
+  const gemini: ProviderIdentity = { provider: "google", api: "google-generative-ai", model: "gemini-4-argon" };
+  const tool = { type: "toolCall", id: "Read_1", name: "Read", arguments: {}, thoughtSignature: "c2lnLTE=" };
+  const terminal = piMessage([tool], "toolUse");
+  const events = await streamEvents([
+    { type: "toolcall_start", contentIndex: 0, partial: terminal },
+    { type: "toolcall_end", contentIndex: 0, toolCall: tool, partial: terminal },
+    { type: "done", message: terminal },
+  ], gemini);
+
+  const done = outputDone(events);
+  expect(done.map((event) => event.output_index)).toEqual([0, 1]);
+  const reasoning = done[1]?.item as Record<string, unknown>;
+  expect(reasoning.type).toBe("reasoning");
+  expect(decodeUntrustedProviderContinuationState(String(reasoning.encrypted_content))).toEqual({
+    kind: "google_thought_signatures",
+    source: gemini,
+    toolCallSignatures: { Read_1: "c2lnLTE=" },
+  });
+});
+
 async function streamEvents(
   events: Array<Record<string, unknown>>,
   source: ProviderIdentity = OPENAI

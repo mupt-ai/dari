@@ -86,7 +86,11 @@ export function anthropicReasoningBlock(
   const encoded = item.continuation
     ? encodeProviderContinuationState(item.continuation)
     : encodePortableReasoningState({ source: item.source, itemId: item.id });
-  if (item.continuation?.kind === "anthropic_redacted_thinking") {
+  // Gemini's signature-only state has nothing readable to show.
+  if (
+    item.continuation?.kind === "anthropic_redacted_thinking"
+    || item.continuation?.kind === "google_thought_signatures"
+  ) {
     return { type: "redacted_thinking", data: encoded };
   }
   return {

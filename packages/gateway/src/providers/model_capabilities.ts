@@ -37,8 +37,13 @@ export function providerApiCanSerializeResponseFormat(metadata: ModelCapabilityM
     metadata.model.api === "openai-responses" ||
     metadata.model.api === "azure-openai-responses" ||
     metadata.model.api === "openai-completions" ||
-    metadata.model.api === "anthropic-messages"
+    metadata.model.api === "anthropic-messages" ||
+    isGoogleApi(metadata.model.api)
   );
+}
+
+export function isGoogleApi(api: unknown): boolean {
+  return api === "google-generative-ai" || api === "google-vertex";
 }
 
 export function isOpenAIResponsesApi(api: unknown): boolean {

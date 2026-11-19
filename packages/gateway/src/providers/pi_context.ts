@@ -54,6 +54,7 @@ export function buildContext(
   const timestamp = Date.now();
   let pending: PiAssistant | null = null;
   let sawConversationItem = false;
+  const thoughtSignatures = googleThoughtSignatures(request.items, target);
 
   const flushAssistant = () => {
     if (!pending) return;
@@ -150,7 +151,9 @@ export function buildContext(
       continue;
     }
     if (item.type === "reasoning") {
-      const continuation = compatibleProviderContinuation(item.continuation, target);
+      const compatible = compatibleProviderContinuation(item.continuation, target);
+      // Gemini signatures are replayed on their tool calls below.
+      const continuation = compatible?.kind === "google_thought_signatures" ? null : compatible;
       if (continuation) {
         const assistant = assistantForReasoning(continuation.source);
         const firstNonReasoning = assistant.content.findIndex((content) => content.type !== "thinking");
@@ -180,7 +183,12 @@ export function buildContext(
       continue;
     }
     if (item.type === "tool_call") {
-      const assistant = assistantFor(pending ? identityOf(pending) : UNKNOWN_SOURCE);
+      const thoughtSignature = thoughtSignatures.get(itemIndex);
+      // A signed call came from the target model; Pi replays its signature
+      // only on an assistant turn that model produced.
+      const assistant = thoughtSignature
+        ? assistantForReasoning(target)
+        : assistantFor(pending ? identityOf(pending) : UNKNOWN_SOURCE);
       const id = providerToolCallId(item.callId, item.id, target.api);
       const name = toolWireName(item.namespace, item.name);
       assistant.content.push({
@@ -188,6 +196,7 @@ export function buildContext(
         id,
         name,
         arguments: toolArguments(item.kind, item.input),
+        ...(thoughtSignature ? { thoughtSignature } : {}),
       });
       toolCalls.set(item.callId, { id, name });
       continue;
@@ -282,13 +291,35 @@ export function buildContext(
   return context;
 }
 
+// Signatures are keyed by item index, not call id: Gemini may reuse a call id
+// in a later step, so each envelope signs only the calls of its own assistant
+// turn (the items between the surrounding tool results and user messages).
+function googleThoughtSignatures(items: InteractionItem[], target: ProviderIdentity): Map<number, string> {
+  const signatures = new Map<number, string>();
+  const bounds = (item: InteractionItem) =>
+    item.type === "tool_result" || (item.type === "message" && item.role !== "assistant");
+  for (const [index, item] of items.entries()) {
+    if (item.type !== "reasoning") continue;
+    const continuation = compatibleProviderContinuation(item.continuation, target);
+    if (continuation?.kind !== "google_thought_signatures") continue;
+    let start = index;
+    while (start > 0 && !bounds(items[start - 1]!)) start -= 1;
+    for (let callIndex = start; callIndex < items.length && !bounds(items[callIndex]!); callIndex += 1) {
+      const call = items[callIndex]!;
+      const signature = call.type === "tool_call" && Object.hasOwn(continuation.toolCallSignatures, call.callId) ? continuation.toolCallSignatures[call.callId] : undefined;
+      if (signature) signatures.set(callIndex, signature);
+    }
+  }
+  return signatures;
+}
+
 function isSentTool(tool: InteractionTool, target: ProviderIdentity): tool is Exclude<InteractionTool, { kind: "hosted" }> {
   return tool.kind !== "hosted" && (tool.kind !== "server_tool" || target.api === "anthropic-messages");
 }
 
 function thinkingContent(
   item: Extract<InteractionItem, { type: "reasoning" }>,
-  continuation: ProviderContinuationState
+  continuation: Exclude<ProviderContinuationState, { kind: "google_thought_signatures" }>
 ): Record<string, unknown> {
   if (continuation.kind === "openai_reasoning") {
     const providerItemId = continuation.providerItemId ?? item.id;

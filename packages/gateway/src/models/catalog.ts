@@ -66,6 +66,7 @@ export const DEFAULT_CATALOG_PROVIDERS: readonly string[] = [
   "anthropic",
   "meta",
   "xai",
+  "google",
   "fireworks",
   "opencode-go",
   "openrouter",

@@ -228,6 +228,22 @@ export function anthropicMessagesSseStream(args: {
                 sendProviderError(event.message);
               } else {
                 const output = piMessageToInteractionOutput(event.message, args.source, args.request);
+                // Content blocks stream at the provider's content indexes;
+                // Gemini's signatures follow them in one more block.
+                const signatures = output.items.at(-1);
+                if (
+                  signatures?.type === "reasoning"
+                  && signatures.continuation?.kind === "google_thought_signatures"
+                  && Array.isArray(event.message.content)
+                ) {
+                  const index = event.message.content.length;
+                  send("content_block_start", {
+                    type: "content_block_start",
+                    index,
+                    content_block: anthropicReasoningBlock(signatures),
+                  });
+                  send("content_block_stop", { type: "content_block_stop", index });
+                }
                 settle({ status: "completed", message: event.message, output });
                 send("message_delta", {
                   type: "message_delta",

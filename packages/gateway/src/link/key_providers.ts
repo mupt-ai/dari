@@ -11,6 +11,7 @@ const PROVIDER_NAMES: Record<string, string> = {
   meta: "Meta",
   moonshotai: "Moonshot AI",
   xai: "xAI",
+  google: "Google",
 };
 
 /**

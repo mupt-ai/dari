@@ -569,6 +569,7 @@ function defaultApi(provider: string): string {
   // Meta recommends Responses: its Chat Completions drops reasoning between turns.
   if (provider === "openai" || provider === "xai" || provider === "meta") return "openai-responses";
   if (provider === "anthropic") return "anthropic-messages";
+  if (provider === "google") return "google-generative-ai";
   if (provider === "amazon-bedrock") return BEDROCK_API;
   if (provider === "azure") return "azure-openai-responses";
   return "openai-completions";

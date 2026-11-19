@@ -170,6 +170,7 @@ test("extracts one bounded content-free schema from the interaction", () => {
       openai_reasoning: 1,
       anthropic_thinking: 0,
       anthropic_redacted_thinking: 1,
+      google_thought_signatures: 0,
     },
     instructions_present: true,
     reasoning_history_present: true,
@@ -567,6 +568,7 @@ test("extracts Anthropic Messages facts after ingress", () => {
       openai_reasoning: 0,
       anthropic_thinking: 1,
       anthropic_redacted_thinking: 0,
+      google_thought_signatures: 0,
     },
     declared_tool_counts: {
       total: 1,

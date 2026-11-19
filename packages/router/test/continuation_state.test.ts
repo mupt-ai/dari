@@ -113,6 +113,19 @@ test("Bedrock-sourced Anthropic thinking replays to the same Bedrock identity on
   ).toBeNull();
 });
 
+test("Gemini tool call signatures round-trip and replay to the same Gemini model only", () => {
+  const geminiSource = { provider: "google", api: "google-generative-ai", model: "gemini-4-argon" };
+  const signatures: ProviderContinuationState = {
+    kind: "google_thought_signatures",
+    source: geminiSource,
+    toolCallSignatures: { Read_1: "c2lnLTE=", Read_2: "c2lnLTI=" },
+  };
+  expect(decodeUntrustedProviderContinuationState(encodeProviderContinuationState(signatures))).toEqual(signatures);
+  expect(compatibleProviderContinuation(signatures, geminiSource)).toEqual(signatures);
+  expect(compatibleProviderContinuation(signatures, { ...geminiSource, model: "gemini-3.8-flash" })).toBeNull();
+  expect(() => encodeProviderContinuationState({ ...signatures, toolCallSignatures: {} })).toThrow();
+});
+
 test("sameProviderIdentity compares provider, api, and model", () => {
   expect(sameProviderIdentity(OPENAI_SOURCE, OPENAI_SOURCE)).toBe(true);
   expect(sameProviderIdentity(OPENAI_SOURCE, { ...OPENAI_SOURCE, model: "other" })).toBe(false);

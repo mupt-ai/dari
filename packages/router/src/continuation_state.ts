@@ -28,6 +28,13 @@ export type ProviderContinuationState =
       source: ProviderIdentity;
       data: string;
       effort?: AnthropicEffort;
+    }
+  | {
+      // Gemini signs each step's first function call and rejects a replayed
+      // step without that signature. Signatures are keyed by tool call ID.
+      kind: "google_thought_signatures";
+      source: ProviderIdentity;
+      toolCallSignatures: Record<string, string>;
     };
 
 /**
@@ -58,6 +65,7 @@ const MAX_API_LENGTH = 128;
 const MAX_MODEL_LENGTH = 512;
 const MAX_ITEM_ID_LENGTH = 512;
 const MAX_HOSTED_TOOL_CALL_IDS = 256;
+const MAX_TOOL_CALL_SIGNATURES = 256;
 const MAX_HOSTED_TOOL_CALL_OFFSET = 1_000_000;
 
 type EnvelopeV1 = {
@@ -107,6 +115,10 @@ export function decodeUntrustedProviderContinuationState(
   return stateFromEnvelope(validateEnvelope(decoded, "invalid_request"));
 }
 
+export function isGoogleApi(api: string): boolean {
+  return api === "google-generative-ai" || api === "google-vertex";
+}
+
 export function isOpenAIResponsesApi(api: string): boolean {
   return api === "openai-responses" || api === "azure-openai-responses";
 }
@@ -124,6 +136,9 @@ export function compatibleProviderContinuation(
   if (!continuation || !target || !sameProviderIdentity(continuation.source, target)) return null;
   if (continuation.kind === "openai_reasoning") {
     return isOpenAIReasoningContinuationApi(target.api) ? continuation : null;
+  }
+  if (continuation.kind === "google_thought_signatures") {
+    return isGoogleApi(target.api) ? continuation : null;
   }
   // Anthropic thinking signatures also round-trip through Bedrock's Converse
   // Stream transport (Claude on Bedrock rejects replayed thinking without its
@@ -171,6 +186,14 @@ function envelopeFor(value: ProviderContinuationState): EnvelopeV1 {
       },
     };
   }
+  if (value.kind === "google_thought_signatures") {
+    return {
+      v: 1,
+      kind: value.kind,
+      source: value.source,
+      state: { tool_call_signatures: JSON.stringify(value.toolCallSignatures) },
+    };
+  }
   if (value.kind === "anthropic_thinking") {
     return {
       v: 1,
@@ -216,6 +239,13 @@ function stateFromEnvelope(envelope: EnvelopeV1): ProviderContinuationState {
         : {}),
     };
   }
+  if (envelope.kind === "google_thought_signatures") {
+    return {
+      kind: envelope.kind,
+      source: envelope.source,
+      toolCallSignatures: toolCallSignatures(envelope.state.tool_call_signatures, "invalid_request"),
+    };
+  }
   if (envelope.kind === "anthropic_thinking") {
     return {
       kind: envelope.kind,
@@ -243,7 +273,8 @@ function validateEnvelope(
   if (
     value.kind !== "openai_reasoning" &&
     value.kind !== "anthropic_thinking" &&
-    value.kind !== "anthropic_redacted_thinking"
+    value.kind !== "anthropic_redacted_thinking" &&
+    value.kind !== "google_thought_signatures"
   ) {
     throw invalidState(kind, "Provider continuation state kind is invalid.");
   }
@@ -313,6 +344,16 @@ function validateState(
       ...(offsets ? { hosted_tool_call_offsets: JSON.stringify(offsets) } : {}),
     };
   }
+  if (continuationKind === "google_thought_signatures") {
+    if (!hasExactKeys(value, ["tool_call_signatures"])) {
+      throw invalidState(errorKind, "Google thought signature state schema is invalid.");
+    }
+    const signatures = toolCallSignatures(
+      nonEmptyString(value.tool_call_signatures, errorKind, "tool_call_signatures"),
+      errorKind,
+    );
+    return { tool_call_signatures: JSON.stringify(signatures) };
+  }
   if (continuationKind === "anthropic_thinking") {
     if (!hasKeys(value, ["thinking", "signature"], ["effort"])) {
       throw invalidState(errorKind, "Anthropic thinking state schema is invalid.");
@@ -349,6 +390,26 @@ function hostedToolCallIds(
     throw invalidState(kind, "OpenAI hosted tool continuation state is invalid.");
   }
   return parsed.map((id) => boundedString(id, MAX_ITEM_ID_LENGTH, kind, "hosted_tool_call_id"));
+}
+
+function toolCallSignatures(
+  value: string,
+  kind: "configuration" | "invalid_request",
+): Record<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw invalidState(kind, "Google thought signature state is invalid.");
+  }
+  const entries = isRecord(parsed) ? Object.entries(parsed) : [];
+  if (entries.length === 0 || entries.length > MAX_TOOL_CALL_SIGNATURES) {
+    throw invalidState(kind, "Google thought signature state is invalid.");
+  }
+  return Object.fromEntries(entries.map(([callId, signature]) => [
+    boundedString(callId, MAX_ITEM_ID_LENGTH, kind, "tool_call_id"),
+    nonEmptyString(signature, kind, "thought_signature"),
+  ]));
 }
 
 function hostedToolCallOffsets(

@@ -127,6 +127,36 @@ test("streams a portable signature instead of an empty fallback envelope", async
   });
 });
 
+test("streams Gemini tool call signatures in a block after the calls", async () => {
+  const gemini: ProviderIdentity = { provider: "google", api: "google-generative-ai", model: "gemini-4-argon" };
+  const tool = { type: "toolCall", id: "Read_1", name: "Read", arguments: {}, thoughtSignature: "c2lnLTE=" };
+  const terminal = piMessage([tool]);
+  const stream = anthropicMessagesSseStream({
+    id: "request_gemini",
+    model: "google/gemini-4-argon",
+    routing: { selectedModel: "google/gemini-4-argon", reasoningEffort: "high", reason: "selected" },
+    source: gemini,
+    request: REQUEST,
+    events: asyncEvents([
+      { type: "toolcall_start", contentIndex: 0, partial: terminal },
+      { type: "toolcall_end", contentIndex: 0, toolCall: tool, partial: terminal },
+      { type: "done", message: terminal },
+    ]),
+  });
+
+  const starts = parseSse(await new Response(stream).text())
+    .filter((event) => event.event === "content_block_start")
+    .map((event) => event.data);
+  expect(starts.map((start) => start.index)).toEqual([0, 1]);
+  const block = starts[1]?.content_block as Record<string, unknown>;
+  expect(block.type).toBe("redacted_thinking");
+  expect(decodeUntrustedProviderContinuationState(String(block.data))).toEqual({
+    kind: "google_thought_signatures",
+    source: gemini,
+    toolCallSignatures: { Read_1: "c2lnLTE=" },
+  });
+});
+
 async function* asyncEvents(events: Array<Record<string, unknown>>): AsyncIterable<Record<string, unknown>> {
   yield* events;
 }

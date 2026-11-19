@@ -6,6 +6,7 @@ import {
   isOpenAiFamily,
   openAiCachedPrefixTokens,
   promptCacheProviderForModel,
+  providerCacheableTokens,
   providerMinCacheTokens,
 } from "../src/cache_behavior.js";
 
@@ -61,4 +62,10 @@ test("classifies Meta as an automatic prompt-cache provider", () => {
   expect(promptCacheProviderForModel("meta/muse-spark-1.1")).toBe("meta");
   expect(promptCacheProviderForModel("Meta/muse-spark-1.1")).toBe("meta");
   expect(providerMinCacheTokens("meta/muse-spark-1.1")).toBe(0);
+});
+
+test("Gemini 4 Neon caches only from its documented 4,096-token minimum", () => {
+  expect(providerMinCacheTokens("google/gemini-4-neon")).toBe(4096);
+  expect(providerCacheableTokens("google/gemini-4-neon", "google", 4095)).toBe(0);
+  expect(providerCacheableTokens("google/gemini-4-argon", "google", 4095)).toBe(4095);
 });

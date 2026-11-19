@@ -29,6 +29,9 @@ export const FIXED_TURN_CACHE_HIT_PROBABILITY = {
   // Provisional: 9/10 large-prefix follow-ups reused the user prefix in the
   // September 16, 2026 native Grok 4.6 probe (low effort, short intervals).
   xai: 0.90,
+  // Provisional: Gemini's implicit cache is best-effort and has not been
+  // probed natively; calibrate from measured Gemini 4 follow-ups.
+  google: 0.80,
 } as const;
 
 // Tokens an agent turn adds to the next prompt (its reply plus the tool

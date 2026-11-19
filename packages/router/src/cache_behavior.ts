@@ -16,7 +16,7 @@ export const CROSS_TOKENIZER_RATIO = 1.1;
 const OPENAI_MIN_CACHE_TOKENS = 1024;
 const OPENAI_CACHE_INCREMENT_TOKENS = 128;
 
-export type PromptCacheProvider = "openai" | "anthropic" | "fireworks" | "meta" | "xai";
+export type PromptCacheProvider = "openai" | "anthropic" | "fireworks" | "meta" | "xai" | "google";
 export type ModelProviderLookup = (model: string) => string;
 
 // Callers that know the serving provider pass it; otherwise the model id's
@@ -50,6 +50,7 @@ export function promptCacheProviderForModel(
   if (isFireworksFamily(model, provider)) return "fireworks";
   if (isMetaFamily(model, provider)) return "meta";
   if (modelFamilyProvider(model, provider) === "xai") return "xai";
+  if (modelFamilyProvider(model, provider) === "google") return "google";
   return null;
 }
 
@@ -133,8 +134,16 @@ export function prefixHitMatchesProvider(
 const XAI_MIN_CACHE_TOKENS = 640;
 const XAI_CACHE_INCREMENT_TOKENS = 128;
 
+// Gemini caches implicitly and reads the whole matched prefix. Google
+// documents a 4,096-token minimum for Gemini 4 Neon; the 1,024 default is
+// provisional until a native Gemini 4 probe measures it.
+function googleMinCacheTokens(model: string): number {
+  return nativeModelId(model).toLowerCase().includes("gemini-4-neon") ? 4096 : 1024;
+}
+
 export function providerMinCacheTokens(model: string, provider?: string): number {
   if (modelFamilyProvider(model, provider) === "xai") return XAI_MIN_CACHE_TOKENS;
+  if (modelFamilyProvider(model, provider) === "google") return googleMinCacheTokens(model);
   if (isAnthropicFamily(model, provider)) return anthropicMinCacheTokens(model, provider);
   if (isFireworksFamily(model, provider) || isMetaFamily(model, provider)) return 0;
   return OPENAI_MIN_CACHE_TOKENS;
@@ -169,6 +178,9 @@ export function providerCacheableTokens(
   }
   if (provider === "anthropic") {
     return prefixTokens >= anthropicMinCacheTokens(model, provider) ? Math.floor(prefixTokens) : 0;
+  }
+  if (provider === "google") {
+    return prefixTokens >= googleMinCacheTokens(model) ? Math.floor(prefixTokens) : 0;
   }
   return Math.floor(prefixTokens);
 }

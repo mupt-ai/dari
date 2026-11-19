@@ -758,7 +758,7 @@ func TestGatewayActivityReadsTheGateway(t *testing.T) {
 func TestLocalProviderKeysCoverPickerProviders(t *testing.T) {
 	saved := map[string]bool{}
 	for _, key := range localProviderKeys {
-		saved[strings.ToLower(strings.TrimSuffix(key.env, "_API_KEY"))] = true
+		saved[strings.ToLower(key.name)] = true
 	}
 	for _, provider := range strings.Split(gatewayCatalogProviders, ",") {
 		if !saved[provider] {

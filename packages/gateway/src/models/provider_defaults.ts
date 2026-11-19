@@ -10,6 +10,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   fireworks: "Fireworks",
   meta: "Meta",
   xai: "xAI",
+  google: "Google",
   "opencode-go": "OpenCode Go",
   dari: "Dari",
   "amazon-bedrock": "Amazon Bedrock",
@@ -34,6 +35,7 @@ const PROVIDER_BASE_URLS: Record<string, string> = {
   anthropic: "https://api.anthropic.com",
   fireworks: "https://api.fireworks.ai/inference/v1",
   xai: "https://api.x.ai/v1",
+  google: "https://generativelanguage.googleapis.com/v1beta",
   // A flat-rate plan for open models; each model keeps its own API path
   // under https://opencode.ai/inference/go/, and this is chat completions.
   "opencode-go": "https://opencode.ai/inference/go/openai/v1",

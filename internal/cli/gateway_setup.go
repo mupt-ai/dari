@@ -293,6 +293,7 @@ var localProviderKeys = []struct{ name, article, env string }{
 	{"xAI", "an", "XAI_API_KEY"},
 	{"Meta", "a", "META_API_KEY"},
 	{"Fireworks", "a", "FIREWORKS_API_KEY"},
+	{"Google", "a", "GEMINI_API_KEY"},
 	{"OpenCode Go", "an", "OPENCODE_API_KEY"},
 }
 
@@ -433,7 +434,7 @@ func gatewayModelListsError(err error) error {
 // gatewayCatalogProviders are the providers the gateway model picker offers:
 // those in the gateway's bundled catalog that take a subscription or one API
 // key.
-const gatewayCatalogProviders = "anthropic,openai,deepseek,xai,meta,fireworks"
+const gatewayCatalogProviders = "anthropic,openai,deepseek,xai,meta,fireworks,google"
 
 // chooseGatewayModels opens the hosted router's model picker over the
 // gateway's catalog and saves the choice on the gateway. The choice is the

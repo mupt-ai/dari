@@ -1141,3 +1141,165 @@ test("Claude Code text documents and search results reach any model as text", as
   expect(serialized).toContain("Use tabs.");
   expect(serialized).toContain("Search result: Tabs\\nSource: https://docs.example/tabs\\n\\nTabs are four columns.");
 });
+
+function geminiConfig(): ResolvedRouterModelConfig {
+  return {
+    ...modelConfig("google", "gemini-4-argon", "google-generative-ai", 1_048_576, ["low", "medium", "high"], "high", 32_768),
+    base_url: "https://generativelanguage.googleapis.com/v1beta",
+  };
+}
+
+function geminiTurn(messages: unknown[], extra: Record<string, unknown> = {}): InteractionRequest {
+  return anthropicMessagesToInteraction({
+    model: "dari/routing",
+    max_tokens: 4096,
+    output_config: { effort: "high" },
+    tools: [
+      { name: "Read", input_schema: { type: "object", properties: { path: { type: "string" } } } },
+      { name: "Grep", input_schema: { type: "object", properties: { pattern: { type: "string" } } } },
+    ],
+    messages,
+    ...extra,
+  });
+}
+
+test("Gemini gets its own thought signatures back on the calls it made", async () => {
+  const user = { role: "user", content: [{ type: "text", text: "Read the files." }] };
+  const first = geminiTurn([user]);
+  const source = { provider: "google", api: "google-generative-ai", model: "gemini-4-argon" };
+  const response = piMessageToInteractionOutput({
+    role: "assistant",
+    ...source,
+    content: [
+      { type: "text", text: "Reading both.", textSignature: "dGV4dC1zaWc=" },
+      { type: "toolCall", id: "Read_1", name: "Read", arguments: { path: "a.ts" }, thoughtSignature: "c2lnLTE=" },
+      { type: "toolCall", id: "Read_2", name: "Read", arguments: { path: "b.ts" } },
+    ],
+    stopReason: "toolUse",
+  }, source, first);
+  const content = anthropicContent(response);
+  // The signatures ride in one opaque block after the calls.
+  expect(content.map((block) => block.type)).toEqual(["text", "tool_use", "tool_use", "redacted_thinking"]);
+  expect(JSON.stringify(content)).not.toContain("dGV4dC1zaWc=");
+
+  const replayed = await captureInteractionPayload(geminiTurn([
+    user,
+    { role: "assistant", content },
+    {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "Read_1", content: "a" },
+        { type: "tool_result", tool_use_id: "Read_2", content: "b" },
+      ],
+    },
+  ]), "google/gemini-4-argon", geminiConfig());
+  const contents = replayed.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+  const model = contents.find((entry) => entry.role === "model");
+  expect(model?.parts.filter((part) => part.functionCall)).toEqual([
+    { functionCall: { name: "Read", args: { path: "a.ts" }, id: "Read_1" }, thoughtSignature: "c2lnLTE=" },
+    { functionCall: { name: "Read", args: { path: "b.ts" }, id: "Read_2" } },
+  ]);
+});
+
+test("Gemini signatures stay on their own step when a call id repeats", async () => {
+  const user = { role: "user", content: [{ type: "text", text: "Read the file twice." }] };
+  const source = { provider: "google", api: "google-generative-ai", model: "gemini-4-argon" };
+  const step = (signature: string) => anthropicContent(piMessageToInteractionOutput({
+    role: "assistant",
+    ...source,
+    content: [{ type: "toolCall", id: "Read_1", name: "Read", arguments: { path: "a.ts" }, thoughtSignature: signature }],
+    stopReason: "toolUse",
+  }, source, geminiTurn([user])));
+  const result = { role: "user", content: [{ type: "tool_result", tool_use_id: "Read_1", content: "a" }] };
+
+  const replayed = await captureInteractionPayload(geminiTurn([
+    user,
+    { role: "assistant", content: step("c2lnLTE=") },
+    result,
+    { role: "assistant", content: step("c2lnLTI=") },
+    result,
+  ]), "google/gemini-4-argon", geminiConfig());
+  const contents = replayed.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+  expect(contents.filter((entry) => entry.role === "model").map((entry) => entry.parts[0]?.thoughtSignature))
+    .toEqual(["c2lnLTE=", "c2lnLTI="]);
+});
+
+test("Gemini gets the placeholder on an unsigned first call beside a signed one", async () => {
+  const user = { role: "user", content: [{ type: "text", text: "Read the files." }] };
+  const source = { provider: "google", api: "google-generative-ai", model: "gemini-4-argon" };
+  const content = anthropicContent(piMessageToInteractionOutput({
+    role: "assistant",
+    ...source,
+    content: [
+      { type: "toolCall", id: "Read_1", name: "Read", arguments: { path: "a.ts" } },
+      { type: "toolCall", id: "Read_2", name: "Read", arguments: { path: "b.ts" }, thoughtSignature: "c2lnLTI=" },
+    ],
+    stopReason: "toolUse",
+  }, source, geminiTurn([user])));
+
+  const replayed = await captureInteractionPayload(geminiTurn([
+    user,
+    { role: "assistant", content },
+    {
+      role: "user",
+      content: [
+        { type: "tool_result", tool_use_id: "Read_1", content: "a" },
+        { type: "tool_result", tool_use_id: "Read_2", content: "b" },
+      ],
+    },
+  ]), "google/gemini-4-argon", geminiConfig());
+  const contents = replayed.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+  const signatures = contents.filter((entry) => entry.role === "model")
+    .flatMap((entry) => entry.parts.filter((part) => part.functionCall).map((part) => part.thoughtSignature));
+  expect(signatures).toEqual(["skip_thought_signature_validator", "c2lnLTI="]);
+});
+
+test("Gemini skips signature validation on calls another model made", async () => {
+  const replayed = await captureInteractionPayload(geminiTurn([
+    { role: "user", content: [{ type: "text", text: "Read the file." }] },
+    { role: "assistant", content: [{ type: "tool_use", id: "toolu_1", name: "Read", input: { path: "a.ts" } }] },
+    { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "a" }] },
+  ]), "google/gemini-4-argon", geminiConfig());
+  const contents = replayed.contents as Array<{ role: string; parts: Array<Record<string, unknown>> }>;
+  expect(contents.find((entry) => entry.role === "model")?.parts).toEqual([
+    {
+      functionCall: { name: "Read", args: { path: "a.ts" }, id: "toolu_1" },
+      thoughtSignature: "skip_thought_signature_validator",
+    },
+  ]);
+});
+
+test("Gemini receives thinking level, named tool choice, and JSON schema output", async () => {
+  const payload = await captureInteractionPayload(geminiTurn(
+    [{ role: "user", content: [{ type: "text", text: "Read the file." }] }],
+    {
+      tool_choice: { type: "tool", name: "Read" },
+      output_config: {
+        effort: "medium",
+        format: { type: "json_schema", schema: { type: "object", properties: { ok: { type: "boolean" } } } },
+      },
+    },
+  ), "google/gemini-4-argon", geminiConfig());
+  expect(payload).toMatchObject({
+    toolConfig: { functionCallingConfig: { mode: "ANY", allowedFunctionNames: ["Read"] } },
+    generationConfig: {
+      thinkingConfig: { includeThoughts: true, thinkingLevel: "MEDIUM" },
+      responseMimeType: "application/json",
+      responseJsonSchema: { type: "object", properties: { ok: { type: "boolean" } } },
+    },
+  });
+});
+
+test("Gemini 4 Neon and Hydrogen receive extra-high thinking as XHIGH", async () => {
+  for (const model of ["gemini-4-neon", "gemini-4-hydrogen"]) {
+    const config = {
+      ...modelConfig("google", model, "google-generative-ai", 1_048_576, ["low", "medium", "high", "xhigh"], "high", 65_536),
+      base_url: "https://generativelanguage.googleapis.com/v1beta",
+    };
+    const payload = await captureInteractionPayload(geminiTurn(
+      [{ role: "user", content: [{ type: "text", text: "Think hard." }] }],
+      { output_config: { effort: "xhigh" } },
+    ), `google/${model}`, config);
+    expect(payload).toMatchObject({ generationConfig: { thinkingConfig: { includeThoughts: true, thinkingLevel: "XHIGH" } } });
+  }
+});

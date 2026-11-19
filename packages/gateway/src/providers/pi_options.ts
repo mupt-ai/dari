@@ -154,7 +154,14 @@ export function buildOptions(
     // Bedrock builds its Converse toolConfig from options.toolChoice before
     // onPayload runs, so the choice must ride on options, not a payload patch.
     if (isBedrockApi(api)) options.toolChoice = bedrockToolChoice(toolChoice);
-    else patches.push((payload) => ({ ...payload, tool_choice: providerToolChoice(toolChoice, api) }));
+    else if (isGoogle(api)) {
+      // Pi's Google transport builds functionCallingConfig from the option.
+      options.toolChoice = googleToolChoice(toolChoice);
+      if (typeof toolChoice !== "string" && toolChoice.kind !== "hosted") {
+        const name = toolWireName(toolChoice.namespace, toolChoice.name);
+        patches.push((payload) => payloadWithGoogleAllowedFunction(payload, name));
+      }
+    } else patches.push((payload) => ({ ...payload, tool_choice: providerToolChoice(toolChoice, api) }));
   }
   if (request.tools.some((tool) => tool.kind === "function" && (tool.strict !== undefined || isAnthropic(api)))) {
     patches.push((payload) => payloadWithStrictTools(payload, request, api));
@@ -191,6 +198,7 @@ export function buildOptions(
     patches.push(payloadWithoutReasoningEffort);
   }
   if (isOpenAIResponsesApi(api)) patches.push(payloadWithDetailedReasoningSummary);
+  if (isGoogle(api)) patches.push(payloadWithGoogleThoughtSignatures);
 
   // Some clients send the default tool_choice even after omitting tools for
   // a turn. OpenAI rejects every tool_choice value when the lowered payload
@@ -401,6 +409,10 @@ function payloadWithResponseFormat(payload: Payload, format: InteractionResponse
     const schema = format.type === "json_schema" ? format.schema : { type: "object" };
     return { ...payload, output_config: { ...asRecord(payload.output_config), format: { type: "json_schema", schema } } };
   }
+  if (isGoogle(api)) {
+    const config = { ...asRecord(payload.config), responseMimeType: "application/json" };
+    return { ...payload, config: format.type === "json_schema" ? { ...config, responseJsonSchema: format.schema } : config };
+  }
   if (format.type === "json_object") {
     if (isResponses(api)) return { ...payload, text: { ...asRecord(payload.text), format } };
     if (isCompletions(api)) return { ...payload, response_format: format };
@@ -416,6 +428,44 @@ function bedrockToolChoice(choice: InteractionToolChoice): unknown {
   if (typeof choice === "string") return choice;
   if (choice.kind === "hosted") return undefined;
   return { type: "function", function: { name: toolWireName(choice.namespace, choice.name) } };
+}
+
+function googleToolChoice(choice: InteractionToolChoice): "auto" | "none" | "any" | undefined {
+  if (typeof choice === "string") return choice === "auto" || choice === "none" ? choice : "any";
+  return choice.kind === "hosted" ? undefined : "any";
+}
+
+function payloadWithGoogleAllowedFunction(payload: Payload, name: string): Payload {
+  const config = asRecord(payload.config);
+  const toolConfig = asRecord(config.toolConfig);
+  const functionCallingConfig = { ...asRecord(toolConfig.functionCallingConfig), allowedFunctionNames: [name] };
+  return { ...payload, config: { ...config, toolConfig: { ...toolConfig, functionCallingConfig } } };
+}
+
+// Gemini rejects a step whose first function call has no thought signature.
+// Calls another model made, or whose signature the client dropped, carry
+// Google's documented placeholder that skips the check.
+const GOOGLE_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator";
+
+function payloadWithGoogleThoughtSignatures(payload: Payload): Payload | undefined {
+  if (!Array.isArray(payload.contents)) return undefined;
+  let changed = false;
+  const contents = payload.contents.map((content) => {
+    if (!isRecord(content) || content.role !== "model" || !Array.isArray(content.parts)) return content;
+    const parts = content.parts;
+    // Gemini validates the first call of each step, so that call needs a
+    // signature even when a later call in the same turn carries one.
+    const first = parts.findIndex((part) => isRecord(part) && isRecord(part.functionCall));
+    if (first === -1 || asRecord(parts[first]).thoughtSignature) return content;
+    changed = true;
+    return {
+      ...content,
+      parts: parts.map((part, index) =>
+        index === first ? { ...asRecord(part), thoughtSignature: GOOGLE_SKIP_THOUGHT_SIGNATURE } : part
+      ),
+    };
+  });
+  return changed ? { ...payload, contents } : undefined;
 }
 
 function providerToolChoice(choice: InteractionToolChoice, api: unknown): unknown {

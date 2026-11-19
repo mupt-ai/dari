@@ -62,14 +62,11 @@ func CLISetup(settingsPath, executable, baseURL, key string, models agents.Model
 	set(modelPickerKey, map[string]any{"options": pickerOptions(models), "replaceBuiltInOptions": true})
 	// A status line the user set before Dari is theirs to keep.
 	if _, owned := replaced[statusLineKey]; owned || settings[statusLineKey] == nil {
-		executable, err := agents.StatusExecutable()
+		statusLine, err := statusLineSettings()
 		if err != nil {
 			return err
 		}
-		set(statusLineKey, map[string]any{
-			"type":    "command",
-			"command": agents.ShellQuote(executable) + " agent-status --claude",
-		})
+		set(statusLineKey, statusLine)
 	}
 
 	env, _ := settings["env"].(map[string]any)

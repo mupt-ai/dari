@@ -41,14 +41,14 @@ func TestTemplateIsTakenOutOfTheAgentsArguments(t *testing.T) {
 		wantErr  bool
 		lookups  int
 	}{
-		{"separate value", []string{"--resume", "--template", "deepseek-subagent", "-p", "hi"}, "deepseek-subagent", []string{"--resume", "-p", "hi"}, false, 1},
-		{"equals value", []string{"--template=deepseek-subagent"}, "deepseek-subagent", []string{}, false, 1},
-		{"unknown template", []string{"--template", "nope"}, "", nil, true, 1},
-		{"missing name", []string{"--template"}, "", nil, true, 0},
+		{"separate value", []string{"--resume", "--router", "deepseek-subagent", "-p", "hi"}, "deepseek-subagent", []string{"--resume", "-p", "hi"}, false, 1},
+		{"equals value", []string{"--router=deepseek-subagent"}, "deepseek-subagent", []string{}, false, 1},
+		{"unknown template", []string{"--router", "nope"}, "", nil, true, 1},
+		{"missing name", []string{"--router"}, "", nil, true, 0},
 		// --pay and --default answer the picker; they leave with --template.
-		{"pay and default", []string{"--template", "deepseek-subagent", "--pay", "deepseek=credits", "--default", "-p", "hi"}, "deepseek-subagent", []string{"-p", "hi"}, false, 1},
+		{"pay and default", []string{"--router", "deepseek-subagent", "--pay", "deepseek=credits", "--default", "-p", "hi"}, "deepseek-subagent", []string{"-p", "hi"}, false, 1},
 		{"pay without template", []string{"--pay", "deepseek=credits"}, "", nil, true, 0},
-		{"after --", []string{"--", "--template", "deepseek-subagent"}, "", []string{"--", "--template", "deepseek-subagent"}, false, 0},
+		{"after --", []string{"--", "--router", "deepseek-subagent"}, "", []string{"--", "--router", "deepseek-subagent"}, false, 0},
 		// Agent flags never trigger a lookup.
 		{"agent flags only", []string{"--resume", "--deepseek-subagent"}, "", []string{"--resume", "--deepseek-subagent"}, false, 0},
 	}
@@ -183,7 +183,7 @@ func TestRouterPublishCommandNeedsOnlyTheRouter(t *testing.T) {
 	if body["source_router_id"] != "rtr_source" || body["flag"] != nil {
 		t.Fatalf("body = %v", body)
 	}
-	if !strings.Contains(out.String(), "dari <agent> --template deepseek-subagent") {
+	if !strings.Contains(out.String(), "dari <agent> --router deepseek-subagent") {
 		t.Fatalf("output = %q", out.String())
 	}
 }

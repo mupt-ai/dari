@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -23,23 +24,24 @@ func init() {
 			Hidden: true,
 			Args:   cobra.NoArgs,
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				var status agents.Status
 				if fromClaude {
 					// Status hooks must stay quiet before the transcript exists or while it
 					// contains an incomplete line. Errors must not replace the agent's UI.
-					status, _ = claude.TranscriptStatus(cmd.InOrStdin())
-				} else {
-					var values map[string]string
-					if err := json.Unmarshal([]byte(headersJSON), &values); err != nil {
-						return err
+					lines, _ := claude.StatusLines(cmd.InOrStdin(), time.Now())
+					for _, line := range lines {
+						fmt.Fprintln(cmd.OutOrStdout(), line)
 					}
-					headers := make(http.Header, len(values))
-					for name, value := range values {
-						headers.Set(name, value)
-					}
-					status = agents.StatusFromHeaders(headers)
+					return nil
 				}
-				if text := status.String(); text != "" {
+				var values map[string]string
+				if err := json.Unmarshal([]byte(headersJSON), &values); err != nil {
+					return err
+				}
+				headers := make(http.Header, len(values))
+				for name, value := range values {
+					headers.Set(name, value)
+				}
+				if text := agents.StatusFromHeaders(headers).String(); text != "" {
 					fmt.Fprintln(cmd.OutOrStdout(), text)
 				}
 				return nil

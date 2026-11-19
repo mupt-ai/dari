@@ -19,7 +19,7 @@ import (
 )
 
 // agentApp names what setup configures for an agent and how each change
-// takes effect: --setup-cli the agent run directly, --setup-desktop its
+// takes effect: --cli the agent run directly, --desktop its
 // desktop app ("" when it has none).
 type agentApp struct {
 	name           string
@@ -57,7 +57,7 @@ func (app agentApp) target(cli, desktop bool) (string, string) {
 
 // routesOnlyWhenSetUp marks agents whose sessions all run in one long-lived
 // gateway that reads the agent's own config, so a launch cannot route only
-// itself: they route through Dari once --setup-cli has written that config,
+// itself: they route through Dari once `dari setup <agent> --cli` has written that config,
 // and a launch before then is refused rather than run unrouted.
 var routesOnlyWhenSetUp = map[string]bool{"openclaw": true, "hermes": true}
 
@@ -74,9 +74,8 @@ func gatewayAgentSetUp(ctx context.Context, name string) bool {
 	return false
 }
 
-// runAgentSetup writes, or with --remove-setup removes, the config the agent
-// reads when run directly (--setup-cli) or its desktop app reads
-// (--setup-desktop). Setup runs the launcher's onboarding first, so it uses
+// runAgentSetup writes, or with --remove removes, the config the agent
+// reads when run directly (--cli) or its desktop app reads (--desktop). Setup runs the launcher's onboarding first, so it uses
 // the same router, key, and model menu as `dari <agent>`.
 func runAgentSetup(ctx context.Context, launch agentLaunch, stdin io.Reader, stderr io.Writer) error {
 	app, ok := agentApps[launch.name]
@@ -318,24 +317,50 @@ func capitalized(value string) string {
 // order. OpenClaw and Hermes are only asked when installed.
 func setUpAgents(ctx context.Context) []string {
 	set := []string{}
-	if claudeCLISetUp() || claudeAppSetUp() {
-		set = append(set, "claude")
-	}
-	if home, err := codex.Home(); err == nil && codex.IsSetUp(home) {
-		set = append(set, "codex")
-	}
-	if dir, err := pi.AgentDir(); err == nil && pi.IsSetUp(dir) {
-		set = append(set, "pi")
-	}
-	if dir, err := opencode.ConfigDir(); err == nil && opencode.IsSetUp(dir) {
-		set = append(set, "opencode")
-	}
-	for _, name := range []string{"openclaw", "hermes"} {
-		if gatewayAgentSetUp(ctx, name) {
+	for _, name := range []string{"claude", "codex", "pi", "opencode", "openclaw", "hermes"} {
+		if cli, desktop := agentSetUp(ctx, name); cli || desktop {
 			set = append(set, name)
 		}
 	}
 	return set
+}
+
+// agentSetUp reports whether the agent run directly, and its desktop app,
+// have Dari set up. Only the Claude app is set up apart from its CLI.
+func agentSetUp(ctx context.Context, name string) (cli, desktop bool) {
+	switch name {
+	case "claude":
+		return claudeCLISetUp(), claudeAppSetUp()
+	case "codex":
+		home, err := codex.Home()
+		return err == nil && codex.IsSetUp(home), false
+	case "pi":
+		dir, err := pi.AgentDir()
+		return err == nil && pi.IsSetUp(dir), false
+	case "opencode":
+		dir, err := opencode.ConfigDir()
+		return err == nil && opencode.IsSetUp(dir), false
+	case "openclaw", "hermes":
+		return gatewayAgentSetUp(ctx, name), false
+	}
+	return false, false
+}
+
+// syncAgentSetup moves the agent run directly, and its desktop app, onto the
+// router the agent now uses, wherever Dari is already set up there. Without
+// it plain `claude` would keep the router it was set up with.
+func syncAgentSetup(ctx context.Context, name, key, baseURL string, models agents.Models, stderr io.Writer) {
+	cli, desktop := agentSetUp(ctx, name)
+	if !cli && !desktop {
+		return
+	}
+	target, _ := agentApps[name].target(cli, desktop)
+	if err := writeAgentSetup(ctx, name, cli, desktop, key, baseURL, models); err != nil {
+		command := agentLaunch{name: name, setupCLI: cli, setupDesktop: desktop}.setupCommand()
+		agentPrintln(stderr, fmt.Sprintf("%s still uses its earlier router (%v); run `%s`", capitalized(target), err, command))
+		return
+	}
+	agentStep(stderr, capitalized(target)+" now uses it too")
 }
 
 // moveAgentSetups rewrites every set-up agent's own config for the current
@@ -354,10 +379,7 @@ func moveAgentSetups(ctx context.Context, stdin io.Reader, stderr io.Writer) {
 	}
 	for _, name := range agentNames {
 		// Claude Code and the Claude app are set up apart; each moves only if set up.
-		cli, desktop := true, false
-		if name == "claude" {
-			cli, desktop = claudeCLISetUp(), claudeAppSetUp()
-		}
+		cli, desktop := agentSetUp(ctx, name)
 		target, applies := agentApps[name].target(cli, desktop)
 		if err := moveAgentSetup(ctx, name, cli, desktop, stdin, stderr); err != nil {
 			command := agentLaunch{name: name, setupCLI: cli, setupDesktop: desktop}.setupCommand()

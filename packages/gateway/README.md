@@ -65,7 +65,7 @@ docker run -p 8080:8080 \
 | `DARI_GATEWAY_KEYS` | Required. Comma-separated bearer keys clients authenticate with. |
 | `DARI_GATEWAY_CONFIG` | Router config file. Default `dari-gateway.yaml`. |
 | `DARI_GATEWAY_ROUTERS_DIR` | Optional. A directory of [router specs](#router-specs), read at startup: each `<id>.yaml` or `<id>.yml` is router `<id>`. |
-| `DARI_GATEWAY_DB` | SQLite database for subscriptions, Dari Link grants, model lists saved with `dari gateway models`, router specs saved through the API, conversation state, and Activity (each request's log row and, outside ZDR routers, its request and response bodies). Default `dari-gateway.db`. Without `DARI_GATEWAY_ENCRYPTION_KEY` it stores subscription tokens in plaintext; protect it like a secret either way. |
+| `DARI_GATEWAY_DB` | SQLite database for subscriptions, Dari Link grants, model lists saved with `dari setup <agent>`, router specs saved through the API, conversation state, and Activity (each request's log row and, outside ZDR routers, its request and response bodies). Default `dari-gateway.db`. Without `DARI_GATEWAY_ENCRYPTION_KEY` it stores subscription tokens in plaintext; protect it like a secret either way. |
 | `DARI_GATEWAY_ENCRYPTION_KEY` | Encrypts the subscription tokens, pending sign-ins, and API keys in the database: a 32-byte key in base64 (`openssl rand -base64 32`). Each value is sealed with AES-256-GCM and bound to its own row, so a copied database, or a token moved into another row, is useless without the key. Keep the key outside the database's storage and backups (a secret manager, not the same disk). To rotate, list the new key first and the old one after a comma, start the gateway once (it re-encrypts everything under the first), then drop the old one. Required for Dari Link: without it the approval page takes nobody's subscriptions or keys. Losing the key loses the stored subscriptions; users connect again. |
 | `DARI_LINK_SESSION_SECRET` | Signs the cookie that remembers the user of Dari Link's approval and connections pages. Unset, each gateway process makes its own, so a restart forgets who connected which plans. Set it on any gateway that serves Dari Link. |
 | `DARI_AUTO_ROUTING_API_KEY` | Optional. Select among a router's models with Dari Auto Routing. |
@@ -102,7 +102,7 @@ providers:                 # endpoints outside the built-in catalog
 
 Model ids are `provider/model`. Clients send `model: "dari/routing"` to let the router choose, or `model: "dari/model/<id>"` to pin one of its models. A Claude Code subscription serves Anthropic models only for Claude Code itself; a ChatGPT subscription serves OpenAI models for every client. Each coding agent is offered the router's models that a credential can serve it, or its own `agentModels` list (`claude_code`, `codex`, `muse_code`, `opencode`, `pi`, `openclaw`, `hermes`) when the router has one.
 
-`dari gateway models` changes either list on a running gateway, with any gateway key: `dari gateway models --agent codex openai/gpt-6.2-sol`, or no models for the picker. It calls `PUT` and `DELETE /v1/router/models[/<agent>]` (`GET /v1/router/models` reads them). The gateway saves the list in its database and serves it at once in place of the config file's, until `--reset` removes it.
+`dari setup <agent>` opens the model picker on a running gateway, with any gateway key. It calls `PUT /v1/router/models[/<agent>]` (`GET` reads the lists, `DELETE` removes a saved one). The gateway saves the list in its database and serves it at once in place of the config file's.
 
 ### Router specs
 

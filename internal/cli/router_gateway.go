@@ -38,8 +38,7 @@ func gatewayRouterClient(gw *gatewayConfig) *api.Client {
 	return api.New(gw.url).WithBearer(gw.key)
 }
 
-// gatewayRouterError is what the gateway refused, in its own words; an older
-// gateway without router specs says to update it.
+// gatewayRouterError is what the gateway refused, in its own words.
 func gatewayRouterError(err error) error {
 	he := api.AsHTTPError(err)
 	if he == nil {
@@ -47,15 +46,10 @@ func gatewayRouterError(err error) error {
 	}
 	var refused struct {
 		Error struct {
-			Code    string `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	_ = json.Unmarshal([]byte(he.Detail), &refused)
-	switch {
-	case refused.Error.Code == "not_found":
-		return errors.New("this gateway does not run router spec files yet; update Dari Gateway")
-	case refused.Error.Message != "":
+	if json.Unmarshal([]byte(he.Detail), &refused) == nil && refused.Error.Message != "" {
 		return errors.New(refused.Error.Message)
 	}
 	return api.HumanError(err)

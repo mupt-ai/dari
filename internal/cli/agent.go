@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -43,16 +44,6 @@ var agentLaunchers = map[string]string{
 	"hermes":   "Launch Hermes Agent, set up once with `dari setup hermes --cli`; forward all following arguments",
 }
 
-// A launch routes only its own session and leaves the agent's config alone.
-// agentSetupCLIFlag writes Dari into that config so the agent run directly
-// routes through Dari too; agentSetupDesktopFlag does the same for its
-// desktop app. Pass both for both. agentRemoveSetupFlag undoes either.
-const (
-	agentSetupCLIFlag     = "--setup-cli"
-	agentSetupDesktopFlag = "--setup-desktop"
-	agentRemoveSetupFlag  = "--remove-setup"
-)
-
 func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, _ *globalFlags) {
 		for name, short := range agentLaunchers {
@@ -81,8 +72,7 @@ type agentLaunch struct {
 
 func (l agentLaunch) setup() bool { return l.setupCLI || l.setupDesktop }
 
-// setupCommand is the `dari setup` command a --setup-cli, --setup-desktop,
-// or --remove-setup launch now is.
+// setupCommand is the `dari setup` command that sets the launch's agent up.
 func (l agentLaunch) setupCommand() string {
 	command := "dari setup " + l.name
 	if l.setupCLI {
@@ -111,32 +101,12 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 			launch.args = append(launch.args, args[1+i:]...)
 			break
 		}
-		if arg == agentSetupCLIFlag {
-			launch.setupCLI = true
-			continue
-		}
-		if arg == agentSetupDesktopFlag {
-			launch.setupDesktop = true
-			continue
-		}
-		if arg == agentRemoveSetupFlag {
-			launch.removeSetup = true
-			continue
-		}
 		launch.args = append(launch.args, arg)
 	}
 	return launch, true
 }
 
 func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, stdout, stderr io.Writer) int {
-	if launch.setup() || launch.removeSetup {
-		agentPrintln(stderr, ansiGray+"Next time: "+launch.setupCommand()+ansiReset)
-		if err := runAgentSetup(ctx, launch, stdin, stderr); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		return 0
-	}
 	path, err := agentExecutable(launch.name)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -271,7 +241,10 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 		}
 		// The launch starts on the user's saved pick; say so accurately.
 		models.Saved = savedAgentModel(launch.name)
-		models = reportGatewayModels(ctx, gateway, launch.name, models, stderr)
+		models = reportGatewayModels(ctx, gateway, baseURL, launch.name, models, stderr)
+		if !launch.setup() && (launch.reconfigure || (choice.name != "" && choice.makeDefault)) {
+			syncAgentSetup(ctx, launch.name, gateway.key, baseURL, models, stderr)
+		}
 		return gateway.key, baseURL, models, nil
 	}
 	// Onboarding pages follow one another on the alternate screen; their
@@ -316,7 +289,28 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 		agentPrintln(stderr, fmt.Sprintf("Starting on %s. Switch models with /model, or run `dari accounts` to get auto-routing.", startModel(launch.name, models)))
 	}
 	reportAgentModels(launch.name, models, true, stderr)
+	// The agent's router changed, or its models did: the agent run directly
+	// follows, where it is set up.
+	if !launch.setup() && (launch.reconfigure || choice.makeDefault || (choice.name != "" && agentUsesRouter(ctx, client, launch.name, routerID, stderr))) {
+		syncAgentSetup(ctx, launch.name, access.key, baseURL, models, stderr)
+	}
 	return access.key, baseURL, models, nil
+}
+
+// agentUsesRouter reports whether the router is the agent's default, as it
+// is once the launch's "Make It My Default" chose it. When that cannot be
+// read, a set-up agent is told how to follow by hand.
+func agentUsesRouter(ctx context.Context, client *api.Client, agent, routerID string, stderr io.Writer) bool {
+	routers, err := listAgentRouters(ctx, client)
+	if err != nil {
+		if cli, desktop := agentSetUp(ctx, agent); cli || desktop {
+			command := agentLaunch{name: agent, setupCLI: cli, setupDesktop: desktop}.setupCommand()
+			agentPrintln(stderr, fmt.Sprintf("Could not check your default router (%v); if you made this one the default, run `%s`", err, command))
+		}
+		return false
+	}
+	router, ok := findAgentRouter(routers, func(router agentRouter) bool { return router.ID == routerID })
+	return ok && slices.Contains(router.CodingAgents, agentSetups[agent].codingAgent)
 }
 
 // startModel is the model a launch of agent starts on. Claude Code keeps the
@@ -508,7 +502,7 @@ func buildAgentCommand(path string, launch agentLaunch, key, baseURL string, mod
 	case "muse":
 		muse.Configure(&command, key, models)
 	case "openclaw", "hermes":
-		// Launches run on the setup --setup-cli wrote into the agent's own config.
+		// Launches run on the setup `dari setup <agent> --cli` wrote into the agent's own config.
 	default:
 		return agents.Command{}, fmt.Errorf("unsupported coding agent %q", launch.name)
 	}

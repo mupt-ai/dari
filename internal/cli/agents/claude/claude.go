@@ -4,12 +4,14 @@ package claude
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -208,7 +210,7 @@ func Configure(command *agents.Command, key, baseURL string, models agents.Model
 		command.Env = agents.WithoutEnvironment(command.Env, subagentModelEnv)
 	}
 	if !agents.ArgsContainFlag(command.Args, "--settings") {
-		if err := injectSettings(command, models); err != nil {
+		if err := injectSettings(command, models, env); err != nil {
 			return err
 		}
 	}
@@ -237,20 +239,47 @@ func pickerOptions(models agents.Models) []map[string]string {
 	return options
 }
 
+// statusLineSettings is Claude Code's status line: Dari's renderer, run again
+// every few seconds so running subagents' models and leases stay current
+// while the main agent waits on them and nothing else refreshes the line.
+func statusLineSettings() (map[string]any, error) {
+	executable, err := agents.StatusExecutable()
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"type":            "command",
+		"command":         agents.ShellQuote(executable) + " agent-status --claude",
+		"refreshInterval": 5,
+	}, nil
+}
+
 // injectSettings passes the status line and model picker to Claude Code. Where
 // the launcher can hand its process over, they go inline, so no file is left
 // behind. Elsewhere they go in a temporary file: an npm claude.cmd shim does not
 // pass an inline JSON argument through intact.
-func injectSettings(command *agents.Command, models agents.Models) error {
-	executable, err := agents.StatusExecutable()
+//
+// They carry the launch's router too. `dari setup claude --cli` writes a
+// router into Claude Code's own settings, whose env wins over the process
+// environment; without this a launch on another router (--router) would be
+// sent to the one set up. The key stays out of the arguments, which other
+// processes can read: it is the same for every router.
+func injectSettings(command *agents.Command, models agents.Models, env map[string]string) error {
+	statusLine, err := statusLineSettings()
 	if err != nil {
 		return err
 	}
+	// A subagent pin the launch does not set is cleared, not left to the
+	// one in Claude Code's own settings.
+	routing := map[string]string{subagentModelEnv: ""}
+	for name, value := range env {
+		if name != "ANTHROPIC_AUTH_TOKEN" && name != "ANTHROPIC_API_KEY" && name != customHeadersEnv {
+			routing[name] = value
+		}
+	}
 	body, err := json.Marshal(map[string]any{
-		"statusLine": map[string]any{
-			"type":    "command",
-			"command": agents.ShellQuote(executable) + " agent-status --claude",
-		},
+		"env":        routing,
+		"statusLine": statusLine,
 		// Replace Claude Code's built-in lineup: only the router's models appear.
 		"modelPicker": map[string]any{"options": pickerOptions(models), "replaceBuiltInOptions": true},
 	})
@@ -288,34 +317,133 @@ func writeSettingsFile(body []byte) (string, error) {
 	return path, nil
 }
 
-// TranscriptStatus renders the status line from the status-line input Claude
-// Code passes on stdin. The transcript keeps routing metadata and usage on
-// each assistant entry.
-func TranscriptStatus(input io.Reader) (agents.Status, error) {
+// subagentQuietAfter is how long a subagent may write nothing before the
+// status line stops showing it as running: one that died never says so.
+const subagentQuietAfter = 10 * time.Minute
+
+// subagentStatusMax is how many running subagents get their own line.
+const subagentStatusMax = 3
+
+// transcriptTail is how much of a transcript's end is read for its latest
+// routing before falling back to all of it.
+const transcriptTail = 512 << 10
+
+// StatusLines renders the status line from the input Claude Code passes on
+// stdin: the session's own routing, then a line for each running subagent
+// with the model and lease it is on. Claude Code does not say which agent is
+// on screen, so every running one is shown. Transcripts keep routing metadata
+// on each assistant entry.
+func StatusLines(input io.Reader, now time.Time) ([]string, error) {
 	var payload struct {
 		TranscriptPath string `json:"transcript_path"`
 	}
 	if err := json.NewDecoder(io.LimitReader(input, 1<<20)).Decode(&payload); err != nil {
-		return agents.Status{}, err
+		return nil, err
 	}
-	file, err := os.Open(payload.TranscriptPath)
+	session, err := lastRouting(payload.TranscriptPath)
+	if err != nil && session.Model == "" {
+		return nil, err
+	}
+	lines := []string{}
+	if text := session.String(); text != "" {
+		lines = append(lines, text)
+	}
+	return append(lines, subagentStatusLines(payload.TranscriptPath, now)...), nil
+}
+
+// subagentStatusLines are the running subagents of the session whose
+// transcript is at transcriptPath, most recently active first. Claude Code
+// keeps each one's transcript and a note about it beside the session's.
+func subagentStatusLines(transcriptPath string, now time.Time) []string {
+	notes, _ := filepath.Glob(filepath.Join(strings.TrimSuffix(transcriptPath, ".jsonl"), "subagents", "agent-*.meta.json"))
+	type subagent struct {
+		line   string
+		active time.Time
+	}
+	var running []subagent
+	for _, note := range notes {
+		var meta struct {
+			AgentType string `json:"agentType"`
+			Finished  bool   `json:"finished"`
+		}
+		data, err := os.ReadFile(note)
+		if err != nil || json.Unmarshal(data, &meta) != nil || meta.Finished {
+			continue
+		}
+		transcript := strings.TrimSuffix(note, ".meta.json") + ".jsonl"
+		info, err := os.Stat(transcript)
+		if err != nil || now.Sub(info.ModTime()) > subagentQuietAfter {
+			continue
+		}
+		status, _ := lastRouting(transcript)
+		// The session's line carries the Activity link.
+		status.RequestID = ""
+		text := status.String()
+		if text == "" {
+			continue
+		}
+		label := cmp.Or(agents.StatusLabel(meta.AgentType), "subagent")
+		running = append(running, subagent{line: "↳ " + label + " · " + text, active: info.ModTime()})
+	}
+	slices.SortStableFunc(running, func(a, b subagent) int { return b.active.Compare(a.active) })
+	lines := []string{}
+	for i, agent := range running {
+		if i == subagentStatusMax {
+			lines = append(lines, fmt.Sprintf("↳ +%d more", len(running)-i))
+			break
+		}
+		lines = append(lines, agent.line)
+	}
+	return lines
+}
+
+// lastRouting is the routing on a transcript's latest assistant entry. It
+// reads the transcript's end first: the status line runs every few seconds,
+// and a long session's transcript is large.
+func lastRouting(path string) (agents.Status, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return agents.Status{}, err
 	}
 	defer file.Close()
+	if info, err := file.Stat(); err == nil && info.Size() > transcriptTail {
+		if _, err := file.Seek(-transcriptTail, io.SeekEnd); err == nil {
+			tail := bufio.NewReader(file)
+			// The first line is cut off.
+			_, _ = tail.ReadString('\n')
+			if status, err := scanRouting(tail); err == nil && status.Model != "" {
+				return status, nil
+			}
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return agents.Status{}, err
+		}
+	}
+	return scanRouting(file)
+}
+
+// scanRouting keeps whatever it read when the transcript cannot be read to
+// its end, and reads lines of any length: one huge tool result must not
+// blank the status line.
+func scanRouting(transcript io.Reader) (agents.Status, error) {
 	var last agents.Status
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64<<10), 16<<20)
-	for scanner.Scan() {
+	reader := bufio.NewReaderSize(transcript, 64<<10)
+	for {
+		line, err := reader.ReadBytes('\n')
 		var entry struct {
 			Type    string `json:"type"`
 			Message struct {
 				Routing agents.Status `json:"dari_routing"`
 			} `json:"message"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &entry) == nil && entry.Type == "assistant" && entry.Message.Routing.Model != "" {
+		if json.Unmarshal(line, &entry) == nil && entry.Type == "assistant" && entry.Message.Routing.Model != "" {
 			last = entry.Message.Routing
 		}
+		if err == io.EOF {
+			return last, nil
+		}
+		if err != nil {
+			return last, err
+		}
 	}
-	return last, scanner.Err()
 }

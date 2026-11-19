@@ -17,7 +17,7 @@ import (
 )
 
 // agentExperiment is a router template an org published: `dari <agent>
-// --template <name>`, for any coding agent, launches on a copy of it in the
+// --router <name>`, for any coding agent, launches on a copy of it in the
 // current org.
 type agentExperiment struct {
 	Flag        string `json:"flag"`
@@ -59,8 +59,8 @@ func (choice agentRouterChoice) routerID() bool {
 	return strings.HasPrefix(choice.name, "rtr_")
 }
 
-// takeAgentRouterChoice takes `--router <name>` (or `--template <name>`,
-// its earlier name), `--pay` and `--default` out of the agent's arguments.
+// takeAgentRouterChoice takes `--router <name>`, `--pay` and `--default` out
+// of the agent's arguments.
 func takeAgentRouterChoice(launch *agentLaunch) (agentRouterChoice, error) {
 	choice := agentRouterChoice{pay: map[string]string{}}
 	if _, ok := agentSetups[launch.name]; !ok {
@@ -75,7 +75,7 @@ func takeAgentRouterChoice(launch *agentLaunch) (agentRouterChoice, error) {
 	for i := 0; i < end; i++ {
 		arg := launch.args[i]
 		flagName, value, inline := strings.Cut(arg, "=")
-		if flagName != "--router" && flagName != "--template" && flagName != "--pay" {
+		if flagName != "--router" && flagName != "--pay" {
 			if arg == "--default" {
 				choice.makeDefault = true
 			} else {
@@ -549,7 +549,7 @@ func applyAgentExperiment(
 		details = []string{experiment.Description}
 	}
 	choice, err := runAgentChoiceTUI(stdin, stderr, fmt.Sprintf("Make %s Your Default Setup for %s?", experiment.Name, setup.label), details, []agentChoiceOption{
-		{label: "Just This Launch", description: fmt.Sprintf("`dari %s` without --template keeps your current setup.", agent), done: "Using template " + experiment.Name + " for this launch"},
+		{label: "Just This Launch", description: fmt.Sprintf("`dari %s` without --router keeps your current setup.", agent), done: "Using template " + experiment.Name + " for this launch"},
 		{label: "Make It My Default", description: fmt.Sprintf("`dari %s` uses it from now on; `dari router assign-agent` moves %s back.", agent, setup.label), done: experiment.Name + " is now your default for " + setup.label},
 	})
 	if err != nil {
@@ -566,8 +566,8 @@ func applyAgentExperiment(
 func newRouterExperimentsCmd(gf *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "experiments",
-		Short: "List router templates; launch one with `dari <agent> --template <name>`",
-		Long: "List router templates; launch one with `dari <agent> --template <name>`. In a terminal the launch " +
+		Short: "List router templates; launch one with `dari <agent> --router <name>`",
+		Long: "List router templates; launch one with `dari <agent> --router <name>`. In a terminal the launch " +
 			"asks how each model is paid for. Without one, or to skip the questions, add " +
 			"`--pay <model>=<subscription|key|credits>` (repeatable; the model's ID or the part after its /) " +
 			"and `--default` to make the template the agent's default.",
@@ -587,8 +587,8 @@ func newRouterPublishCmd(gf *globalFlags) *cobra.Command {
 	var byok, managed bool
 	cmd := &cobra.Command{
 		Use:   "publish <router_id_or_endpoint>",
-		Short: "Publish a router as a template anyone can launch with `dari <agent> --template <name>`",
-		Long: "Publish one of your routers as a template anyone can launch with `dari <agent> --template <name>`. " +
+		Short: "Publish a router as a template anyone can launch with `dari <agent> --router <name>`",
+		Long: "Publish one of your routers as a template anyone can launch with `dari <agent> --router <name>`. " +
 			"Any coding agent can launch it. The name defaults to the router's, such as " +
 			"deepseek-subagent. Each launch copies the router's current " +
 			"configuration into the user's org; they pay with their subscriptions, then their own " +
@@ -618,7 +618,7 @@ func newRouterPublishCmd(gf *globalFlags) *cobra.Command {
 			if err := orgKeyRequest(cmd, gf, http.MethodPost, "/v1/organizations/current/experimental-routers", body, &published); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Published. Anyone can run: dari <agent> --template %s\n", published.Flag)
+			fmt.Fprintf(cmd.OutOrStdout(), "Published. Anyone can run: dari <agent> --router %s\n", published.Flag)
 			return nil
 		},
 	}

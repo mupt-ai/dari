@@ -337,14 +337,40 @@ func gatewayAgentModels(ctx context.Context, gw *gatewayConfig, baseURL string, 
 	if err := gw.ensure(ctx, stderr); err != nil {
 		return agents.Models{}, err
 	}
+	// A router from a spec file or template may need OpenCode Go, which
+	// serves any agent, besides the agent's own plans.
+	plans := agentSubscriptionProviders(launch.name)
+	if baseURL != gw.url {
+		plans = templateSubscriptions(agentSetups[launch.name])
+	}
 	models, err := routerModels(ctx, baseURL, gw.key, launch.name)
 	if errors.Is(err, errNoProviderCredentials) && agentInputIsTerminal(stdin) {
 		agentStep(stderr, "Connect an account to start")
-		page := accountsPage{client: api.New(gw.url).WithBearer(gw.key), providers: agentSubscriptionProviders(launch.name), gw: gw}
+		page := accountsPage{client: api.New(gw.url).WithBearer(gw.key), providers: plans, gw: gw}
 		if _, err := page.run(ctx, stdin, stderr); err != nil {
 			return agents.Models{}, err
 		}
 		models, err = routerModels(ctx, baseURL, gw.key, launch.name)
+	}
+	if err == nil && baseURL != gw.url && agentInputIsTerminal(stdin) {
+		// A router from a spec file or template needs an account for each
+		// of its models; offer to connect the missing ones now.
+		if lists, listsErr := fetchGatewayRouterModelLists(ctx, gw, baseURL); listsErr == nil {
+			var missing []string
+			for _, model := range lists.offered(launch.name) {
+				if !slices.Contains(models.Enabled, model.ID) {
+					missing = append(missing, model.ID)
+				}
+			}
+			if len(missing) > 0 {
+				agentStep(stderr, "Connect an account for "+strings.Join(missing, ", "))
+				page := accountsPage{client: api.New(gw.url).WithBearer(gw.key), providers: plans, gw: gw}
+				if _, err := page.run(ctx, stdin, stderr); err != nil && !errors.Is(err, errAgentChoiceCanceled) {
+					return agents.Models{}, err
+				}
+				models, err = routerModels(ctx, baseURL, gw.key, launch.name)
+			}
+		}
 	}
 	if err != nil || baseURL != gw.url || !agentInputIsTerminal(stdin) || !(gw.local || launch.reconfigure) {
 		return models, err
@@ -394,21 +420,22 @@ func gatewayModelListsPath(agent string) string {
 }
 
 func fetchGatewayModelLists(ctx context.Context, gw *gatewayConfig) (gatewayModelLists, error) {
+	return fetchGatewayRouterModelLists(ctx, gw, gw.url)
+}
+
+// fetchGatewayRouterModelLists are the lists of the gateway router at
+// baseURL: the default router at the gateway's URL, another at /<name>.
+func fetchGatewayRouterModelLists(ctx context.Context, gw *gatewayConfig, baseURL string) (gatewayModelLists, error) {
 	var lists gatewayModelLists
-	err := api.New(gw.url).WithBearer(gw.key).Do(ctx, http.MethodGet, gatewayModelListsPath(""), nil, &lists)
+	err := api.New(baseURL).WithBearer(gw.key).Do(ctx, http.MethodGet, gatewayModelListsPath(""), nil, &lists)
 	return lists, gatewayModelListsError(err)
 }
 
 // saveGatewayModels saves chosen on the gateway as its default router's own
-// list, or as agent's. A nil list removes the saved one, so the gateway goes
-// back to its config file's. The gateway serves the change at once.
+// list, or as agent's. The gateway serves the change at once.
 func saveGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, chosen []gatewayModelConfig) error {
-	client := api.New(gw.url).WithBearer(gw.key)
-	if chosen == nil {
-		return gatewayModelListsError(client.Do(ctx, http.MethodDelete, gatewayModelListsPath(agent), nil, nil))
-	}
 	body := map[string]any{"models": chosen}
-	return gatewayModelListsError(client.Do(ctx, http.MethodPut, gatewayModelListsPath(agent), body, nil))
+	return gatewayModelListsError(api.New(gw.url).WithBearer(gw.key).Do(ctx, http.MethodPut, gatewayModelListsPath(agent), body, nil))
 }
 
 // gatewayModelListsError is the message a gateway refused a model list with.
@@ -596,8 +623,10 @@ func position(ids []string, id string) int {
 // Autorouting plan does. On a local gateway it also adds the chosen models no
 // connected account or API key serves yet, so the agent can list every chosen
 // model, and names them.
-func reportGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, models agents.Models, stderr io.Writer) agents.Models {
-	if !models.Routing && len(models.Enabled) > 0 {
+func reportGatewayModels(ctx context.Context, gw *gatewayConfig, baseURL, agent string, models agents.Models, stderr io.Writer) agents.Models {
+	// A spec router may pin each role to a model, so the start model only
+	// describes the gateway's default router.
+	if !models.Routing && len(models.Enabled) > 0 && baseURL == gw.url {
 		hint := "Switch models with /model"
 		if gw.local {
 			hint += ", or turn on auto-routing with `dari accounts auto-routing <dari-api-key>`"
@@ -608,7 +637,7 @@ func reportGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, m
 		reportAgentModels(agent, models, false, stderr)
 		return models
 	}
-	lists, err := fetchGatewayModelLists(ctx, gw)
+	lists, err := fetchGatewayRouterModelLists(ctx, gw, baseURL)
 	if err != nil {
 		reportAgentModels(agent, models, false, stderr)
 		return models

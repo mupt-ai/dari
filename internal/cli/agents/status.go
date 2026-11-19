@@ -27,12 +27,12 @@ type Status struct {
 const dashboardBaseURL = "https://app.dari.dev"
 
 func (s Status) String() string {
-	model := statusLabel(s.Model)
+	model := StatusLabel(s.Model)
 	if model == "" {
 		return ""
 	}
 	parts := []string{model}
-	if thinking := statusLabel(s.Thinking); thinking != "" && thinking != "off" {
+	if thinking := StatusLabel(s.Thinking); thinking != "" && thinking != "off" {
 		parts = append(parts, thinking)
 	}
 	if s.Pinned {
@@ -45,13 +45,15 @@ func (s Status) String() string {
 		}
 		parts = append(parts, fmt.Sprintf("lease %d %s left", turns, unit))
 	}
-	if requestID := statusLabel(s.RequestID); requestID != "" && os.Getenv(NoActivityLinkEnv) == "" && os.Getenv(GatewayURLEnv) == "" {
+	if requestID := StatusLabel(s.RequestID); requestID != "" && os.Getenv(NoActivityLinkEnv) == "" && os.Getenv(GatewayURLEnv) == "" {
 		parts = append(parts, dashboardBaseURL+"/activity/conversations/"+url.PathEscape(requestID))
 	}
 	return strings.Join(parts, " · ")
 }
 
-func statusLabel(value string) string {
+// StatusLabel is a value made safe for one status line: no control or
+// format characters.
+func StatusLabel(value string) string {
 	value = strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
 			return -1

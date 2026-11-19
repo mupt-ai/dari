@@ -21,20 +21,7 @@ func TestParseAgentLaunch(t *testing.T) {
 		wantName string
 		wantArgs []string
 		wantOK   bool
-		cli      bool
-		desktop  bool
-		remove   bool
 	}{
-		{
-			name:     "setup flags are Dari's",
-			args:     []string{"codex", "--setup-cli", "--setup-desktop", "--remove-setup", "--", "--setup-cli"},
-			wantName: "codex",
-			wantArgs: []string{"--", "--setup-cli"},
-			wantOK:   true,
-			cli:      true,
-			desktop:  true,
-			remove:   true,
-		},
 		{
 			name:     "agent flags are forwarded",
 			args:     []string{"claude", "--connect", "--print", "--", "--connect"},
@@ -95,9 +82,6 @@ func TestParseAgentLaunch(t *testing.T) {
 			}
 			if got.name != tt.wantName {
 				t.Errorf("name = %q, want %q", got.name, tt.wantName)
-			}
-			if got.setupCLI != tt.cli || got.setupDesktop != tt.desktop || got.removeSetup != tt.remove {
-				t.Errorf("setup cli, desktop, remove = %v, %v, %v, want %v, %v, %v", got.setupCLI, got.setupDesktop, got.removeSetup, tt.cli, tt.desktop, tt.remove)
 			}
 			if !slices.Equal(got.args, tt.wantArgs) {
 				t.Errorf("args = %q, want %q", got.args, tt.wantArgs)

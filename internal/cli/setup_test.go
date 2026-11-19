@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/mupt-ai/dari/internal/api"
+	"github.com/mupt-ai/dari/internal/cli/agents"
 	"github.com/mupt-ai/dari/internal/gateway"
 )
 
@@ -45,7 +46,8 @@ func TestGatewayRunsTemplatesAndSpecFiles(t *testing.T) {
 	defer gateway.Close()
 	setGatewayEnv(t, gateway.URL)
 	hosted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/organizations/current/experimental-routers/deepseek-subagent/spec" || r.URL.Query().Get("format") != "yaml" {
+		// No sign-in: the template is fetched without a key.
+		if r.URL.Path != "/v1/router-templates/deepseek-subagent/spec" || r.URL.Query().Get("format") != "yaml" || r.Header.Get("Authorization") != "" {
 			t.Errorf("unexpected hosted request %s %s", r.Method, r.URL.String())
 			http.NotFound(w, r)
 			return
@@ -54,7 +56,6 @@ func TestGatewayRunsTemplatesAndSpecFiles(t *testing.T) {
 	}))
 	defer hosted.Close()
 	t.Setenv("DARI_API_URL", hosted.URL)
-	t.Setenv("DARI_API_KEY", "dari_test")
 
 	launch := agentLaunch{name: "claude", args: []string{"--router", "deepseek-subagent", "-p", "hi"}}
 	_, baseURL, _, err := resolveAgentRouting(context.Background(), &launch, strings.NewReader(""), io.Discard)
@@ -130,5 +131,27 @@ func TestGatewaySetupKeepsTheAgentsSpecRouter(t *testing.T) {
 		if err != nil || baseURL != "http://gateway.test/opus-deepseek" {
 			t.Fatalf("reconfigure = %v: %q, %v", reconfigure, baseURL, err)
 		}
+	}
+}
+
+// When an agent's router changes, the agent run directly follows where Dari
+// is set up there, and stays untouched where it is not.
+func TestChangingTheRouterMovesAnExistingCLISetup(t *testing.T) {
+	setGatewayEnv(t, "http://gateway.test")
+	settings := filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")
+	models := agents.Models{Enabled: []string{"anthropic/claude-opus-5-5"}}
+
+	syncAgentSetup(context.Background(), "claude", "dari_key", "https://routing.dari.dev/rtr_new", models, io.Discard)
+	if _, err := os.Stat(settings); !os.IsNotExist(err) {
+		t.Fatalf("sync wrote a setup where there was none: %v", err)
+	}
+
+	if err := saveAgentConfig(context.Background(), "claude", "dari_key", "https://routing.dari.dev/rtr_old", models); err != nil {
+		t.Fatal(err)
+	}
+	syncAgentSetup(context.Background(), "claude", "dari_key", "https://routing.dari.dev/rtr_new", models, io.Discard)
+	data, err := os.ReadFile(settings)
+	if err != nil || !strings.Contains(string(data), "https://routing.dari.dev/rtr_new") || strings.Contains(string(data), "rtr_old") {
+		t.Fatalf("settings = %s, %v", data, err)
 	}
 }

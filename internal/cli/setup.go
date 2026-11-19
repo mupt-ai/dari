@@ -200,16 +200,23 @@ func gatewayRouterSpec(ctx context.Context, choice agentRouterChoice) (string, s
 	if env := strings.TrimSpace(os.Getenv("DARI_API_URL")); env != "" {
 		apiURL = env
 	}
-	client, err := auth.OrgKeyClient(api.NormalizeURL(apiURL))
-	if err != nil {
-		return "", "", fmt.Errorf("--router %s comes from hosted Dari; sign in with `dari auth login` first: %w", choice.name, err)
-	}
-	path := "/v1/organizations/current/experimental-routers/" + url.PathEscape(choice.name) + "/spec?format=yaml"
+	apiURL = api.NormalizeURL(apiURL)
+	// A template is public; only one of your own routers needs a sign-in.
+	client := api.New(apiURL)
+	path := "/v1/router-templates/" + url.PathEscape(choice.name) + "/spec?format=yaml"
 	if choice.routerID() {
+		signedIn, err := auth.OrgKeyClient(apiURL)
+		if err != nil {
+			return "", "", fmt.Errorf("--router %s is a hosted router; sign in with `dari auth login` first: %w", choice.name, err)
+		}
+		client = signedIn
 		path = "/v1/organizations/current/routers/" + url.PathEscape(choice.name) + "/spec?format=yaml"
 	}
 	var spec []byte
 	if err := client.Do(ctx, http.MethodGet, path, nil, &spec); err != nil {
+		if he := api.AsHTTPError(err); he != nil && he.Status == http.StatusNotFound && !choice.routerID() {
+			return "", "", fmt.Errorf("no template %q; list them with `dari router experiments`", choice.name)
+		}
 		return "", "", api.HumanError(err)
 	}
 	return string(spec), choice.name, nil

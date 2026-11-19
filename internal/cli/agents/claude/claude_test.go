@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBuildClaudeAgentCommandPassesStatusLineInline(t *testing.T) {
@@ -39,6 +40,7 @@ func TestBuildClaudeAgentCommandPassesStatusLineInline(t *testing.T) {
 			Options               []map[string]string `json:"options"`
 			ReplaceBuiltInOptions bool                `json:"replaceBuiltInOptions"`
 		} `json:"modelPicker"`
+		Env map[string]string `json:"env"`
 	}
 	if err := json.Unmarshal([]byte(data), &settings); err != nil {
 		t.Fatalf("--settings is not inline JSON: %v", err)
@@ -52,6 +54,11 @@ func TestBuildClaudeAgentCommandPassesStatusLineInline(t *testing.T) {
 	}
 	if !strings.Contains(settings.StatusLine.Command, " agent-status --claude") {
 		t.Fatalf("status command = %q", settings.StatusLine.Command)
+	}
+	// The launch's router wins over one `dari setup claude --cli` wrote into
+	// Claude Code's own settings, whose env beats the process environment.
+	if settings.Env["ANTHROPIC_BASE_URL"] != "https://routing.dari.dev" {
+		t.Fatalf("settings env = %v; want the launch's router", settings.Env)
 	}
 	if strings.Contains(data, "dari_route") {
 		t.Fatal("Claude status settings contain the secret key")
@@ -105,11 +112,11 @@ func TestClaudeStatusLineReadsDariRouting(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		status, err := TranscriptStatus(strings.NewReader(string(encoded)))
+		lines, err := StatusLines(strings.NewReader(string(encoded)), time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
-		return status.String()
+		return strings.Join(lines, "\n")
 	}
 	stdin := map[string]any{"transcript_path": transcript}
 	for _, tc := range []struct {
@@ -133,6 +140,36 @@ func TestClaudeStatusLineReadsDariRouting(t *testing.T) {
 		if got := render(stdin); got != tc.want {
 			t.Errorf("status = %q, want %q", got, tc.want)
 		}
+	}
+
+	// Each running subagent gets a line with the model and lease it is on;
+	// one that finished, or went quiet long ago, gets none.
+	subagents := filepath.Join(strings.TrimSuffix(transcript, ".jsonl"), "subagents")
+	if err := os.MkdirAll(subagents, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeSubagent := func(id, agentType string, finished bool, model string, age time.Duration) {
+		t.Helper()
+		meta, _ := json.Marshal(map[string]any{"agentType": agentType, "finished": finished})
+		entry, _ := json.Marshal(assistant(model, "req_sub"))
+		path := filepath.Join(subagents, "agent-"+id+".jsonl")
+		for name, data := range map[string][]byte{path: append(entry, '\n'), filepath.Join(subagents, "agent-"+id+".meta.json"): meta} {
+			if err := os.WriteFile(name, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		when := time.Now().Add(-age)
+		if err := os.Chtimes(path, when, when); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSubagent("a1", "Explore", false, "deepseek-ai/DeepSeek-V4.1-Flash-1017", time.Minute)
+	writeSubagent("a2", "general-purpose", true, "anthropic/claude-opus-5-5", time.Minute)
+	writeSubagent("a3", "Plan", false, "anthropic/claude-opus-5-5", time.Hour)
+	want := "openai/gpt-5.5 · high · pinned · https://app.dari.dev/activity/conversations/req_3\n" +
+		"↳ Explore · deepseek-ai/DeepSeek-V4.1-Flash-1017 · high · lease 2 turns left"
+	if got := render(stdin); got != want {
+		t.Errorf("status = %q, want %q", got, want)
 	}
 }
 

@@ -1322,7 +1322,7 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 		if len(row.levelOpts) > 1 {
 			open = ansiGray + "›" + ansiReset
 			if i == p.open {
-				open = ansiGray + "∨" + ansiReset
+				open = ansiGray + "v" + ansiReset
 			}
 		}
 		levels := cmp.Or(strings.Join(row.checkedLevels(), ", "), "default")

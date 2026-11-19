@@ -29,6 +29,7 @@ func init() {
 			newRouterGetCmd(gf),
 			newRouterModelsCmd(gf),
 			newRouterRequestCostsCmd(),
+			newRouterApplyCmd(gf),
 			newRouterCreateCmd(gf),
 			newRouterUpdateCmd(gf),
 			newRouterAssignAgentCmd(gf),
@@ -57,14 +58,18 @@ func newRouterListCmd(gf *globalFlags) *cobra.Command {
 }
 
 func newRouterGetCmd(gf *globalFlags) *cobra.Command {
-	return &cobra.Command{
+	var asYAML bool
+	cmd := &cobra.Command{
 		Use:   "get <router_id_or_endpoint>",
-		Short: "Show one router for the current org",
+		Short: "Show one router for the current org; --yaml prints it as a router spec",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			routerID, err := normalizeRouterID(args[0])
 			if err != nil {
 				return err
+			}
+			if asYAML {
+				return getRouterSpec(cmd, gf, routerID)
 			}
 			var resp map[string]any
 			if err := orgKeyRequest(cmd, gf, http.MethodGet, "/v1/organizations/current/routers/"+url.PathEscape(routerID), nil, &resp); err != nil {
@@ -73,6 +78,8 @@ func newRouterGetCmd(gf *globalFlags) *cobra.Command {
 			return printJSON(resp)
 		},
 	}
+	cmd.Flags().BoolVar(&asYAML, "yaml", false, "Print the router as a spec `dari router apply` takes: everything but credentials")
+	return cmd
 }
 
 func newRouterModelsCmd(gf *globalFlags) *cobra.Command {

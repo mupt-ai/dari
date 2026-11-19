@@ -7,6 +7,29 @@ description: Use when the user wants to create, configure, inspect, or call a Da
 
 Dari's managed path lets you define a router in YAML and create it with the public CLI. The self-hosted framework path is `@mupt-ai/dari-router`; see its [public documentation](https://docs.dari.dev/framework/overview) for framework usage.
 
+## Router Specs
+
+A router spec is a whole router in one file, with no credentials. `dari router get <id> --yaml` prints one; `dari router apply <file>` creates the router, or updates your router with the spec's name (`--router <id>` picks another). Each model is paid for with the person's subscription, then the org's key, then Dari credits, as `payment.allow` permits, and an existing router keeps the choices it already made.
+
+```yaml
+name: Opus + DeepSeek Subagents
+models:
+  - anthropic/claude-opus-5-5
+  - id: deepseek-ai/DeepSeek-V4.1-Flash-1017
+    thinking: [high]
+    provider: opencode-go   # only when not the catalog's default
+roles:
+  subagent: { model: deepseek-ai/DeepSeek-V4.1-Flash-1017, prompt: Be brief. }
+routing:
+  session_pinning: false
+payment:
+  allow: [subscription, key, credits]
+hosted:
+  speculative_routing: true   # settings only hosted Dari has
+```
+
+The `router.yml` manifest below is the older format; `dari router create` still takes it.
+
 ## Create A Router
 
 Install the CLI and authenticate:

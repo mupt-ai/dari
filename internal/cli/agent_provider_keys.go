@@ -371,6 +371,11 @@ func attachAgentProviderKeys(ctx context.Context, client *api.Client, router age
 	maps.DeleteFunc(body.ProviderKeySources, func(provider, _ string) bool { return !slices.Contains(served, provider) })
 	body.ProviderCredentialIDs = keys.credentialIDs
 	body.SubscriptionAPIFallbackModels = keys.fallbackModels(router.SubscriptionAPIFallbackModels, body.EnabledModels)
+	// A per-model payment choice made in the picker is saved here too.
+	if keys.subscriptionModels != nil {
+		served := slices.DeleteFunc(slices.Clone(keys.subscriptionModels), func(model string) bool { return !slices.Contains(body.EnabledModels, model) })
+		body.SubscriptionModels = &served
+	}
 	return putAgentRouter(ctx, client, router.ID, body)
 }
 

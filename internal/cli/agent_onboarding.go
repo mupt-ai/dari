@@ -111,8 +111,10 @@ type agentRouter struct {
 	ModelThinkingLevels           map[string][]string `json:"model_thinking_levels"`
 	SubscriptionProviders         []string            `json:"subscription_providers"`
 	SubscriptionAPIFallbackModels []string            `json:"subscription_api_fallback_models"`
-	SessionPinning                bool                `json:"session_pinning"`
-	NativeCompaction              bool                `json:"native_compaction"`
+	// SubscriptionModels are the models the router's subscriptions serve.
+	SubscriptionModels []string `json:"subscription_models"`
+	SessionPinning     bool     `json:"session_pinning"`
+	NativeCompaction   bool     `json:"native_compaction"`
 }
 
 type agentModel struct {
@@ -173,8 +175,11 @@ type agentRouterUpdateRequest struct {
 	ModelThinkingLevels   map[string][]string `json:"model_thinking_levels"`
 	// Omitted keeps the router's current API fallback models.
 	SubscriptionAPIFallbackModels []string `json:"subscription_api_fallback_models,omitempty"`
-	SessionPinning                bool     `json:"session_pinning"`
-	NativeCompaction              bool     `json:"native_compaction"`
+	// The models the router's subscriptions serve. Nil is omitted and keeps
+	// the router's current choice; an empty list serves none.
+	SubscriptionModels *[]string `json:"subscription_models,omitempty"`
+	SessionPinning     bool      `json:"session_pinning"`
+	NativeCompaction   bool      `json:"native_compaction"`
 }
 
 // Omitting subscription_api_fallback_models keeps the router's current ones.
@@ -184,6 +189,37 @@ type agentRouterSubscriptionUpdateRequest struct {
 	ModelProviders        map[string]string   `json:"model_providers,omitempty"`
 	ModelThinkingLevels   map[string][]string `json:"model_thinking_levels,omitempty"`
 	SubscriptionProviders []string            `json:"subscription_providers"`
+}
+
+// subscriptionModelsFor is the per-model payment choice for a router update:
+// the chosen models its subscriptions serve. A model of a provider whose
+// subscription the picker offered is served when the subscription was picked
+// for it; a model of any other subscription provider stays as the router has
+// it. Nil, which keeps the router's choice, when the picker offered none of
+// the router's subscriptions.
+func subscriptionModelsFor(router agentRouter, choices []agentModelChoice, offered map[string]string) *[]string {
+	if !slices.ContainsFunc(router.SubscriptionProviders, func(provider string) bool { _, ok := offered[provider]; return ok }) {
+		return nil
+	}
+	served := []string{}
+	for _, choice := range choices {
+		if _, ok := offered[choice.Source.modelProvider]; ok {
+			if choice.Source.kind == "subscription" {
+				served = append(served, choice.ID)
+			}
+		} else if slices.Contains(router.SubscriptionModels, choice.ID) {
+			served = append(served, choice.ID)
+		}
+	}
+	return &served
+}
+
+// sameModelSet reports whether two model lists name the same models.
+func sameModelSet(a, b []string) bool {
+	a, b = slices.Clone(a), slices.Clone(b)
+	slices.Sort(a)
+	slices.Sort(b)
+	return slices.Equal(a, b)
 }
 
 type agentCredential struct {
@@ -456,7 +492,9 @@ func ensureAgentRouter(
 		body.ProviderCredentialIDs = keys.credentialIDs
 		body.SubscriptionAPIFallbackModels = keys.fallbackModels(defaultRouter.SubscriptionAPIFallbackModels, body.EnabledModels)
 		body.SessionPinning = sessionPinning
-		if len(keys.credentialIDs) > 0 || body.SessionPinning != defaultRouter.SessionPinning || agentRouterNeedsUpdate(defaultRouter, choices) {
+		body.SubscriptionModels = subscriptionModelsFor(defaultRouter, choices, keyContext.subscriptions)
+		if len(keys.credentialIDs) > 0 || body.SessionPinning != defaultRouter.SessionPinning || agentRouterNeedsUpdate(defaultRouter, choices) ||
+			(body.SubscriptionModels != nil && !sameModelSet(*body.SubscriptionModels, defaultRouter.SubscriptionModels)) {
 			if defaultRouter, err = putAgentRouter(ctx, client, defaultRouter.ID, body); err != nil {
 				return "", err
 			}

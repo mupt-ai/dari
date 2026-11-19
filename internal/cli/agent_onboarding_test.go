@@ -1907,3 +1907,41 @@ func TestAccountsKeyRefusesAnEmptyKey(t *testing.T) {
 		t.Fatalf("empty key error = %v", err)
 	}
 }
+
+func TestSubscriptionModelsForARouterUpdate(t *testing.T) {
+	sub := func(provider string) agentModelSource {
+		return agentModelSource{kind: "subscription", provider: provider, modelProvider: provider}
+	}
+	credits := func(provider string) agentModelSource {
+		return agentModelSource{kind: "managed", provider: provider, modelProvider: provider}
+	}
+	router := agentRouter{
+		SubscriptionProviders: []string{"anthropic", "openai"},
+		SubscriptionModels:    []string{"anthropic/opus", "anthropic/sonnet", "openai/sol"},
+	}
+	choices := []agentModelChoice{
+		{ID: "anthropic/opus", Source: sub("anthropic")},
+		{ID: "anthropic/sonnet", Source: credits("anthropic")},
+		// The picker offered no ChatGPT subscription, so Sol stays as the router has it.
+		{ID: "openai/sol", Source: credits("openai")},
+	}
+	got := subscriptionModelsFor(router, choices, map[string]string{"anthropic": "Claude Code"})
+	if got == nil || !slices.Equal(*got, []string{"anthropic/opus", "openai/sol"}) {
+		t.Fatalf("served = %v", got)
+	}
+	// Every offered model moved off the subscription: an empty list, not nil.
+	none := subscriptionModelsFor(agentRouter{SubscriptionProviders: []string{"anthropic"}}, []agentModelChoice{{ID: "anthropic/opus", Source: credits("anthropic")}}, map[string]string{"anthropic": "Claude Code"})
+	if none == nil || len(*none) != 0 {
+		t.Fatalf("none = %v", none)
+	}
+	// The picker offered none of the router's subscriptions: leave the router's choice alone.
+	if kept := subscriptionModelsFor(router, choices, map[string]string{}); kept != nil {
+		t.Fatalf("kept = %v", *kept)
+	}
+	// An empty list is sent as [], and nil is left out.
+	sent, _ := json.Marshal(agentRouterUpdateRequest{SubscriptionModels: none})
+	omitted, _ := json.Marshal(agentRouterUpdateRequest{})
+	if !strings.Contains(string(sent), `"subscription_models":[]`) || strings.Contains(string(omitted), "subscription_models") {
+		t.Fatalf("sent %s omitted %s", sent, omitted)
+	}
+}

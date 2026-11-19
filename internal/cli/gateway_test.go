@@ -728,20 +728,28 @@ func TestClaudeSetupNamesTheKeptPick(t *testing.T) {
 	}
 }
 
-func TestGatewayActivityIsHostedOnly(t *testing.T) {
-	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected gateway request %s %s", r.Method, r.URL.Path)
-	}))
+// A gateway serves its own Activity, read with the gateway key as the
+// organization the key belongs to.
+func TestGatewayActivityReadsTheGateway(t *testing.T) {
+	gateway := httptest.NewServer(requireGatewayKey(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/organizations/current/routing/activity/overview" {
+			t.Errorf("unexpected gateway request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"summary":{"model_steps":3}}`)
+	})))
 	defer gateway.Close()
 	hostedAPIMustNotBeCalled(t)
 	setGatewayEnv(t, gateway.URL)
 
 	cmd := newRootCmd("dev")
 	cmd.SetArgs([]string{"activity", "overview", "--from", "2026-07-01T00:00:00Z", "--to", "2026-07-02T00:00:00Z"})
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	if err := cmd.Execute(); !errors.Is(err, errActivityHostedOnly) {
-		t.Fatalf("activity error = %v, want hosted-only", err)
+	output, err := captureStdoutBytes(t, cmd.Execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(output), `"model_steps": 3`) {
+		t.Fatalf("output = %s", output)
 	}
 }
 

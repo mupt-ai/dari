@@ -1,3 +1,4 @@
+import type { ActivityPlatform } from "../activity/http.js";
 import type {
   Provider,
   ReasoningEffort,
@@ -92,6 +93,12 @@ export type GatewayPlatform = {
    * and nothing else. Without it the `/v1/link/...` endpoints answer 404.
    */
   link?: LinkPlatform;
+  /**
+   * Optional. Activity: the routed requests' usage, spend, conversations, and
+   * tools, read under `/v1/organizations/{organization}/routing/activity/`.
+   * Without it those endpoints answer 404.
+   */
+  activity?: ActivityPlatform;
 };
 
 /**

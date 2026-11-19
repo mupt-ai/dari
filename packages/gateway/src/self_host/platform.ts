@@ -1,19 +1,28 @@
+import { activityError } from "../activity/params.js";
+import { bearerToken } from "../http/auth.js";
 import { errorCode } from "../http/errors.js";
 import { selfHostedLink } from "../link/self_hosted.js";
 import type { GatewayPlatform } from "../platform/platform.js";
 import { subscriptionOAuthProviderFor } from "../providers/subscription_limits.js";
+import { SELF_HOSTED_BLOB_BUCKET, type ActivityStore } from "./activity_store.js";
 import type { PrefixStore } from "./prefix_store.js";
 import type { SessionPinStore } from "./session_pin_store.js";
-import { resolveSelfHostedRouter, type SelfHostedResolverDeps } from "./resolve.js";
+import {
+  gatewayKeyIndex,
+  resolveSelfHostedRouter,
+  SELF_HOSTED_ORGANIZATION_ID,
+  type SelfHostedResolverDeps,
+} from "./resolve.js";
 import { type SubscriptionStore } from "./subscriptions/index.js";
 import { refreshedAccessToken } from "./subscriptions/access.js";
 
 /**
  * The self-hosted platform: routers from the config file, subscriptions,
- * Dari Link grants, prefix-cache state, and session pins in the gateway's
- * SQLite database, and one content-free log line per request.
+ * Dari Link grants, prefix-cache state, session pins, and Activity in the
+ * gateway's SQLite database, and one content-free log line per request.
  */
 export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "prefixHits"> & {
+  activity: ActivityStore;
   prefixes: PrefixStore;
   sessionPins: SessionPinStore;
   subscriptions: SubscriptionStore;
@@ -72,6 +81,11 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
     },
     recordRequest(record) {
       console.info("routing request", JSON.stringify(record.summary));
+      try {
+        deps.activity.record(record.row);
+      } catch (error) {
+        console.error("activity record failed", error instanceof Error ? error.message : String(error));
+      }
       if (record.link !== undefined) {
         const { summary } = record;
         deps.links.recordUsage({
@@ -114,5 +128,26 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
       );
     },
     link: selfHostedLink(deps),
+    // Any gateway key reads the gateway's Activity, as the one organization
+    // it serves (`current`).
+    activity: {
+      db: deps.activity.reads,
+      async authorize(request, organizationRef) {
+        let key: string;
+        try {
+          key = bearerToken(request.headers);
+        } catch {
+          throw activityError(401, "Missing or invalid API key");
+        }
+        if (gatewayKeyIndex(deps.gatewayKeys, key) === null) throw activityError(401, "Missing or invalid API key");
+        if (organizationRef !== "current" && organizationRef !== SELF_HOSTED_ORGANIZATION_ID) {
+          throw activityError(404, `Unknown organization ${organizationRef}.`);
+        }
+        return { organizationId: SELF_HOSTED_ORGANIZATION_ID };
+      },
+      async readBlob(bucket, key) {
+        return bucket === SELF_HOSTED_BLOB_BUCKET ? deps.activity.readBlob(key) : null;
+      },
+    },
   };
 }

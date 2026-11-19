@@ -10,12 +10,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/auth"
 )
 
 func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, gf *globalFlags) {
-		activity := &cobra.Command{Use: "activity", Short: "Read routing activity for the current org", GroupID: hostedGroup}
+		activity := &cobra.Command{Use: "activity", Short: "Read routing activity for the current org or gateway"}
 		activity.AddCommand(
 			newActivityFiltersCmd(gf),
 			newActivityOverviewCmd(gf),
@@ -443,21 +444,20 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-// errActivityHostedOnly: a local or self-hosted gateway records no activity
-// on the hosted Dari API, so these commands would report nothing true.
-var errActivityHostedOnly = fmt.Errorf("activity needs hosted routing: this machine routes through a gateway, whose requests never reach Dari. For observability, run `dari gateway setup --mode hosted`")
-
+// requestActivity reads an Activity route from the gateway this machine
+// routes through, or from hosted Dari's routing service, which serves
+// Activity for the hosted API.
 func requestActivity(cmd *cobra.Command, gf *globalFlags, organizationID, endpoint string, query url.Values) error {
 	gw, err := currentGateway()
 	if err != nil {
 		return err
 	}
-	if gw != nil {
-		return errActivityHostedOnly
-	}
 	organizationID = strings.TrimSpace(organizationID)
 	orgPath := "current"
 	if organizationID != "" {
+		if gw != nil {
+			return fmt.Errorf("--organization-id needs the hosted Dari API; a gateway serves its own activity")
+		}
 		if auth.EnvAPIKeyValue() != "" {
 			return fmt.Errorf("--organization-id requires browser login; unset DARI_API_KEY and run `dari auth login`")
 		}
@@ -468,20 +468,47 @@ func requestActivity(cmd *cobra.Command, gf *globalFlags, organizationID, endpoi
 		path += "?" + query.Encode()
 	}
 	var response any
-	if organizationID == "" {
-		if err := orgKeyRequest(cmd, gf, http.MethodGet, path, nil, &response); err != nil {
+	switch {
+	case gw != nil:
+		if err := gw.ensure(cmd.Context(), cmd.ErrOrStderr()); err != nil {
 			return err
 		}
-		return printJSON(response)
-	}
-	apiURL, err := gf.resolveAPIURL()
-	if err != nil {
-		return err
-	}
-	if _, err := auth.DoAuthenticated(cmd.Context(), apiURL, http.MethodGet, path, nil, &response); err != nil {
-		return err
+		if err := api.New(gw.url).WithBearer(gw.key).Do(cmd.Context(), http.MethodGet, path, nil, &response); err != nil {
+			return err
+		}
+	case organizationID == "":
+		apiURL, err := gf.resolveAPIURL()
+		if err != nil {
+			return err
+		}
+		client, err := auth.OrgKeyClient(apiURL)
+		if err != nil {
+			return err
+		}
+		client.BaseURL = activityBaseURL(apiURL)
+		if err := client.Do(cmd.Context(), http.MethodGet, path, nil, &response); err != nil {
+			return err
+		}
+	default:
+		apiURL, err := gf.resolveAPIURL()
+		if err != nil {
+			return err
+		}
+		if _, err := auth.DoAuthenticatedOn(cmd.Context(), apiURL, activityBaseURL(apiURL), http.MethodGet, path, nil, &response); err != nil {
+			return err
+		}
 	}
 	return printJSON(response)
+}
+
+// activityBaseURL is the service that serves hosted Activity: the routing
+// service for Dari's own API, and the API URL itself for any other (a test
+// server or a stack that serves both).
+func activityBaseURL(apiURL string) string {
+	if api.URLsMatch(apiURL, api.DefaultAPIURL) {
+		return routingBaseURL
+	}
+	return apiURL
 }
 
 func parseActivityTime(name, value string) (time.Time, error) {

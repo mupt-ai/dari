@@ -14,6 +14,7 @@ import { SubscriptionStore } from "../self_host/subscriptions/index.js";
 import { codexAccessToken, fakeFetch, jsonResponse } from "../self_host/subscriptions/test_support.js";
 import { addTestApp, approveTestGrant } from "./test_support.js";
 import type { LinkSignIn } from "../platform/platform.js";
+import { ActivityStore } from "../self_host/activity_store.js";
 
 const BASE = "http://gateway.test";
 const REDIRECT_URI = "http://127.0.0.1:9999/callback";
@@ -28,6 +29,7 @@ function gateway(responses: Array<() => Response>, signIn?: LinkSignIn) {
   const links = new SqliteLinkStore(db, secrets);
   const selfHosted = createSelfHostedPlatform({
     config: parseGatewayConfig({ routers: { default: { models: ["anthropic/claude-sonnet-5-5", "openai/gpt-5.5"] } } }),
+    activity: new ActivityStore(db),
     routerModels: new RouterModelStore(db),
     gatewayKeys: ["k"],
     subscriptions,
@@ -174,6 +176,7 @@ test("without an encryption key the page connects nothing and says why", async (
   const links = new SqliteLinkStore(db);
   const platform = createSelfHostedPlatform({
     config: parseGatewayConfig({ routers: { default: { models: ["openai/gpt-5.5"] } } }),
+    activity: new ActivityStore(db),
     routerModels: new RouterModelStore(db),
     gatewayKeys: ["k"],
     subscriptions,

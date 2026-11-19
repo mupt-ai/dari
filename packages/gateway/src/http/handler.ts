@@ -2,6 +2,7 @@ import {
   handleResponses,
   handleResponsesWebSocketFallback,
 } from "../ingress/codex.js";
+import { handleActivityRequest } from "../activity/http.js";
 import { handleLinkRequest, LINK_METADATA_PATH, LINK_ROUTE_PREFIX } from "../link/endpoints.js";
 import { handleModels } from "../ingress/models.js";
 import { handleMuseCodeModels } from "../ingress/muse_models.js";
@@ -20,7 +21,8 @@ export type GatewayHandlerOptions = {
 /**
  * The gateway's routed HTTP surface: `/v1/{chat/completions,responses,
  * messages,models}` on the default router and `/{router_id}/v1/...` on a
- * named one, and the Dari Link grant endpoints under `/v1/link/`. Binds
+ * named one, the Dari Link grant endpoints under `/v1/link/`, and the
+ * Activity reads under `/v1/organizations/{organization}/routing/activity/`. Binds
  * `options.platform` for every request it serves.
  */
 export function createRequestHandler(options: GatewayHandlerOptions) {
@@ -48,6 +50,8 @@ export function createRequestHandler(options: GatewayHandlerOptions) {
     if (url.pathname.startsWith(LINK_ROUTE_PREFIX) || url.pathname === LINK_METADATA_PATH) {
       return await handleLinkRequest(request, options.platform);
     }
+    const activity = await handleActivityRequest(request, options.platform.activity);
+    if (activity !== null) return activity;
 
     const endpoint = routedEndpoint(url.pathname);
     if (endpoint?.protocol === "chat" && request.method === "POST") {

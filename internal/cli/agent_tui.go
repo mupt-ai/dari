@@ -1310,7 +1310,7 @@ func agentPickerSummary(p *agentPickerState) string {
 // agentProviderNames name the providers the model picker groups by.
 var agentProviderNames = map[string]string{
 	"anthropic": "Anthropic", "openai": "OpenAI", "google": "Google", "xai": "xAI", "meta": "Meta",
-	"deepseek": "DeepSeek", "fireworks": "Fireworks", "mistral": "Mistral", "moonshotai": "Moonshot AI",
+	"deepseek": "DeepSeek", "deepseek-ai": "DeepSeek", "fireworks": "Fireworks", "mistral": "Mistral", "moonshotai": "Moonshot AI",
 	"zai-org": "Z.ai", "qwen": "Qwen", "opencode": "OpenCode",
 }
 

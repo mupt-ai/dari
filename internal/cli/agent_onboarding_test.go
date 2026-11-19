@@ -1454,7 +1454,7 @@ func TestAgentPickerLinesGroupByProviderAndAlign(t *testing.T) {
 	plain := stripANSI(strings.Join(agentPickerLines("Choose models", []string{"note one", "note two"}, p), "\n"))
 
 	// Each provider heads its models; Continue and the keys, one to a line, follow.
-	for _, want := range []string{"note one\nnote two\n\n  Anthropic\n", "\n  Fireworks\n", "\n  OpenAI\n", "Continue →\n\n  ↑↓ move · enter select · → thinking levels · ← close · esc back"} {
+	for _, want := range []string{"  note one\n  note two\n\n  Anthropic\n", "\n  Fireworks\n", "\n  OpenAI\n", "Continue →\n\n  ↑↓ move · enter select · → thinking levels · ← close · esc back"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("missing %q in:\n%s", want, plain)
 		}

@@ -4,47 +4,51 @@
  * themselves. It uses only `fetch` and Web Crypto, so it runs in browsers,
  * Node, Bun, and Deno.
  *
- * In a browser, one button does the approval: `DariLink.open` opens Dari in a
- * popup, the user signs in, picks plans, and approves, and the popup closes.
+ * An app with a server is three calls. In the browser, one button does the
+ * approval: `DariLink.open` opens Dari in a popup, the user signs in, picks
+ * plans, and approves, and the popup closes.
  *
  * ```ts
  * import { DariLink } from "@mupt-ai/dari-gateway/link/client";
  *
  * button.onclick = async () => {
  *   const { code, codeVerifier } = await DariLink.open({ gatewayUrl, clientId, redirectUri });
- *   await fetch("/api/dari/exchange", { method: "POST", body: JSON.stringify({ code, codeVerifier }) });
+ *   await fetch("/api/dari/connect", { method: "POST", body: JSON.stringify({ code, codeVerifier }) });
  * };
  * ```
  *
- * Without a popup, send the user to the approval URL yourself:
+ * The server, registered as a confidential client (`registerClient({
+ * confidential: true })`, or Settings → Dari Link Apps on hosted Dari),
+ * redeems the code and stores one string per user: the refresh token. It
+ * never changes, and it is useless without the client secret. Every later
+ * call takes it, and makes its own access tokens:
  *
  * ```ts
- * import { authorizeUrl, exchange, linkFetch } from "@mupt-ai/dari-gateway/link/client";
+ * import { exchange, linkFetch } from "@mupt-ai/dari-gateway/link/client";
  *
- * const { url, codeVerifier, state } = await authorizeUrl({ gatewayUrl, clientId, redirectUri });
- * // Keep codeVerifier and state with the user's session, send them to `url`;
- * // on the redirect back, check `state`, then:
- * await db.save(user, await exchange({ gatewayUrl, clientId, redirectUri, code, codeVerifier }));
- * const gatewayFetch = linkFetch({
- *   gatewayUrl,
- *   clientId,
- *   loadTokens: () => db.load(user),
- *   saveTokens: (next) => db.save(user, next),
- * });
- * await gatewayFetch("/v1/chat/completions", {
+ * const client = { gatewayUrl, clientId, clientSecret };
+ * const { refreshToken } = await exchange({ ...client, redirectUri, code, codeVerifier });
+ * await db.save(user, refreshToken);
+ *
+ * const dari = linkFetch({ ...client, refreshToken });
+ * await dari("/v1/chat/completions", {
  *   method: "POST",
  *   headers: { "content-type": "application/json" },
  *   body: JSON.stringify({ model: "dari/routing", messages }),
  * });
  * ```
  *
- * A server keeps a secret: register it as a confidential client
- * (`registerClient({ confidential: true })`, or Settings → Dari Link Apps on
- * hosted Dari) and pass `clientSecret` to every
- * call. Its refresh token then never rotates, so any number of processes can
- * refresh the same grant. A public client's refresh token rotates on every
- * use; `linkFetch` reads the tokens from your storage on each call, so
- * processes that share that storage share the rotation.
+ * `grant`, `usage`, and `childToken` take the same `refreshToken`, and
+ * `revoke` ends the grant. Dari refuses a model the grant cannot serve, a
+ * plan at its limit, and a revoked grant itself, so an app checks none of
+ * that before calling: it shows the error, and Reconnect when
+ * `LinkError.unlinked` is true.
+ *
+ * An app with no server (a public client) has no secret, and its refresh
+ * token rotates on every use: it passes its storage (`loadTokens` and
+ * `saveTokens`) instead of `refreshToken`, and processes that share that
+ * storage share the rotation. Without a popup, `authorizeUrl` gives the
+ * approval URL to send the user to.
  */
 
 export type LinkPlan = {
@@ -78,12 +82,9 @@ export type LinkModel = { id: string; name: string };
 
 export type LinkBudgetWindow = { window_minutes: number; max_tokens: number; used_tokens: number; resets_at: string | null };
 
-export type LinkTokenSet = {
-  accessToken: string;
-  refreshToken: string;
-  // Milliseconds since the epoch.
-  expiresAt: number;
-  grantId: string | null;
+/** What a grant holds now: what `grant` reads, and what comes with every token set. */
+export type LinkGrant = {
+  grantId: string;
   scope: string;
   // The most tokens this app may use per window (300: five hours, 10080: a
   // week), across all its plans and API keys, and what it used in each
@@ -99,6 +100,14 @@ export type LinkTokenSet = {
   manageUrl: string;
   // Whether `dari/routing` serves a plain API client now.
   routes: boolean;
+};
+
+export type LinkTokenSet = LinkGrant & {
+  accessToken: string;
+  // A server with a client secret stores only this: it never changes.
+  refreshToken: string;
+  // When the access token expires, in milliseconds since the epoch.
+  expiresAt: number;
 };
 
 export type LinkChildToken = {
@@ -128,6 +137,11 @@ export class LinkError extends Error {
     this.code = code;
     this.status = status;
     this.detail = detail;
+  }
+
+  /** Whether the user's grant is gone, so the app should offer Reconnect. */
+  get unlinked(): boolean {
+    return this.code === "invalid_grant" || this.code === "grant_revoked" || this.code === "not_linked";
   }
 }
 
@@ -504,12 +518,13 @@ export async function refresh(args: Client & { refreshToken: string }): Promise<
 }
 
 /**
- * Mint a child token for a sandbox or worker, from the grant's access token
- * or from your token storage (refreshed as `linkFetch` does): it serves only
- * its models (each at one thinking level when pinned) for up to twelve
- * hours, cannot refresh, mint, or read the grant, and dies with the grant.
+ * Mint a child token for a sandbox or worker, from the grant's refresh token
+ * or token storage (as `linkFetch` takes them), or from an access token: it
+ * serves only its models (each at one thinking level when pinned) for up to
+ * twelve hours, cannot refresh, mint, or read the grant, and dies with the
+ * grant.
  */
-export async function childToken(args: Client & ({ accessToken: string } | TokenStorage) & {
+export async function childToken(args: Client & ({ accessToken: string } | LinkTokens) & {
   // Such as `[{ model: "dari/model/openai/gpt-5.5", thinking: "high" }]`.
   models: Array<{ model: string; thinking?: string }>;
   // Seconds, 60 to 43200; an hour when omitted.
@@ -535,7 +550,7 @@ export async function childToken(args: Client & ({ accessToken: string } | Token
   if ("accessToken" in args) {
     payload = await mint(args.accessToken);
   } else {
-    // From storage, refreshing the grant's access token as linkFetch does.
+    // Refreshing the grant's access token as linkFetch does.
     const source = tokenSource(args);
     const tokens = await source.fresh();
     try {
@@ -564,22 +579,23 @@ export async function revoke(args: Client & { token: string }): Promise<void> {
 
 /**
  * A fetch for the gateway on one grant: paths resolve against `gatewayUrl`
- * and the access token is attached. Your storage is the source of truth: the
- * tokens are read with `loadTokens` on every call, refreshed shortly before
- * they expire and once after a 401 for an expired token, and every new token
- * set reaches `saveTokens` before use. Concurrent calls in a process share
- * one refresh. A grant that is gone throws LinkError with code
+ * and the access token is attached, refreshed shortly before it expires and
+ * once after a 401 for an expired token. A server passes the grant's
+ * `refreshToken`; a public client passes its storage, which is then the
+ * source of truth: the tokens are read with `loadTokens` on every call, and
+ * every new token set reaches `saveTokens` before use. Concurrent calls in a
+ * process share one refresh. A grant that is gone throws LinkError with code
  * `invalid_grant` from the refresh, and a revoked access token's 401
  * (`grant_revoked`) is returned as it is: either way the user is unlinked and
  * must link again. With no tokens stored it throws `not_linked`.
  */
-export function linkFetch(args: Client & TokenStorage & {
+export function linkFetch(args: Client & LinkTokens & {
   now?: () => number;
 }): (input: string, init?: RequestInit) => Promise<Response> {
   const fetchImpl = args.fetch ?? fetch;
   const source = tokenSource(args);
 
-  const call = (tokens: LinkTokenSet, input: string, init: RequestInit | undefined) => {
+  const call = (tokens: HeldTokens, input: string, init: RequestInit | undefined) => {
     const headers = new Headers(init?.headers);
     headers.set("authorization", `Bearer ${tokens.accessToken}`);
     return fetchImpl(endpoint(args.gatewayUrl, input), { ...init, headers });
@@ -616,17 +632,30 @@ export type LinkUsage = LinkUsageTotals & {
   by_tag?: Array<LinkUsageTotals & { value: string | null }>;
 };
 
+// A `linkFetch` the app already made, or what makes one.
+type GrantCall =
+  | { fetcher: (input: string, init?: RequestInit) => Promise<Response> }
+  | (Client & LinkTokens & { now?: () => number });
+
+/**
+ * What the grant holds now: its plans and API keys, whether each can serve,
+ * the models they serve, and the user's budget. It makes no provider call,
+ * so it is the cheap check before a long run, and what a connections list
+ * shows. A grant that is gone throws a LinkError whose `unlinked` is true.
+ */
+export async function grant(args: GrantCall): Promise<LinkGrant> {
+  const fetcher = "fetcher" in args ? args.fetcher : linkFetch(args);
+  return grantOf(await json(await fetcher("/v1/link/grant")));
+}
+
 /**
  * What the grant's requests used, child tokens' included: only requests
  * carrying every given tag (X-Dari-Tags or a child token's tags), received
  * in [since, until), and with `groupByTag` also totalled per value of that
- * tag. Pass the `linkFetch` your app already uses as `fetcher` so this shares
- * its refresh; otherwise pass the client and token storage.
+ * tag. Takes the grant's `refreshToken` or token storage as `linkFetch`
+ * does, or the `linkFetch` your app already made as `fetcher`.
  */
-export async function usage(args: (
-  | { fetcher: (input: string, init?: RequestInit) => Promise<Response> }
-  | (Client & TokenStorage & { now?: () => number })
-) & {
+export async function usage(args: GrantCall & {
   tags?: Record<string, string>;
   since?: Date;
   until?: Date;
@@ -644,34 +673,69 @@ export async function usage(args: (
 }
 
 /**
- * Where an app keeps one grant's tokens. `loadTokens` returns null when the
- * user has not linked (or unlinked): calls then throw LinkError `not_linked`
- * without reaching the gateway.
+ * Where a public client keeps one grant's tokens. `loadTokens` returns null
+ * when the user has not linked (or unlinked): calls then throw LinkError
+ * `not_linked` without reaching the gateway.
  */
 export type TokenStorage = {
   loadTokens: () => LinkTokenSet | null | Promise<LinkTokenSet | null>;
   saveTokens: (tokens: LinkTokenSet) => void | Promise<void>;
 };
 
-// One grant's tokens from storage: fresh ones, refreshed shortly before they
-// expire, and a rotation that concurrent callers share.
-function tokenSource(args: Client & TokenStorage & { now?: () => number }) {
+/**
+ * One grant's tokens. A server with a client secret passes `refreshToken`,
+ * the one string it stores for the grant: it never changes, and the access
+ * tokens made from it are kept in this process. A public client's refresh
+ * token rotates on every use, so it passes its storage.
+ */
+export type LinkTokens = { refreshToken: string } | TokenStorage;
+
+// What a grant's tokens are read for.
+type HeldTokens = Pick<LinkTokenSet, "accessToken" | "refreshToken" | "expiresAt">;
+
+// The access tokens this process made from refresh tokens, by gateway,
+// client, and refresh token, and each one's refresh in flight.
+const held = new Map<string, HeldTokens>();
+const refreshes = new Map<string, Promise<HeldTokens>>();
+
+// One grant's tokens: fresh ones, refreshed shortly before they expire, and
+// a rotation that concurrent callers share.
+function tokenSource(args: Client & LinkTokens & { now?: () => number }) {
   const now = args.now ?? Date.now;
-  const load = async (): Promise<LinkTokenSet> => {
+  // A refresh token that never rotates names its grant for the whole process.
+  const key = "refreshToken" in args ? `${args.gatewayUrl}\n${args.clientId}\n${args.refreshToken}` : null;
+  if (key !== null && !args.clientSecret) {
+    throw new LinkError(
+      "invalid_request",
+      "Only a client with a clientSecret keeps one refresh token; a public client's rotates, so pass loadTokens and saveTokens.",
+      0,
+    );
+  }
+  const load = async (): Promise<HeldTokens> => {
+    // No access token made yet: the first call refreshes.
+    if ("refreshToken" in args) return held.get(key!) ?? { accessToken: "", refreshToken: args.refreshToken, expiresAt: 0 };
     const stored = await args.loadTokens();
     if (stored === null) throw new LinkError("not_linked", "This user has not linked a Dari Link grant.", 0);
     return stored;
   };
-  let refreshing: Promise<LinkTokenSet> | null = null;
-  const rotate = (stale: LinkTokenSet): Promise<LinkTokenSet> => {
-    refreshing ??= (async () => {
+  const save = async (next: LinkTokenSet): Promise<void> => {
+    if (!("refreshToken" in args)) return await args.saveTokens(next);
+    for (const [other, tokens] of held) if (tokens.expiresAt <= now()) held.delete(other);
+    held.set(key!, { accessToken: next.accessToken, refreshToken: next.refreshToken, expiresAt: next.expiresAt });
+  };
+  // One refresh at a time: per call site with storage, per process with a refresh token.
+  let refreshing: Promise<HeldTokens> | null = null;
+  const rotate = (stale: HeldTokens): Promise<HeldTokens> => {
+    const running = key === null ? refreshing : refreshes.get(key) ?? null;
+    if (running !== null) return running;
+    const started = (async () => {
       try {
         // Another call or process may have refreshed since `stale` was read.
         const stored = await load();
         if (stored.accessToken !== stale.accessToken) return stored;
         try {
           const next = await refresh({ ...args, refreshToken: stored.refreshToken });
-          await args.saveTokens(next);
+          await save(next);
           return next;
         } catch (error) {
           // Another process rotated this refresh token a moment ago and is
@@ -680,14 +744,17 @@ function tokenSource(args: Client & TokenStorage & { now?: () => number }) {
           throw error;
         }
       } finally {
-        refreshing = null;
+        if (key === null) refreshing = null;
+        else refreshes.delete(key);
       }
     })();
-    return refreshing;
+    if (key === null) refreshing = started;
+    else refreshes.set(key, started);
+    return started;
   };
   return {
     rotate,
-    async fresh(): Promise<LinkTokenSet> {
+    async fresh(): Promise<HeldTokens> {
       const tokens = await load();
       return tokens.expiresAt - now() < REFRESH_EARLY_MS ? await rotate(tokens) : tokens;
     },
@@ -720,10 +787,16 @@ function clientHeaders(args: Client): Record<string, string> {
 
 function tokenSet(payload: Record<string, unknown>): LinkTokenSet {
   return {
+    ...grantOf(payload),
     accessToken: String(payload.access_token),
     refreshToken: String(payload.refresh_token),
     expiresAt: Date.now() + Number(payload.expires_in) * 1000,
-    grantId: typeof payload.grant_id === "string" ? payload.grant_id : null,
+  };
+}
+
+function grantOf(payload: Record<string, unknown>): LinkGrant {
+  return {
+    grantId: String(payload.grant_id),
     scope: typeof payload.scope === "string" ? payload.scope : "route",
     budget: Array.isArray(payload.budget) ? payload.budget as LinkBudgetWindow[] : [],
     state: payload.state === "budget_limit" ? "budget_limit" : "ready",

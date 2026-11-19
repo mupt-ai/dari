@@ -7,10 +7,14 @@
  * ```
  *
  * It prints one JSON line, `{"baseUrl", "gatewayKey", "planIds", "keyIds",
- * "userCookie", "controlUrl"}`, then serves until it is killed. The plans are the approval
- * page's user's: `userCookie` is the `Cookie` header that opens the page as them. `GET <controlUrl>/served`
+ * "userCookie", "controlUrl", "app"}`, then serves until it is killed. The plans are the approval
+ * page's user's: `userCookie` is the `Cookie` header that opens the page as them. `app` is a server
+ * app registered on the gateway (`gatewayUrl`, `clientId`, `clientSecret`, `redirectUri`), and
+ * `POST <controlUrl>/connect` (with `{"credential_ids"?, "deny"?, "clients"?, "plans"?,
+ * "key_providers"?, "grant_id"?}`, all optional) is its user approving it: it answers
+ * `{"code", "code_verifier", "state"}`, what Connect with Dari hands your page. `GET <controlUrl>/served`
  * answers `{"calls": [...]}`: every provider call so far, with its path,
- * model, thinking, and client headers. `POST <controlUrl>/approve` with
+ * model, thinking, and client headers. For an app you registered yourself, `POST <controlUrl>/approve` with
  * `{"url": <authorize URL>, "credential_ids"?, "deny"?}` goes through the
  * approval page and answers `{"message", "target_origin"}`, which `GET
  * <controlUrl>/messages` lists; `POST <controlUrl>/state` with `{"limited"?,
@@ -19,6 +23,7 @@
  * `openai_codex` and `anthropic_claude_code`), `--keys` (comma-separated
  * `anthropic`, `openai`, and `openrouter`: an API key of the plans' user for each), `--models` (the default
  * router's models), `--key` (the gateway key), `--port` (the gateway's port),
+ * `--redirect-uri` (the redirect URI `app` is registered with),
  * and `--allow-http-redirect-host` (repeatable: a host apps may register http
  * redirect URIs on, such as `*.example.ts.net`).
  */
@@ -48,6 +53,7 @@ if (port !== undefined && !/^\d+$/.test(port)) {
   console.error("--port takes a port number.");
   process.exit(2);
 }
+const redirectUri = option("redirect-uri");
 const httpHosts = process.argv.flatMap((arg, index) => arg === "--allow-http-redirect-host" ? [process.argv[index + 1] ?? ""] : []);
 const gateway = await startStubGateway({
   ...(plans ? { plans: plans as NonNullable<StubGatewayOptions["plans"]> } : {}),
@@ -55,6 +61,7 @@ const gateway = await startStubGateway({
   ...(models ? { models } : {}),
   ...(gatewayKey ? { gatewayKey } : {}),
   ...(port ? { port: Number(port) } : {}),
+  ...(redirectUri ? { redirectUri } : {}),
   ...(httpHosts.length > 0 ? { allowHttpRedirectHosts: httpHosts } : {}),
 });
 console.log(JSON.stringify({
@@ -64,6 +71,7 @@ console.log(JSON.stringify({
   keyIds: gateway.keyIds,
   userCookie: gateway.userCookie,
   controlUrl: gateway.controlUrl,
+  app: gateway.app,
 }));
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {

@@ -7,6 +7,7 @@ import {
   childToken,
   exchange,
   DariLink,
+  grant as linkGrant,
   LinkError,
   linkFetch,
   type LinkBrowser,
@@ -16,7 +17,7 @@ import {
   type LinkTokenSet,
   type LinkUsage,
 } from "./client.js";
-import { startStubGateway, type StubGateway } from "../self_host/stub_gateway.js";
+import { startStubGateway, type StubGateway, type StubLinkApp } from "../self_host/stub_gateway.js";
 import { anthropicReply, startSubscriptionGateway } from "../self_host/subscription_test_gateway.js";
 import { codexReply } from "../self_host/stub_gateway.js";
 
@@ -129,7 +130,7 @@ async function link(gateway: Gateway, credentialIds: string[], extra: Record<str
   return { clientId, verifier, code, tokens: exchanged.body };
 }
 
-async function chat(gateway: Gateway, accessToken: string, model = "dari/routing", extra: Record<string, unknown> = {}) {
+async function chat(gateway: Pick<Gateway, "baseUrl">, accessToken: string, model = "dari/routing", extra: Record<string, unknown> = {}) {
   return await fetch(`${gateway.baseUrl}/v1/chat/completions`, {
     method: "POST",
     headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
@@ -707,7 +708,7 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
     accessToken: access,
     refreshToken: tokens.refresh_token!,
     expiresAt: Date.now() + 3_600_000,
-    grantId: null,
+    grantId: tokens.grant_id as string,
     scope: "route",
     budget: [],
     state: "ready",
@@ -909,6 +910,50 @@ test("the link client authorizes, exchanges, and refreshes for an app", async ()
   });
   expect(await unlinked("/v1/models").catch((error: unknown) => error)).toMatchObject({ code: "not_linked" });
   expect(reached).toBe(false);
+});
+
+// A server stores one string per user: every call takes the refresh token and
+// makes its own access tokens.
+test("a server app runs on the refresh token alone", async () => {
+  const gateway = await startStubGateway({ plans: ["openai_codex"] });
+  stop = gateway.stop;
+  let refreshes = 0;
+  const counting = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (init?.body instanceof URLSearchParams && init.body.get("grant_type") === "refresh_token") refreshes += 1;
+    return await fetch(input, init);
+  }) as typeof fetch;
+  const { gatewayUrl, clientId, clientSecret, redirectUri } = gateway.app;
+  const client = { gatewayUrl, clientId, clientSecret, fetch: counting };
+  // The stub's user denies, then approves, as Connect with Dari would report each.
+  expect(await gateway.connect({ deny: true }).catch((error: unknown) => error)).toMatchObject({ code: "access_denied" });
+  const { refreshToken, grantId } = await exchange({ ...client, redirectUri, ...(await gateway.connect()) });
+
+  // Calls at once, and every later call in the process, share one refresh.
+  const call = () => linkFetch({ ...client, refreshToken })("/v1/chat/completions", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+  });
+  expect((await Promise.all([call(), call()])).map((response) => response.status)).toEqual([200, 200]);
+  const held = await linkGrant({ ...client, refreshToken });
+  expect(held).toMatchObject({ grantId, state: "ready", plans: [{ id: gateway.planIds[0], kind: "openai_codex", state: "ready" }] });
+  expect(held.manageUrl).toEndWith(`#${grantId}`);
+  const child = await childToken({ ...client, refreshToken, models: [{ model: "gpt-5.5" }], tags: { trial: "1" } });
+  expect((await chat(gateway, child.accessToken, "gpt-5.5")).status).toBe(200);
+  expect(refreshes).toBe(1);
+  // An access token near its expiry is replaced.
+  await linkGrant({ ...client, refreshToken, now: () => Date.now() + 2 * 3_600_000 });
+  expect(refreshes).toBe(2);
+
+  // A public client's refresh token rotates, so it cannot be the one string stored.
+  expect(() => linkFetch({ gatewayUrl, clientId, refreshToken })).toThrow(expect.objectContaining({ code: "invalid_request" }));
+
+  // Once the grant is revoked, every call says the user is unlinked.
+  await revokeToken({ ...client, token: refreshToken });
+  const gone = await linkGrant({ ...client, refreshToken }).catch((error: unknown) => error);
+  expect(gone).toMatchObject({ code: "grant_revoked", unlinked: true });
+  expect(await childToken({ ...client, refreshToken: `${refreshToken}x`, models: [{ model: "gpt-5.5" }] }).catch((error: unknown) => error))
+    .toMatchObject({ code: "invalid_grant", unlinked: true });
 });
 
 test("a child token is minted from token storage, by the names a request uses", async () => {
@@ -1242,10 +1287,12 @@ test("the stub gateway runs as a process and reports the calls it served", async
     if (done) break;
     line += new TextDecoder().decode(value);
   }
-  const started = JSON.parse(line) as { baseUrl: string; gatewayKey: string; planIds: string[]; userCookie: string; controlUrl: string };
+  const started = JSON.parse(line) as { planIds: string[]; controlUrl: string; app: StubLinkApp };
   expect(started.planIds).toHaveLength(1);
-  const { tokens } = await link(started, started.planIds);
-  const response = await chat(started, tokens.access_token!, "dari/model/openai/gpt-5.5");
+  // The stub's own app, approved by its user: what Connect with Dari hands a page.
+  const connected = (await (await fetch(`${started.controlUrl}/connect`, { method: "POST" })).json()) as { code: string; code_verifier: string };
+  const tokens = await exchange({ ...started.app, code: connected.code, codeVerifier: connected.code_verifier });
+  const response = await chat({ baseUrl: started.app.gatewayUrl }, tokens.accessToken, "dari/model/openai/gpt-5.5");
   expect(response.status).toBe(200);
   const served = (await (await fetch(`${started.controlUrl}/served`)).json()) as { calls: Array<Record<string, unknown>> };
   expect(served.calls).toEqual([expect.objectContaining({ kind: "openai_codex", model: "gpt-5.5", path: "/backend-api/codex/responses" })]);

@@ -7,18 +7,28 @@
  * ```ts
  * import { startStubGateway } from "@mupt-ai/dari-gateway/self_host/stub_gateway";
  * const gateway = await startStubGateway({ plans: ["openai_codex"] });
- * // gateway.baseUrl, gateway.gatewayKey, gateway.planIds, gateway.calls; await gateway.stop();
+ * // Your app's Dari Link settings in the test: gateway.app.
+ * // The user clicks Connect with Dari and approves:
+ * const { code, codeVerifier } = await gateway.connect();
+ * // Send them to your server as your page does; then gateway.calls; await gateway.stop();
  * ```
  *
  * From any other test runner, as a process (`dari-gateway-stub`, see
  * stub_main.ts): it prints one JSON line with the same fields and serves the
  * recorded calls at `GET <controlUrl>/served`.
  *
- * Approval without a browser: `gateway.approve(authorizeUrl)` (or `POST
- * <controlUrl>/approve` with `{"url"}`) opens the approval page as the user
- * who connected the stand-in plans, ticks every plan the app can use (or
- * `credentialIds`), approves (or denies with `deny`), and returns what the
- * page hands the app:
+ * `gateway.app` is a server app registered on the gateway (a confidential
+ * client: `gatewayUrl`, `clientId`, `clientSecret`, `redirectUri`), and
+ * `gateway.connect()` (or `POST <controlUrl>/connect`) is its user approving
+ * it: it resolves with what `DariLink.open` hands your page, `{code,
+ * codeVerifier, state}`, or rejects with the `LinkError` it would (`deny`).
+ * `clients`, `plans`, `keyProviders`, and `grantId` are `DariLink.open`'s.
+ *
+ * To drive an approval for an app you registered yourself:
+ * `gateway.approve(authorizeUrl)` (or `POST <controlUrl>/approve` with
+ * `{"url"}`) opens the approval page as the user who connected the stand-in
+ * plans, ticks every plan the app can use (or `credentialIds`), approves (or
+ * denies with `deny`), and returns what the page hands the app:
  * `{message, targetOrigin}`, the `web_message` post or the redirect's query.
  * Each lands in `gateway.messages` and `GET <controlUrl>/messages`.
  *
@@ -51,6 +61,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { zstdDecompressSync } from "node:zlib";
 
+import { authorizeUrl, LinkError } from "../link/client.js";
 import { linkUserCookie } from "../link/endpoints.js";
 import type { SubscriptionKind } from "../types.js";
 import { SqliteLinkStore } from "../link/sqlite_store.js";
@@ -99,6 +110,22 @@ export type StubGatewayOptions = {
   port?: number;
   // Hosts the gateway allows http redirect URIs on (`link.allowHttpRedirectHosts`).
   allowHttpRedirectHosts?: string[];
+  // The redirect URI `app` is registered with. Default: `https://app.test/dari/callback`.
+  redirectUri?: string;
+};
+
+/** A server app on the stub gateway: the settings an app's Dari Link calls take. */
+export type StubLinkApp = { gatewayUrl: string; clientId: string; clientSecret: string; redirectUri: string };
+
+export type StubConnectOptions = {
+  // The plans and keys the user shares. Default: every one the app can use.
+  credentialIds?: string[];
+  deny?: boolean;
+  // As `DariLink.open` takes them.
+  clients?: string[];
+  plans?: string[];
+  keyProviders?: string[];
+  grantId?: string;
 };
 
 /** What the approval page handed the app: a `web_message` post, or a redirect's query. */
@@ -133,6 +160,10 @@ export type StubGateway = {
   // What each `approve` handed the app, in order.
   messages: StubLinkMessage[];
   approve(authorizeUrl: string, options?: { credentialIds?: string[]; deny?: boolean }): Promise<StubLinkMessage>;
+  // A server app registered on the gateway, and its user approving it: what
+  // `DariLink.open` resolves with.
+  app: StubLinkApp;
+  connect(options?: StubConnectOptions): Promise<{ code: string; codeVerifier: string; state: string }>;
   setState(state: StubState): void;
   stop(): Promise<void>;
 };
@@ -152,6 +183,9 @@ export async function startStubGateway(options: StubGatewayOptions = {}): Promis
   let approve: StubGateway["approve"] = async () => {
     throw new Error("The gateway is not up yet.");
   };
+  let connect: StubGateway["connect"] = async () => {
+    throw new Error("The gateway is not up yet.");
+  };
   const provider = Bun.serve({
     port: 0,
     hostname: "127.0.0.1",
@@ -162,6 +196,30 @@ export async function startStubGateway(options: StubGatewayOptions = {}): Promis
       if (pathname === "/state" && request.method === "POST") {
         state = (await request.json()) as StubState;
         return Response.json({ state });
+      }
+      if (pathname === "/connect" && request.method === "POST") {
+        // No body is the user sharing everything the app can use.
+        const body = ((await request.json().catch(() => null)) ?? {}) as {
+          credential_ids?: string[];
+          deny?: boolean;
+          clients?: string[];
+          plans?: string[];
+          key_providers?: string[];
+          grant_id?: string;
+        };
+        try {
+          const result = await connect({
+            ...(body.credential_ids ? { credentialIds: body.credential_ids } : {}),
+            ...(body.deny ? { deny: true } : {}),
+            ...(body.clients ? { clients: body.clients } : {}),
+            ...(body.plans ? { plans: body.plans } : {}),
+            ...(body.key_providers ? { keyProviders: body.key_providers } : {}),
+            ...(body.grant_id ? { grantId: body.grant_id } : {}),
+          });
+          return Response.json({ code: result.code, code_verifier: result.codeVerifier, state: result.state });
+        } catch (error) {
+          return Response.json({ error: error instanceof LinkError ? error.code : String(error) }, { status: 400 });
+        }
       }
       if (pathname === "/approve" && request.method === "POST") {
         const body = (await request.json()) as { url: string; credential_ids?: string[]; deny?: boolean };
@@ -289,6 +347,31 @@ ${keys.filter((key) => key !== "anthropic").map((key) => `  ${key}:\n    baseUrl
     messages.push(result);
     return result;
   };
+  const registered = await fetch(`${baseUrl}/v1/link/apps`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${gatewayKey}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      name: "Stub App",
+      redirect_uris: [options.redirectUri ?? "https://app.test/dari/callback"],
+      confidential: true,
+    }),
+  });
+  if (!registered.ok) throw new Error(`The stub app was not registered:\n${await registered.text()}`);
+  const { client_id: clientId, client_secret: clientSecret } = (await registered.json()) as { client_id: string; client_secret: string };
+  const app: StubLinkApp = {
+    gatewayUrl: baseUrl,
+    clientId,
+    clientSecret,
+    redirectUri: options.redirectUri ?? "https://app.test/dari/callback",
+  };
+  connect = async ({ credentialIds, deny, ...request } = {}) => {
+    const { url, codeVerifier, state } = await authorizeUrl({ ...app, ...request, responseMode: "web_message" });
+    const { message } = await approve(url, { ...(credentialIds ? { credentialIds } : {}), ...(deny ? { deny } : {}) });
+    if (message.code === undefined) {
+      throw new LinkError(message.error ?? "invalid_request", message.error_description ?? "Dari Link was not approved.", 0);
+    }
+    return { code: message.code, codeVerifier, state };
+  };
   return {
     baseUrl,
     gatewayKey,
@@ -302,6 +385,8 @@ ${keys.filter((key) => key !== "anthropic").map((key) => `  ${key}:\n    baseUrl
     dbPath,
     messages,
     approve: (url, approveOptions) => approve(url, approveOptions),
+    app,
+    connect: (connectOptions) => connect(connectOptions),
     setState: (next) => {
       state = next;
     },

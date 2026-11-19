@@ -129,57 +129,47 @@ Dari Link lets another app send one user's model requests through the gateway on
 
 **Connect with Dari.** For the user it is one button. It opens Dari in a popup, where they connect a Claude or ChatGPT subscription by signing in to it (or already have), pick which plans the app may use, and approve; the popup closes and the app has a code. Nobody pastes a key, and nobody needs the CLI.
 
-For a server app (a confidential client), the server makes the PKCE pair and state, so the verifier never reaches the browser and the page needs no Web Crypto:
+An app with a server (a confidential client) is a button, one endpoint, and one string stored per user:
 
 ```ts
-// On your server: start a connection and keep the verifier with the session.
-import { createAuthorization } from "@mupt-ai/dari-gateway/link/client";
-
-app.post("/api/dari/start", async (req, res) => {
-  const { codeVerifier, codeChallenge, state } = await createAuthorization();
-  req.session.dariLink = { codeVerifier, state };
-  res.json({ codeChallenge, state });
-});
-```
-
-```ts
-// In your app's bundle. The client uses only fetch (and Web Crypto when it makes PKCE itself).
+// In your app's bundle. The client uses only fetch and Web Crypto.
 import { DariLink } from "@mupt-ai/dari-gateway/link/client";
 
 DariLink.renderButton(document.getElementById("connect-dari"), {
   onClick: async () => {
-    // The settings come from your server after the popup opens; resolves with { code, state }.
-    const { code, state } = await DariLink.open(async () => ({
+    const { code, codeVerifier } = await DariLink.open({
       gatewayUrl: "https://routing.dari.dev",
       clientId: "lnk_…",
       redirectUri: "https://app.example.com/dari/callback",
-      ...(await (await fetch("/api/dari/start", { method: "POST" })).json()),
       onExit: ({ error, step }) => analytics.track("dari_link_exit", { error, step }),
-    }));
-    await fetch("/api/dari/exchange", {
+    });
+    await fetch("/api/dari/connect", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code, state }),
+      body: JSON.stringify({ code, codeVerifier }),
     });
   },
 });
 ```
 
-Your server checks `state`, redeems the code with the verifier it kept, and keeps the tokens with the user:
+Your server redeems the code and keeps the grant's refresh token with the user. It never changes and is useless without the client secret, and every later call takes it:
 
 ```ts
 import { exchange, linkFetch } from "@mupt-ai/dari-gateway/link/client";
 
 const client = { gatewayUrl: "https://routing.dari.dev", clientId, clientSecret };
-const { codeVerifier, state: expected } = req.session.dariLink;
-if (req.body.state !== expected) throw new Error("state mismatch");
-await db.save(user, await exchange({ ...client, redirectUri, code: req.body.code, codeVerifier }));
+const { refreshToken } = await exchange({ ...client, redirectUri, code: req.body.code, codeVerifier: req.body.codeVerifier });
+// Save refreshToken to your database, with the signed-in user.
 
-const dari = linkFetch({ ...client, loadTokens: () => db.load(user), saveTokens: (next) => db.save(user, next) });
+const dari = linkFetch({ ...client, refreshToken });
 await dari("/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: "dari/routing", messages }) });
 ```
 
-- A browser-only app (a public client) leaves out `codeChallenge` and `state`: `DariLink.open` makes the PKCE pair in the page and resolves with `{ code, state, codeVerifier }` (`codeVerifier` is null when the server made it). That needs a secure page (https, or localhost); elsewhere it rejects with `insecure_context` before opening anything.
+The gateway refuses a model the grant cannot serve, a plan at its limit, a spent budget, and a revoked grant on every request, each with its own code (see the error table below), so the app checks none of them first.
+
+- `DariLink.open` makes the PKCE pair in the page and resolves with `{ code, state, codeVerifier }`. That needs a secure page (https, or localhost); elsewhere it rejects with `insecure_context` before opening anything. To keep the verifier off the page, or to connect from a page that is not secure, make the pair on your server with `createAuthorization()`, keep `codeVerifier` and `state` with the user's session, and pass `codeChallenge` and `state` to `DariLink.open`: it then resolves with a null `codeVerifier`, and your server checks `state` and redeems the code with the verifier it kept.
+- The endpoint that redeems the code changes the user's account, so protect it from cross-site requests like any other.
+- A browser-only app (a public client) has no secret and redeems the code itself; its refresh token rotates on every use, so it keeps the whole token set and passes `loadTokens` and `saveTokens` wherever a server passes `refreshToken`.
 - Get `clientId` (and a server's `clientSecret`) by registering the app: on hosted Dari under **Settings → Dari Link Apps**, or with the API or CLI in step 1 below.
 - Call `DariLink.open` from the click handler, so the browser allows the popup. It opens the popup before awaiting anything, so its options may be a function returning a promise (`DariLink.open(async () => ({ ...await fetchConfig() }))`), fetched after the popup is open; Safari blocks a popup opened after an `await`. It rejects with a `LinkError`: `access_denied` when the user denies, `popup_closed`, or `popup_blocked`.
 - `onEvent(step)` hears each step the user reaches in the popup (`connect_subscription` when they have no plan to share yet, `choose_plans`), and `onExit({ error, step })` says where they left before it rejects (`step` is `denied` when they denied, null when they reached none), so you can tell "closed while connecting a plan" from "closed after seeing the plans". The popup posts each step as `{"type": "dari-link-event", "version": "1", "event": "<step>", "state"}` to your redirect URI's origin; only the result is `{"type": "dari-link", ...}`, with `code` or `error`. A client reading the messages itself should ignore any other type, and any `dari-link` message with neither `code` nor `error`.
@@ -296,48 +286,49 @@ A sandbox given a child token needs to reach only the gateway's host (for hosted
 
 Error text replaces anything shaped like an `sk-` key with `sk-…`, and responses replace the serving plan's own credential wherever it appears.
 
-**Client.** `@mupt-ai/dari-gateway/link/client` (fetch and Web Crypto only; browsers, Node, Bun, Deno; erasable TypeScript only, so `node` runs the `.ts` file as is) has `DariLink` (`open`, `callback`, `renderButton`), `createAuthorization` (a PKCE pair and state for your server), `registerClient`, `authorizeUrl` (makes the PKCE verifier and state; takes `clients`, `plans`, `purposes`, and `grantId`), `exchange`, `refresh`, `childToken`, `revoke`, and `linkFetch`. Every call takes `clientSecret` for a confidential client. `linkFetch` is a fetch that treats your storage as the source of truth: it reads the tokens with your `loadTokens` on every call, attaches the access token, refreshes it before it expires or once after a 401 for an expired token with one refresh at a time, and passes every new token set to your `saveTokens` before using it. `childToken` takes the same `loadTokens` and `saveTokens` instead of an `accessToken`, refreshing the grant's access token as needed. When the user is unlinked:
+**Client.** `@mupt-ai/dari-gateway/link/client` (fetch and Web Crypto only; browsers, Node, Bun, Deno; erasable TypeScript only, so `node` runs the `.ts` file as is) has `DariLink` (`open`, `callback`, `renderButton`), `exchange`, `linkFetch`, `grant`, `childToken`, `usage`, `revoke`, `refresh`, `createAuthorization` (a PKCE pair and state made on your server), `registerClient`, and `authorizeUrl` (the approval URL without a popup; takes `clients`, `plans`, `purposes`, and `grantId`). Every call takes `clientSecret` for a confidential client.
 
-- `loadTokens` returning null makes both throw `LinkError` `not_linked`, with no call to the gateway;
-- a `LinkError` with code `invalid_grant` from a refresh means the grant is gone;
-- a revoked grant's tokens, access tokens included, answer 401 `grant_revoked` at once, which `linkFetch` returns as it is, with no refresh attempted.
+`linkFetch`, `grant`, `childToken`, and `usage` take one grant's tokens in either of two ways:
 
-Each means: show the user Reconnect. `usage({ fetcher: gatewayFetch, tags, since, until, groupByTag })` reads the grant's usage through the `linkFetch` your app already has, sharing its refresh (or pass the client with `loadTokens` and `saveTokens` instead of `fetcher`). `childToken({ ..., models: [{ model, thinking? }] })` mints for several models at once, and `registerClient({ ..., confidential: true })` returns a `clientSecret` too.
+- `refreshToken`, for a confidential client: its refresh token never rotates, so it is all the app stores. The client makes an access token from it, keeps it in the process, replaces it before it expires or once after a 401 for an expired token, and shares one refresh among concurrent calls. Any number of processes can do this at once.
+- `loadTokens` and `saveTokens`, for a public client, whose refresh token rotates on every use: your storage is the source of truth. The client reads the token set with `loadTokens` on every call and passes every new one to `saveTokens` before using it, so processes that share the storage share the rotation. `loadTokens` returning null throws `LinkError` `not_linked`, with no call to the gateway.
+
+`grant` returns what `GET /v1/link/grant` does, with its top-level fields in camelCase (`grantId`, `availableAt`, `manageUrl`). `usage({ tags, since, until, groupByTag })` reads the grant's usage, and `childToken({ models: [{ model, thinking? }] })` mints for several models at once. `grant` and `usage` also take a `linkFetch` you already made as `fetcher` in place of the tokens, and `childToken` an `accessToken`. `registerClient({ ..., confidential: true })` returns a `clientSecret` too.
+
+A refused call throws a `LinkError` with the most specific `code`. Its `unlinked` is true when the grant is gone (`invalid_grant` from a refresh, `grant_revoked`, or `not_linked`): show the user Reconnect. `linkFetch` is a fetch, so a revoked grant's 401 `grant_revoked` comes back as the response it is, with no refresh attempted.
 
 A server-side integration, start to finish:
 
 ```ts
-import { authorizeUrl, childToken, exchange, linkFetch, revoke } from "@mupt-ai/dari-gateway/link/client";
+import { childToken, exchange, grant, LinkError, revoke, usage } from "@mupt-ai/dari-gateway/link/client";
 
 // Registered once, under Settings → Dari Link Apps or with POST /v1/link/register.
 const client = { gatewayUrl, clientId, clientSecret: process.env.DARI_LINK_CLIENT_SECRET };
 
-// 1. Send the user to approve. Keep codeVerifier and state in their session.
-const { url, codeVerifier, state } = await authorizeUrl({ ...client, redirectUri, plans: ["openai_codex"] });
+// 1. Redeem the code Connect with Dari handed your page, and store the refresh token.
+const { refreshToken } = await exchange({ ...client, redirectUri, code, codeVerifier });
+// Save refreshToken to your database, with the signed-in user.
 
-// 2. On the redirect back, check state, redeem the code, and store the tokens.
-await db.saveTokens(userId, await exchange({ ...client, redirectUri, code, codeVerifier }));
+// 2. From any instance: what the user shared, the cheap check before a long run.
+const { plans, models, manageUrl } = await grant({ ...client, refreshToken });
 
-// 3. Call the gateway from any instance.
-const gatewayFetch = linkFetch({
-  ...client,
-  loadTokens: () => db.loadTokens(userId),
-  saveTokens: (tokens) => db.saveTokens(userId, tokens),
-});
-const grant = await (await gatewayFetch("/v1/link/grant")).json(); // the cheap check before a long run
-
-// 4. Hand a sandbox one model for one trial; it calls the gateway itself.
+// 3. Hand a sandbox one model for one trial; it calls the gateway itself.
 const sandbox = await childToken({
   ...client,
-  loadTokens: () => db.loadTokens(userId),
-  saveTokens: (tokens) => db.saveTokens(userId, tokens),
-  models: [{ model: grant.models[0], thinking: "high" }],
+  refreshToken,
+  models: [{ model: models[0].id, thinking: "high" }],
   expiresIn: 6 * 3600,
   tags: { run, trial },
 });
 
+// 4. What the trial used.
+const used = await usage({ ...client, refreshToken, tags: { trial } });
+
 // 5. When the user disconnects in the app.
-await revoke({ ...client, token: (await db.loadTokens(userId)).refreshToken });
+await revoke({ ...client, token: refreshToken });
+
+// Anywhere: the grant is gone, so offer Reconnect.
+if (error instanceof LinkError && error.unlinked) await markUnlinked(userId);
 ```
 
 **Forwarding proxy.** An app that fronts real Claude Code or Codex processes (agents it runs for the user) forwards their requests to the gateway as they are:
@@ -345,32 +336,29 @@ await revoke({ ...client, token: (await db.loadTokens(userId)).refreshToken });
 - pass the client's own headers through, dropping only hop-by-hop headers (`host`, `connection`, `content-length`, `transfer-encoding`, `keep-alive`, `upgrade`, `te`, `trailer`, `proxy-*`) and the client's own auth (`authorization`, `x-api-key`), and set `Authorization: Bearer dlk_…`;
 - keep the model as the client named it: bare and dated ids are served as exactly that model;
 - never add or change `user-agent`, `x-app`, or other client headers. A Claude Code plan serves only what really is Claude Code; anything else that sends Claude Code's headers is impersonating it;
-- treat `invalid_grant`, `grant_revoked`, and `not_linked` as unlinked: stop the agent and show Reconnect.
+- treat a `LinkError` whose `unlinked` is true, and a 401 `grant_revoked` response, as unlinked: stop the agent and show Reconnect.
 
 ```ts
 import { LinkError, linkFetch } from "@mupt-ai/dari-gateway/link/client";
 
 const DROP = new Set(["host", "connection", "content-length", "transfer-encoding", "keep-alive", "upgrade", "te", "trailer", "authorization", "x-api-key"]);
 
-async function forward(request: Request, userId: string): Promise<Response> {
+// user: your own record of the signed-in user, with the refresh token you saved.
+async function forward(request: Request, user: { id: string; refreshToken: string }): Promise<Response> {
   const headers = new Headers();
   request.headers.forEach((value, name) => {
     if (!DROP.has(name) && !name.startsWith("proxy-")) headers.set(name, value);
   });
-  const gatewayFetch = linkFetch({
-    ...client,
-    loadTokens: () => db.loadTokens(userId),
-    saveTokens: (tokens) => db.saveTokens(userId, tokens),
-  });
+  const gatewayFetch = linkFetch({ ...client, refreshToken: user.refreshToken });
   const { pathname, search } = new URL(request.url);
   try {
     // linkFetch sets the bearer and refreshes; the body (and its model) is unchanged.
     const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer();
     const response = await gatewayFetch(`${pathname}${search}`, { method: request.method, headers, body });
-    if (response.status === 401 && (await response.clone().json()).error?.code === "grant_revoked") await markUnlinked(userId);
+    if (response.status === 401 && (await response.clone().json()).error?.code === "grant_revoked") await markUnlinked(user.id);
     return response;
   } catch (error) {
-    if (error instanceof LinkError && (error.code === "invalid_grant" || error.code === "not_linked")) await markUnlinked(userId);
+    if (error instanceof LinkError && error.unlinked) await markUnlinked(user.id);
     throw error;
   }
 }
@@ -389,7 +377,7 @@ A child token is simpler still when the agent runs somewhere you control: give t
 
 **Users with their own gateway.** A user who runs their own gateway links it the same way: ask for its base URL, read `GET <base>/.well-known/oauth-authorization-server`, and register there with `POST /v1/link/register` (a server registers as a confidential client with `"token_endpoint_auth_method": "client_secret_basic"`). Keep each registration (client id, endpoints) keyed by the metadata's `issuer`, and show the issuer's host to the user wherever the link appears, so they can see which gateway an app is using.
 
-**Testing an integration.** `startStubGateway` from `@mupt-ai/dari-gateway/self_host/stub_gateway` (Bun) runs a self-hosted gateway on stand-in plans, for example `{ plans: ["openai_codex"] }`, whose provider calls go to a local stand-in that answers "hi" (or your `upstream`), so tests make no paid calls. `gateway.approve(authorizeUrl, { credentialIds?, deny? })` goes through the approval page as a user would and returns what it hands your app, `{message, targetOrigin}` (the popup's `web_message` post, or the redirect's query), also kept in `gateway.messages`. `gateway.setState({ limited: true })` makes every provider call a usage-limit refusal (plans go `plan_limit` with `unavailable_until`, requests get 424 `subscription_exhausted`), and `{ five_hour: 0.4, weekly: 0.9 }` makes each reply report that plan usage (filling `plans[].usage`, and against a grant's budget leading to `grant_budget_exhausted`). `gateway.calls` records each provider call's path, model, thinking settings, the effort it is served at (for Claude models that take a per-turn effort, the latest effort message, not the top-level `output_config.effort` that stays fixed for caching), and client headers, to assert on. Under any other test runner, run it as a process: `dari-gateway-stub --plans openai_codex,anthropic_claude_code` (Bun runs it) prints one JSON line, `{"baseUrl", "gatewayKey", "planIds", "userCookie", "controlUrl"}` (the stand-in plans belong to the approval page's user, and `userCookie` is the `Cookie` header that opens the page as them); `GET <controlUrl>/served` answers `{"calls": [...]}`, `POST <controlUrl>/approve` with `{"url", "credential_ids"?, "deny"?}` answers `{"message", "target_origin"}` (listed at `GET <controlUrl>/messages`), and `POST <controlUrl>/state` takes the same fields as `setState`. A gateway config can send ChatGPT plan traffic elsewhere the same way, with `providers.openai-codex.baseUrl`.
+**Testing an integration.** `startStubGateway` from `@mupt-ai/dari-gateway/self_host/stub_gateway` (Bun) runs a self-hosted gateway on stand-in plans, for example `{ plans: ["openai_codex"] }`, whose provider calls go to a local stand-in that answers "hi" (or your `upstream`), so tests make no paid calls. `gateway.app` is a server app already registered on it (`gatewayUrl`, `clientId`, `clientSecret`, `redirectUri`: your app's Dari Link settings in the test), and `gateway.connect({ credentialIds?, deny?, clients?, plans?, keyProviders?, grantId? })` is its user approving it: it resolves with what `DariLink.open` hands your page, `{ code, codeVerifier, state }`, or rejects with the `LinkError` it would. For an app you registered yourself, `gateway.approve(authorizeUrl, { credentialIds?, deny? })` goes through the approval page as a user would and returns what it hands your app, `{message, targetOrigin}` (the popup's `web_message` post, or the redirect's query), also kept in `gateway.messages`. `gateway.setState({ limited: true })` makes every provider call a usage-limit refusal (plans go `plan_limit` with `unavailable_until`, requests get 424 `subscription_exhausted`), and `{ five_hour: 0.4, weekly: 0.9 }` makes each reply report that plan usage (filling `plans[].usage`, and against a grant's budget leading to `grant_budget_exhausted`). `gateway.calls` records each provider call's path, model, thinking settings, the effort it is served at (for Claude models that take a per-turn effort, the latest effort message, not the top-level `output_config.effort` that stays fixed for caching), and client headers, to assert on. Under any other test runner, run it as a process: `dari-gateway-stub --plans openai_codex,anthropic_claude_code` (Bun runs it) prints one JSON line, `{"baseUrl", "gatewayKey", "planIds", "userCookie", "controlUrl", "app"}` (the stand-in plans belong to the approval page's user, and `userCookie` is the `Cookie` header that opens the page as them); `POST <controlUrl>/connect` takes `connect`'s options in snake case and answers `{"code", "code_verifier", "state"}`, `GET <controlUrl>/served` answers `{"calls": [...]}`, `POST <controlUrl>/approve` with `{"url", "credential_ids"?, "deny"?}` answers `{"message", "target_origin"}` (listed at `GET <controlUrl>/messages`), and `POST <controlUrl>/state` takes the same fields as `setState`. A gateway config can send ChatGPT plan traffic elsewhere the same way, with `providers.openai-codex.baseUrl`.
 
 ## Embed
 

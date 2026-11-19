@@ -18,7 +18,7 @@ import {
 } from "./filters.js";
 import { loadRouterSavings, loadSavings, routeKey } from "./savings.js";
 import { and, sql, type ActivityDb, type Sql } from "./sql.js";
-import { CONVERSATION_ID, THINKING_LEVEL, thinkingLevelValue, type ReasoningEffort } from "./shared.js";
+import { CONVERSATION_ID, REASONING_EFFORTS, THINKING_LEVEL, thinkingLevelValue, type ReasoningEffort } from "./shared.js";
 import {
   decimalText,
   formatInstant,
@@ -244,8 +244,12 @@ export const overview: ActivityRoute = async (request) => {
   const { organizationId, filters } = readFilters(request, true);
   const db = request.db;
   const where = criteria(db, organizationId, filters);
-  const points = await loadSeries(db, filters, where);
-  const savings = await loadSavings(db, where);
+  const [points, savings, apiKeys, keySources] = await Promise.all([
+    loadSeries(db, filters, where),
+    loadSavings(db, where),
+    loadApiKeys(db, where),
+    loadKeySources(db, where),
+  ]);
   return {
     from_at: formatInstant(filters.start),
     to_at: formatInstant(filters.end),
@@ -253,8 +257,8 @@ export const overview: ActivityRoute = async (request) => {
     summary: summary(points, savings.total),
     series: points.map(seriesPointBody),
     model_mix: modelMix(points),
-    api_keys: await loadApiKeys(db, where),
-    key_sources: await loadKeySources(db, where),
+    api_keys: apiKeys,
+    key_sources: keySources,
   };
 };
 
@@ -264,7 +268,8 @@ export const routers: ActivityRoute = async (request) => {
   const { organizationId, filters } = readFilters(request, true);
   const db = request.db;
   const where = criteria(db, organizationId, filters);
-  const summaries = await db.all(sql`
+  const [summaries, savings, seriesRows] = await Promise.all([
+    db.all(sql`
     select
       r.router_id,
       count(*) filter (where r.status = 'completed') as completed,
@@ -276,9 +281,9 @@ export const routers: ActivityRoute = async (request) => {
     where ${where}
       and r.router_id is not null
     group by r.router_id
-    order by r.router_id`);
-  const savings = await loadRouterSavings(db, where);
-  const seriesRows = await db.all(sql`
+    order by r.router_id`),
+    loadRouterSavings(db, where),
+    db.all(sql`
     select
       r.router_id,
       ${bucketIndex(db, filters)} as bucket_index,
@@ -287,7 +292,8 @@ export const routers: ActivityRoute = async (request) => {
     where ${where}
       and r.router_id is not null
     group by 1, 2
-    order by 1, 2`);
+    order by 1, 2`),
+  ]);
   const seriesByRouter = new Map<string, Array<{ bucket_start: string; messages_sent: number }>>();
   for (const row of seriesRows) {
     const routerId = String(row.router_id);
@@ -321,6 +327,22 @@ export const routers: ActivityRoute = async (request) => {
 
 /** The p95 provider latency per model, thinking level, and provider (`percentile_disc(0.95)`). */
 async function loadLatencyP95(db: ActivityDb, where: Sql): Promise<Map<string, number>> {
+  const key = (row: Row) => JSON.stringify([String(row.model), thinkingLevelValue(row.thinking_level), readOptionalString(row.provider)]);
+  if (db.dialect === "postgres") {
+    // Group by the thinking level as the key reads it: an unknown one is none.
+    const rows = await db.all(sql`
+      select
+        ${MODEL} as model,
+        case when ${THINKING_LEVEL} in (${REASONING_EFFORTS}) then ${THINKING_LEVEL} end as thinking_level,
+        r.selected_provider as provider,
+        percentile_disc(0.95) within group (order by r.provider_latency_ms) as latency
+      from routing_requests r
+      where ${where}
+        and r.provider_latency_ms > 0
+      group by 1, 2, 3`);
+    return new Map(rows.map((row) => [key(row), readInt(row.latency)]));
+  }
+  // SQLite has no percentile_disc: read every latency and pick the same value.
   const rows = await db.all(sql`
     select
       ${MODEL} as model,
@@ -332,10 +354,9 @@ async function loadLatencyP95(db: ActivityDb, where: Sql): Promise<Map<string, n
       and r.provider_latency_ms > 0`);
   const grouped = new Map<string, number[]>();
   for (const row of rows) {
-    const key = JSON.stringify([String(row.model), thinkingLevelValue(row.thinking_level), readOptionalString(row.provider)]);
-    const values = grouped.get(key) ?? [];
+    const values = grouped.get(key(row)) ?? [];
     values.push(readInt(row.latency));
-    grouped.set(key, values);
+    grouped.set(key(row), values);
   }
   const p95 = new Map<string, number>();
   for (const [key, values] of grouped) {
@@ -346,7 +367,7 @@ async function loadLatencyP95(db: ActivityDb, where: Sql): Promise<Map<string, n
 }
 
 async function loadModelRows(db: ActivityDb, where: Sql) {
-  const rows = await db.all<Row>(sql`
+  const [rows, latency] = await Promise.all([db.all<Row>(sql`
     select
       ${MODEL} as model,
       ${THINKING_LEVEL} as thinking_level,
@@ -356,8 +377,7 @@ async function loadModelRows(db: ActivityDb, where: Sql) {
     from routing_requests r
     where ${where}
     group by 1, 2, 3
-    order by model_steps desc, 1, 2 nulls last, 3 nulls last`);
-  const latency = await loadLatencyP95(db, where);
+    order by model_steps desc, 1, 2 nulls last, 3 nulls last`), loadLatencyP95(db, where)]);
   return rows.map((row) => {
     const model = String(row.model);
     const thinkingLevel = thinkingLevelValue(row.thinking_level);
@@ -515,15 +535,17 @@ export const models: ActivityRoute = async (request) => {
   const { organizationId, filters } = readFilters(request, false);
   const db = request.db;
   const where = criteria(db, organizationId, filters);
-  const modelRows = await loadModelRows(db, where);
-  const switches = await loadTransitions(db, organizationId, filters);
-  const savings = await loadSavings(db, where);
+  const [modelRows, switches, savings, observed] = await Promise.all([
+    loadModelRows(db, where),
+    loadTransitions(db, organizationId, filters),
+    loadSavings(db, where),
+    loadObservedConversations(db, where),
+  ]);
   for (const model of modelRows) {
     if (model.provider !== null) {
       model.savings_vs_most_expensive_usd = savings.byModel.get(routeKey(model.model, model.thinking_level, model.provider)) ?? null;
     }
   }
-  const observed = await loadObservedConversations(db, where);
   const totalSwitches = switches.modelSwitches + switches.thinkingLevelSwitches;
   const transitions = switches.transitions.map((item) => ({ ...item, switch_share: ratio(item.occurrences, totalSwitches) }));
   return {
@@ -606,7 +628,8 @@ export const filterOptions: ActivityRoute = async (request) => {
   const { organizationId, filters } = readFilters(request, false);
   const db = request.db;
   const where = baseCriteria(db, organizationId, filters);
-  const routerRows = await db.all(sql`
+  const [routerRows, keyRows, userRows, modelRows] = await Promise.all([
+    db.all(sql`
     select distinct
       r.router_id,
       m.name
@@ -614,8 +637,8 @@ export const filterOptions: ActivityRoute = async (request) => {
     left join model_routers m on m.id = r.router_id
     where ${where}
       and r.router_id is not null
-    order by m.name nulls last, r.router_id`);
-  const keyRows = await db.all(sql`
+    order by m.name nulls last, r.router_id`),
+    db.all(sql`
     select distinct
       k.id,
       k.label,
@@ -628,8 +651,8 @@ export const filterOptions: ActivityRoute = async (request) => {
     left join users u on u.id = coalesce(k.created_for_user_id, k.attributed_to_user_id)
     where ${where}
       and k.organization_id = ${organizationId}
-    order by k.label, k.id`);
-  const userRows = await db.all(sql`
+    order by k.label, k.id`),
+    db.all(sql`
     select distinct
       r.attributed_user_id,
       u.display_name,
@@ -638,13 +661,14 @@ export const filterOptions: ActivityRoute = async (request) => {
     join users u on u.id = r.attributed_user_id
     where ${where}
       and r.attributed_user_id is not null
-    order by u.display_name nulls last, u.email, r.attributed_user_id`);
-  const modelRows = await db.all(sql`
+    order by u.display_name nulls last, u.email, r.attributed_user_id`),
+    db.all(sql`
     select distinct
       ${MODEL} as model,
       r.selected_provider
     from routing_requests r
-    where ${where}`);
+    where ${where}`),
+  ]);
 
   const providersByModel = new Map<string, Set<string>>();
   const providers = new Set<string>();

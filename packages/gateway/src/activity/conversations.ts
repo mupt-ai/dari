@@ -166,8 +166,10 @@ export const conversations: ActivityRoute = async (request) => {
   }
   const items: object[] = [];
   if (keys.length > 0) {
-    const records = await loadRecords(db, sql`${where} and ${groupsCondition(keys)}`);
-    const titles = await conversationTitles(db, organizationId, keys);
+    const [records, titles] = await Promise.all([
+      loadRecords(db, sql`${where} and ${groupsCondition(keys)}`),
+      conversationTitles(db, organizationId, keys),
+    ]);
     const entities = await loadEntities(db, records);
     const byGroup = new Map<string, ConversationRecord[]>();
     for (const record of records) {

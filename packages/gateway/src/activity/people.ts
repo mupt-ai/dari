@@ -92,7 +92,8 @@ export const peopleSeries: ActivityRoute = async (request) => {
   const where = criteria(db, organizationId, filters);
   const bucket = bucketIndex(db, filters);
 
-  const activeRows = await db.all<Row>(sql`
+  const [activeRows, busiest] = await Promise.all([
+    db.all<Row>(sql`
     select
       ${bucket} as bucket_index,
       count(distinct r.attributed_user_id) as active_people
@@ -100,25 +101,24 @@ export const peopleSeries: ActivityRoute = async (request) => {
     where ${where}
       and r.attributed_user_id is not null
     group by 1
-    order by 1`);
-
-  if (userIds.length === 0) {
-    const busiest = await db.all<Row>(sql`
+    order by 1`),
+    userIds.length > 0 ? [] : db.all<Row>(sql`
       select r.attributed_user_id
       from routing_requests r
       where ${where}
         and r.attributed_user_id is not null
       group by r.attributed_user_id
       order by count(*) desc, r.attributed_user_id
-      limit ${DEFAULT_COMPARISON_USERS}`);
-    userIds.push(...busiest.map((row) => String(row.attributed_user_id)));
-  }
+      limit ${DEFAULT_COMPARISON_USERS}`),
+  ]);
+  userIds.push(...busiest.map((row) => String(row.attributed_user_id)));
 
   const users = await loadComparisonUsers(db, userIds);
   const compared = users.map((user) => user.id);
   const peopleSeries: object[] = [];
   if (compared.length > 0) {
-    const points = await db.all<Row>(sql`
+    const [points, counts] = await Promise.all([
+      db.all<Row>(sql`
       select
         ${bucket} as bucket_index,
         r.attributed_user_id,
@@ -130,8 +130,8 @@ export const peopleSeries: ActivityRoute = async (request) => {
       where ${where}
         and r.attributed_user_id in (${compared})
       group by 1, 2
-      order by 1, 2`);
-    const counts = await db.all<Row>(sql`
+      order by 1, 2`),
+      db.all<Row>(sql`
       select
         d.bucket_index,
         d.attributed_user_id,
@@ -148,7 +148,8 @@ export const peopleSeries: ActivityRoute = async (request) => {
         where ${where}
           and r.attributed_user_id in (${compared})
       ) d
-      group by d.bucket_index, d.attributed_user_id`);
+      group by d.bucket_index, d.attributed_user_id`),
+    ]);
     const conversations = new Map(
       counts.map((row) => [`${readInt(row.bucket_index)}\0${row.attributed_user_id}`, readInt(row.conversations)]),
     );
@@ -299,15 +300,17 @@ async function loadIdentityPage(db: ActivityDb, organizationId: string, filters:
           or (s.identity_api_key_id is null and c.identity_api_key_id is null))
     where ${and(conditions)}`;
 
-  const [countRow] = await db.all<Row>(sql`select count(*) as count from (${statement}) page`);
-  const identityCount = readInt(countRow?.count);
-  const rows = await db.all<Row>(sql`
+  const [[countRow], rows] = await Promise.all([
+    db.all<Row>(sql`select count(*) as count from (${statement}) page`),
+    db.all<Row>(sql`
     ${statement}
     order by
       ${SORTS[query.sortBy]} ${raw(query.direction)},
       lower(${IDENTITY_NAME}),
       coalesce(s.attributed_user_id, s.identity_api_key_id, '')
-    limit ${query.limit} offset ${query.offset}`);
+    limit ${query.limit} offset ${query.offset}`),
+  ]);
+  const identityCount = readInt(countRow?.count);
   if (rows.length === 0) return { identities: [], identityCount };
 
   const page = rows.map((row) => ({
@@ -316,8 +319,7 @@ async function loadIdentityPage(db: ActivityDb, organizationId: string, filters:
     apiKeyId: readOptionalString(row.identity_api_key_id),
   }));
   const pageWhere = sql`${where} and ${pageIdentityCriterion(page)}`;
-  const mix = await identityModelMix(db, pageWhere);
-  const usage = await identityKeyUsage(db, pageWhere);
+  const [mix, usage] = await Promise.all([identityModelMix(db, pageWhere), identityKeyUsage(db, pageWhere)]);
   const keys = await loadApiKeys(db, organizationId, new Set([...usage.values()].flatMap((used) => [...used.keys()])));
 
   const identities = page.map(({ row, userId, apiKeyId }) => {

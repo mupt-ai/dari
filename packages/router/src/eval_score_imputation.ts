@@ -24,6 +24,8 @@ export type EvalForImputation = {
 // Only named, same-family predecessors may stand in for a new model while
 // benchmark sources catch up. Never infer a predecessor from a slug.
 const PREVIOUS_GENERATION: Readonly<Record<string, string>> = {
+  "openai/gpt-6.2-astra": "openai/gpt-6-astra",
+  "openai/gpt-6.2-sol": "openai/gpt-6.1-sol",
   "openai/gpt-6.1-sol": "openai/gpt-6-sol",
   "openai/gpt-6.1-terra": "openai/gpt-5.6-terra",
   "openai/gpt-6-sol": "openai/gpt-5.6-sol",

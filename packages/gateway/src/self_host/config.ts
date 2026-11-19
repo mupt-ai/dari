@@ -15,16 +15,16 @@ import type { ClientHarness, RouterRole, RouterRoleModels, RouterRolePrompts } f
  *   default:
  *     models:
  *       - anthropic/claude-sonnet-5-5
- *       - id: openai/gpt-6.1-sol
+ *       - id: openai/gpt-6.2-sol
  *         thinking: [medium, high]
  *     agentModels:          # optional: a coding agent's own list
  *       codex:
- *         - openai/gpt-6.1-sol
+ *         - openai/gpt-6.2-sol
  *     subscriptions: true   # serve with connected Claude Code / ChatGPT plans
  *     sessionPinning: false # route each session and subagent once, then keep its model
  *     roleModels:           # optional: serve an agent role one model, without routing
  *       main: anthropic/claude-fable-5-2
- *       subagent: openai/gpt-6.1-sol
+ *       subagent: openai/gpt-6.2-sol
  *     rolePrompts:          # optional: append to an agent role's system prompt
  *       main: Delegate codebase exploration to subagents.
  *     nativeCompaction: false # let Codex compact server-side with the provider's native compaction
@@ -109,7 +109,7 @@ export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = parseGatewayConfig({
         "anthropic/claude-opus-5-5",
         "anthropic/claude-fable-5-2",
         "anthropic/claude-haiku-5-5",
-        "openai/gpt-6.1-sol",
+        "openai/gpt-6.2-sol",
         "openai/gpt-6.1-terra",
       ],
     },

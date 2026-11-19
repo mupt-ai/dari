@@ -61,9 +61,20 @@ const MODEL_COMPAT_OVERRIDES: Record<string, Record<string, unknown>> = {
   "openai/gpt-6-astra": {
     supportsTemperature: false,
   },
+  "openai/gpt-6.2-astra": {
+    supportsTemperature: false,
+  },
   // GPT-6 Sol and Luna are newer than the installed Pi registry. They retain
   // the GPT-5.6 Responses feature set, including explicit prompt caching and
   // deferred tool loading. Keep this local until Pi ships their metadata.
+  "openai/gpt-6.2-sol": {
+    supportsStrictMode: true,
+    supportsOpenAIGrammarTools: true,
+    supportsAdditionalTools: true,
+    supportsToolSearch: true,
+    supportsExplicitPromptCacheMode: true,
+    supportsReasoningConfigurationUpdate: true,
+  },
   "openai/gpt-6.1-sol": {
     supportsStrictMode: true,
     supportsOpenAIGrammarTools: true,
@@ -157,6 +168,7 @@ const MODEL_INPUT_OVERRIDES: Record<string, string[]> = {
   "anthropic/claude-haiku-5-5": ["text", "image"],
   "anthropic/claude-sonnet-5-5": ["text", "image"],
   "meta/muse-ember": ["text", "image"],
+  "openai/gpt-6.2-sol": ["text", "image"],
   "openai/gpt-6.1-sol": ["text", "image"],
   "openai/gpt-6.1-terra": ["text", "image"],
   "openai/gpt-6-sol": ["text", "image"],
@@ -164,6 +176,7 @@ const MODEL_INPUT_OVERRIDES: Record<string, string[]> = {
   "openai/gpt-5.6-luna": ["text", "image"],
   "openai/gpt-5.6-sol": ["text", "image"],
   "openai/gpt-5.6-terra": ["text", "image"],
+  "openai/gpt-6.2-astra": ["text", "image"],
   "openai/gpt-6-astra": ["text", "image"],
   "moonshotai/Kimi-K3": ["text", "image"],
   "deepseek-ai/DeepSeek-V4.1-Flash-1017": ["text", "image"],

@@ -178,6 +178,7 @@ test("builds GPT-6 Astra from resolved catalog metadata without Pi registry supp
 
 test("builds GPT-6 Sol variants and Luna with cache-safe Responses metadata before Pi registry support", () => {
   const models = [
+    { id: "openai/gpt-6.2-sol", nativeId: "gpt-6.2-sol", input: 2, output: 10 },
     { id: "openai/gpt-6.1-sol", nativeId: "gpt-6.1-sol", input: 2, output: 10 },
     { id: "openai/gpt-6-sol", nativeId: "gpt-6-sol", input: 2, output: 10 },
     { id: "openai/gpt-6-luna", nativeId: "gpt-6-luna", input: 0.1, output: 0.5 },

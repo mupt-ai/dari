@@ -79,15 +79,15 @@ routers:
   default:                 # serves /v1/...
     models:
       - anthropic/claude-sonnet-5-5
-      - id: openai/gpt-6.1-sol
+      - id: openai/gpt-6.2-sol
         thinking: [medium, high]
     agentModels:           # optional: a coding agent's own list, in place of `models`
-      codex: [openai/gpt-6.1-sol, openai/gpt-6.1-terra]
+      codex: [openai/gpt-6.2-sol, openai/gpt-6.1-terra]
     subscriptions: true    # prefer connected subscriptions over API keys
     sessionPinning: false  # route each session and subagent once, then keep its model
     nativeCompaction: false # let Codex compact server-side; compacted requests route only to supporting models
     roleModels:            # optional: serve the main agent or subagents one model, without routing
-      subagent: openai/gpt-6.1-sol
+      subagent: openai/gpt-6.2-sol
     rolePrompts:           # optional: append to the main agent's or subagents' system prompt
       main: Delegate codebase exploration to subagents.
   local:                   # serves /local/v1/...
@@ -101,7 +101,7 @@ providers:                 # endpoints outside the built-in catalog
 
 Model ids are `provider/model`. Clients send `model: "dari/routing"` to let the router choose, or `model: "dari/model/<id>"` to pin one of its models. A Claude Code subscription serves Anthropic models only for Claude Code itself; a ChatGPT subscription serves OpenAI models for every client. Each coding agent is offered the router's models that a credential can serve it, or its own `agentModels` list (`claude_code`, `codex`, `muse_code`, `opencode`, `pi`, `openclaw`, `hermes`) when the router has one.
 
-`dari gateway models` changes either list on a running gateway, with any gateway key: `dari gateway models --agent codex openai/gpt-6.1-sol`, or no models for the picker. It calls `PUT` and `DELETE /v1/router/models[/<agent>]` (`GET /v1/router/models` reads them). The gateway saves the list in its database and serves it at once in place of the config file's, until `--reset` removes it.
+`dari gateway models` changes either list on a running gateway, with any gateway key: `dari gateway models --agent codex openai/gpt-6.2-sol`, or no models for the picker. It calls `PUT` and `DELETE /v1/router/models[/<agent>]` (`GET /v1/router/models` reads them). The gateway saves the list in its database and serves it at once in place of the config file's, until `--reset` removes it.
 
 ### Model catalog
 
@@ -220,9 +220,9 @@ The gateway refuses a model the grant cannot serve, a plan at its limit, a spent
     "id": "…", "kind": "openai_codex", "plan": "ChatGPT Plus/Pro", "label": "a@example.com", "account_email": "a@example.com",
     "serves": "any_app", "state": "ready", "available_at": null, "unavailable_until": null,
     "usage": [{"window_minutes": 300, "utilization": 0.42, "resets_at": "…"}, {"window_minutes": 10080, "utilization": 0.1, "resets_at": "…"}],
-    "models": [{"id": "dari/model/openai/gpt-5.5", "name": "GPT-5.5"}, {"id": "dari/model/openai/gpt-6.1-sol", "name": "GPT-6.1 Sol"}]
+    "models": [{"id": "dari/model/openai/gpt-5.5", "name": "GPT-5.5"}, {"id": "dari/model/openai/gpt-6.2-sol", "name": "GPT-6.2 Sol"}]
   }],
-  "models": [{"id": "dari/model/openai/gpt-5.5", "name": "GPT-5.5"}, {"id": "dari/model/openai/gpt-6.1-sol", "name": "GPT-6.1 Sol"}],
+  "models": [{"id": "dari/model/openai/gpt-5.5", "name": "GPT-5.5"}, {"id": "dari/model/openai/gpt-6.2-sol", "name": "GPT-6.2 Sol"}],
   "routes": true
 }
 ```
@@ -395,7 +395,7 @@ The root entry needs no Bun APIs, so any runtime with web-standard `fetch`, `Req
 Platforms can also:
 
 - implement `resolveProviderCredential({ provider, model, routerId, organizationId, apiKey, clientHarness? })` to supply a per-request `{ apiKey, baseUrl?, headers?, subscription? }`, such as a tenant's own key, in place of the router's resolved key. With `subscription` (`"openai_codex"`, `"anthropic_claude_code"`, or `"meta_muse"`), `apiKey` is that plan's access token: Codex's `auth.json` `tokens.access_token`, the token `claude setup-token` prints, or the Model API key a Meta sign-in mints. The platform keeps it fresh. Strict routers serve these supplied plans, but never subscriptions the gateway resolved itself. A plan serves only its own provider's models; a Claude Code plan serves only Claude Code clients, and a Muse Code plan only Muse Code clients (recognized by their `x-client-id`);
-- resolve routers with `strict: true` to serve only the requested `dari/model/<id>` at the requested thinking level, with no selector, lease, or personal subscription. Set `strict_providers: ["openai"]` on the resolved router to permit any bundled-catalog model from that provider without enumerating `enabled_models`. Use `dari/model/openai/gpt-6.1-sol`; bare IDs and unknown models remain refused. This grant is ignored on non-strict routers and does not discover uncatalogued models;
+- resolve routers with `strict: true` to serve only the requested `dari/model/<id>` at the requested thinking level, with no selector, lease, or personal subscription. Set `strict_providers: ["openai"]` on the resolved router to permit any bundled-catalog model from that provider without enumerating `enabled_models`. Use `dari/model/openai/gpt-6.2-sol`; bare IDs and unknown models remain refused. This grant is ignored on non-strict routers and does not discover uncatalogued models;
 - resolve routers with `session_pinning: true` to route each session once and serve that pair for the rest of the session. Each subagent (Claude Code agent id, Codex subagent thread, OpenCode child session) is routed once on its own. Pins are kept through `readSessionPin` and `writeSessionPin`, keyed by router and an opaque pin key; background requests and `dari/model/<id>` requests never use them;
 - resolve routers with `native_compaction: true` to let Codex compact context server-side with the provider's native compaction. Requests carrying compaction state are routed only to models that support it;
 - read exact usage from `recordRequest`: the summary carries input, output, cache-read, and cache-write tokens and `total_cost_usd`, preferring the provider's billed cost (`cost_source: "provider"`, from OpenRouter and Vercel AI Gateway). Each record also carries the router's non-secret routing settings as `router` (enabled models, thinking levels, and the strict, speculative-routing, and session-pinning flags). Failed and aborted requests are recorded too;

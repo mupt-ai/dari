@@ -13,7 +13,7 @@ import {
 } from "../src/policy-engine.js";
 
 const FABLE = "anthropic/claude-fable-5-1";
-const SOL = "openai/gpt-6.1-sol";
+const SOL = "openai/gpt-6.2-sol";
 const DEEPSEEK = "deepseek-ai/DeepSeek-V4.1-Flash-1017";
 
 const metadata: Record<string, CandidateModelMetadata> = {

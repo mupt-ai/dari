@@ -1,6 +1,6 @@
 name: Example Dari Router
 enabled_models:
-  - openai/gpt-6.1-sol
+  - openai/gpt-6.2-sol
   - anthropic/claude-opus-5-5
   - anthropic/claude-haiku-5-5
 provider_key_sources:

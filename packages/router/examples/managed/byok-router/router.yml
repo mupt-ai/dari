@@ -1,9 +1,9 @@
 name: Example BYOK Router
 enabled_models:
-  - openai/gpt-6.1-sol
+  - openai/gpt-6.2-sol
   - deepseek-ai/DeepSeek-V4.1-Flash-1017
 model_providers:
-  openai/gpt-6.1-sol: openai
+  openai/gpt-6.2-sol: openai
   deepseek-ai/DeepSeek-V4.1-Flash-1017: fireworks
 provider_key_sources:
   openai: managed

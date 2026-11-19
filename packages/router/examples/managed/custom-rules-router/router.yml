@@ -1,12 +1,12 @@
 name: Example Custom Rules Router
 enabled_models:
-  - openai/gpt-6.1-sol
+  - openai/gpt-6.2-sol
   - deepseek-ai/DeepSeek-V4.1-Flash-1017
 model_providers:
-  openai/gpt-6.1-sol: openai
+  openai/gpt-6.2-sol: openai
   deepseek-ai/DeepSeek-V4.1-Flash-1017: fireworks
 model_thinking_levels:
-  openai/gpt-6.1-sol: [low, medium, high]
+  openai/gpt-6.2-sol: [low, medium, high]
   deepseek-ai/DeepSeek-V4.1-Flash-1017: [off]
 provider_key_sources:
   openai: managed
@@ -14,7 +14,7 @@ provider_key_sources:
 custom_config:
   rules:
     - when: planning, architecture, or difficult debugging
-      use: openai/gpt-6.1-sol
+      use: openai/gpt-6.2-sol
       thinking_level: high
     - when: short questions and straightforward implementation
       use: deepseek-ai/DeepSeek-V4.1-Flash-1017

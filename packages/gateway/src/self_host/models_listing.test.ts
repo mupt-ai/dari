@@ -8,6 +8,7 @@ import { createSelfHostedPlatform } from "./platform.js";
 import { SqliteLinkStore } from "../link/sqlite_store.js";
 import { PrefixStore } from "./prefix_store.js";
 import { RouterModelStore } from "./router_models.js";
+import { RouterSpecStore } from "./router_specs.js";
 import { SessionPinStore } from "./session_pin_store.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 import { tokens } from "./subscriptions/test_support.js";
@@ -27,6 +28,7 @@ test("the model list counts a Claude Code plan only for Claude Code", async () =
     }),
     activity: new ActivityStore(db),
     routerModels: new RouterModelStore(db),
+    routerSpecs: new RouterSpecStore(db),
     gatewayKeys: ["k"],
     subscriptions,
     links: new SqliteLinkStore(db),

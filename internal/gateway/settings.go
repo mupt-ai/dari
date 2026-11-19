@@ -39,6 +39,9 @@ type Settings struct {
 	LocalKey       string            `json:"local_key,omitempty"`
 	AutoRoutingKey string            `json:"auto_routing_key,omitempty"`
 	ProviderKeys   map[string]string `json:"provider_keys,omitempty"`
+	// AgentRouters are the gateway routers `dari setup <agent> --router
+	// <name> --default` made agents' own, by agent name.
+	AgentRouters map[string]string `json:"agent_routers,omitempty"`
 }
 
 // Dir is the gateway's directory beside the CLI state: settings, and a local

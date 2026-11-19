@@ -158,6 +158,9 @@ func newGatewayModelsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "models [model[=thinking,...]]...",
 		Short: "Choose the models a local or self-hosted gateway serves",
+		// Replaced by `dari setup <agent>` and router spec files; kept for
+		// scripts for now.
+		Hidden: true,
 		Long: "Choose the models the gateway serves, with the same picker as a hosted router. Every coding\n" +
 			"agent is offered them, less the ones no connected account or API key can serve it.\n\n" +
 			"With --agent, choose a list for one coding agent, which it is offered in place of the\n" +
@@ -171,6 +174,7 @@ func newGatewayModelsCmd() *cobra.Command {
 			"file. --reset forgets the choice, so the config file's models are served again.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stderr := cmd.Context(), cmd.ErrOrStderr()
+			agentPrintln(stderr, ansiGray+"`dari setup <agent>` chooses models now; a router spec file with `dari router apply` sets them for scripts."+ansiReset)
 			saved := "Models"
 			if agent != "" {
 				setup, ok := agentSetups[agent]

@@ -56,6 +56,10 @@ providers:
   local:
     baseUrl: http://127.0.0.1:${upstream.port}/v1
     apiKeyEnv: LOCAL_API_KEY
+  # Stands in for OpenCode Go, for router specs that serve a model through it.
+  opencode-go:
+    baseUrl: http://127.0.0.1:${upstream.port}/v1
+    apiKeyEnv: LOCAL_API_KEY
 `);
   const port = await freePort();
   gateway = Bun.spawn(["bun", join(import.meta.dir, "main.ts")], {
@@ -269,6 +273,110 @@ test("model lists saved through the API are served until they are removed", asyn
   }
   expect(await (await lists("/v1/router/models")).json()).toEqual(configured);
   expect(await offered("codex")).toEqual(["dari/model/local/model-a", "dari/model/local/model-b"]);
+});
+
+// `dari router apply` pushes a spec to a gateway, and a launch then serves
+// `<gateway>/<router id>/v1/...` with it, with no restart.
+test("router specs saved through the API are served until they are removed", async () => {
+  const routers = (path = "", method = "GET", body?: unknown) =>
+    fetch(`${baseUrl}/v1/routers${path}`, {
+      method,
+      headers: authorized(),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  const specYaml = `name: DeepSeek on Go
+models:
+  - id: deepseek-ai/DeepSeek-V4.1-Flash-1017
+    provider: opencode-go
+    thinking: [high]
+roles:
+  subagent: { prompt: Be brief. }
+payment: { allow: [key] }
+hosted: { speculative_routing: true }
+`;
+  expect(await (await routers()).json()).toEqual({
+    routers: [{ id: "default", name: "default", source: "config" }, { id: "solo", name: "solo", source: "config" }],
+  });
+
+  try {
+    const saved = await routers("/deepseek", "PUT", { spec_yaml: specYaml });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({ id: "deepseek", name: "DeepSeek on Go" });
+    expect(await (await routers()).json()).toEqual({
+      routers: [
+        { id: "default", name: "default", source: "config" },
+        { id: "solo", name: "solo", source: "config" },
+        { id: "deepseek", name: "DeepSeek on Go", source: "saved" },
+      ],
+    });
+    const read = await routers("/deepseek");
+    expect(read.headers.get("content-type")).toStartWith("application/yaml");
+    expect(await read.text()).toBe(specYaml);
+
+    // Served at once, as the OpenCode Go model, with that provider's key.
+    const models = await fetch(`${baseUrl}/deepseek/v1/models`, { headers: authorized() });
+    expect((await models.json() as { models: { slug: string }[] }).models.map((model) => model.slug))
+      .toEqual(["dari/model/deepseek-ai/DeepSeek-V4.1-Flash-1017"]);
+    upstreamCalls.length = 0;
+    const served = await fetch(`${baseUrl}/deepseek/v1/chat/completions`, {
+      method: "POST",
+      headers: authorized(),
+      body: JSON.stringify({ model: "dari/routing", messages: [{ role: "user", content: "hello" }] }),
+    });
+    expect(served.status).toBe(200);
+    expect(served.headers.get("x-dari-selected-model")).toBe("deepseek-ai/DeepSeek-V4.1-Flash-1017");
+    await served.text();
+    expect(upstreamCalls).toEqual([{ model: "deepseek-v4.1-flash", authorization: "Bearer local-secret", stream: true }]);
+    // Its models change with the spec, not the model-list API.
+    expect((await fetch(`${baseUrl}/deepseek/v1/router/models`, { headers: authorized() })).status).toBe(200);
+    const listPut = await fetch(`${baseUrl}/deepseek/v1/router/models`, {
+      method: "PUT",
+      headers: authorized(),
+      body: JSON.stringify({ models: ["local/model-a"] }),
+    });
+    expect(listPut.status).toBe(400);
+
+    // A spec in place of a config file router, sent as JSON.
+    const replaced = await routers("/solo", "PUT", { spec: { name: "Solo Spec", models: ["local/model-a"] } });
+    expect(replaced.status).toBe(200);
+    expect(await routers("/solo").then((response) => response.text())).toBe("name: Solo Spec\nmodels:\n  - local/model-a\n");
+    const solo = await fetch(`${baseUrl}/solo/v1/models`, { headers: authorized() });
+    expect((await solo.json() as { models: { slug: string }[] }).models.map((model) => model.slug))
+      .toEqual(["dari/model/local/model-a"]);
+
+    // What the gateway cannot serve is refused, and saves nothing.
+    for (const [path, body, status] of [
+      ["/bad", { spec_yaml: "name: Bad\nmodels: [local/model-a]\nrouting: { rules: [{ when: x }] }" }, 400],
+      ["/bad", { spec_yaml: "name: Bad\nmodels: [local/model-a]\nextra: true" }, 400],
+      ["/bad", { spec_yaml: "name: Bad\nmodels: [local/model-a]", spec: {} }, 400],
+      ["/bad.id", { spec_yaml: "name: Bad\nmodels: [local/model-a]" }, 400],
+    ] as const) {
+      const refused = await routers(path, "PUT", body);
+      expect(refused.status).toBe(status);
+      expect(await refused.json()).toMatchObject({ error: { message: expect.any(String) } });
+    }
+    const rules = await routers("/bad", "PUT", { spec_yaml: "name: Bad\nmodels: [local/model-a]\nrouting: { rules: [{ when: x }] }" });
+    expect((await rules.json() as { error: { message: string } }).error.message).toContain("routing.rules runs only on hosted Dari");
+    expect((await routers("/bad")).status).toBe(404);
+    // Config file routers are edited in the file.
+    expect((await routers("/default", "DELETE")).status).toBe(400);
+    expect((await routers("/missing", "DELETE")).status).toBe(404);
+    const unauthorized = await fetch(`${baseUrl}/v1/routers/deepseek`, {
+      method: "PUT",
+      headers: { authorization: "Bearer not-a-key", "content-type": "application/json" },
+      body: JSON.stringify({ spec_yaml: specYaml }),
+    });
+    expect(unauthorized.status).toBe(401);
+    expect((await fetch(`${baseUrl}/v1/routers`)).status).toBe(401);
+  } finally {
+    for (const id of ["deepseek", "solo"]) await routers(`/${id}`, "DELETE");
+  }
+  expect((await routers("/deepseek")).status).toBe(404);
+  expect((await fetch(`${baseUrl}/deepseek/v1/models`, { headers: authorized() })).status).toBe(404);
+  // The config file's router serves again, and reads back as a spec.
+  expect(await (await routers("/solo")).text()).toBe(
+    "name: solo\nmodels:\n  - local/model-b\nrouting:\n  session_pinning: false\n  retries: 1\npayment:\n  allow:\n    - subscription\n    - key\nnative_compaction: false\n",
+  );
 });
 
 // The CLI's model picker offers Dari's canonical models, under Dari's names.

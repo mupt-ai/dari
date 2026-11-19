@@ -95,7 +95,7 @@ func TestLoggedInAgentConnectsMissingSubscription(t *testing.T) {
 			if access.key != "dari_route" {
 				t.Fatalf("key = %s", access.key)
 			}
-			_, err = ensureAgentRouter(context.Background(), tc.agent, access, strings.NewReader(tc.input), &output)
+			_, err = ensureAgentRouter(context.Background(), tc.agent, access, false, strings.NewReader(tc.input), &output)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,7 +106,7 @@ func TestLoggedInAgentConnectsMissingSubscription(t *testing.T) {
 				t.Fatal("asked already logged-in user to sign in")
 			}
 			output.Reset()
-			_, err = ensureAgentRouter(context.Background(), tc.agent, access, strings.NewReader(""), &output)
+			_, err = ensureAgentRouter(context.Background(), tc.agent, access, false, strings.NewReader(""), &output)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -43,7 +43,7 @@ func TestFreshMachineReusesConfiguredDefaultRouter(t *testing.T) {
 			// No routing or onboarding cache is carried onto the second computer.
 			t.Setenv("DARI_CONFIG_DIR", t.TempDir())
 			var output strings.Builder
-			id, err := ensureAgentRouter(context.Background(), agent, agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"}, strings.NewReader(""), &output)
+			id, err := ensureAgentRouter(context.Background(), agent, agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"}, false, strings.NewReader(""), &output)
 			if err != nil {
 				t.Fatal(err)
 			}

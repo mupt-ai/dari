@@ -592,6 +592,7 @@ func TestEnsureClaudeAgentRouterCreatesSeparateRouter(t *testing.T) {
 		context.Background(),
 		"claude",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader("\n"),
 		io.Discard,
 	)
@@ -692,6 +693,7 @@ func TestOwnAgentRouterUsesManagedRouterAfterOptOut(t *testing.T) {
 				context.Background(),
 				agent,
 				agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+				false,
 				strings.NewReader("n\n\n"),
 				io.Discard,
 			)
@@ -747,6 +749,7 @@ func TestEnsureClaudeAgentRouterAvoidsPersonalRouterWithoutCredentialsOnEOF(t *t
 		context.Background(),
 		"claude",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader(""),
 		io.Discard,
 	)
@@ -788,6 +791,7 @@ func TestEnsureClaudeAgentRouterUsesServerManagedRouterOnEOF(t *testing.T) {
 		context.Background(),
 		"claude",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader(""),
 		io.Discard,
 	)
@@ -825,6 +829,7 @@ func TestEnsureClaudeAgentRouterIgnoresUnavailablePersonalRouterOnEOF(t *testing
 		context.Background(),
 		"claude",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader(""),
 		io.Discard,
 	)
@@ -873,6 +878,7 @@ func TestEnsureClaudeAgentRouterRequiresSubscriptionAfterRename(t *testing.T) {
 		context.Background(),
 		"claude",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader(""),
 		io.Discard,
 	)
@@ -931,6 +937,7 @@ func TestEnsureClaudeAgentRouterSkipsUpdateForCompliantRouter(t *testing.T) {
 		context.Background(),
 		"claude",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader(""),
 		io.Discard,
 	)
@@ -992,6 +999,7 @@ func TestEnsureClaudeAgentRouterRecoversFromConcurrentCreate(t *testing.T) {
 		context.Background(),
 		"claude",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader("\n"),
 		io.Discard,
 	)
@@ -1056,6 +1064,7 @@ func TestEnsurePiAgentRouterPreservesSavedDefault(t *testing.T) {
 		context.Background(),
 		"pi",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader("n\n\n"),
 		io.Discard,
 	)
@@ -1103,6 +1112,7 @@ func TestEnsureClaudeAgentRouterExplainsModelsByPlan(t *testing.T) {
 			context.Background(),
 			"claude",
 			agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+			false,
 			strings.NewReader("\n"),
 			&output,
 		)
@@ -1171,6 +1181,7 @@ func TestEnsureSharedAgentRouterUsesDefaultPreset(t *testing.T) {
 				context.Background(),
 				agent,
 				agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+				false,
 				strings.NewReader("\n"),
 				&output,
 			)
@@ -1381,6 +1392,7 @@ func TestEnsurePiAgentRouterSkipsPutForUnchangedSelectionInAnyOrder(t *testing.T
 		context.Background(),
 		"pi",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader("n\n\n"),
 		io.Discard,
 	)
@@ -1590,6 +1602,7 @@ func TestEnsureClaudeAgentRouterIgnoresMatchingDefaultRouter(t *testing.T) {
 		context.Background(),
 		"claude",
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader("\n"),
 		io.Discard,
 	)
@@ -1680,6 +1693,7 @@ func TestMuseCodeRouterServesThePlan(t *testing.T) {
 				context.Background(),
 				"muse",
 				agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+				false,
 				strings.NewReader(tc.input),
 				io.Discard,
 			)

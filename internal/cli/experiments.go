@@ -42,28 +42,42 @@ func listAgentExperiments(ctx context.Context, client *api.Client) ([]agentExper
 	return listed.ExperimentalRouters, nil
 }
 
-// takeAgentExperiment takes `--template <name>`, and with it any `--pay
-// <model>=<subscription|key|credits>` and `--default`, out of the agent's
-// arguments and returns the template it names for the launched agent.
-// Launches without it skip the lookup.
-func takeAgentExperiment(ctx context.Context, client *api.Client, launch *agentLaunch, stderr io.Writer) (*agentExperiment, error) {
-	_, ok := agentSetups[launch.name]
-	if !ok {
-		return nil, nil
+// agentRouterChoice is a launch's `--router <name>`: a template's name, a
+// router spec file, or a router ID, with the `--pay <model>=<way>` and
+// `--default` answers for setup without a terminal.
+type agentRouterChoice struct {
+	name        string
+	pay         map[string]string
+	makeDefault bool
+}
+
+func (choice agentRouterChoice) file() bool {
+	return choice.name != "" && looksLikeRouterManifestPath(choice.name)
+}
+
+func (choice agentRouterChoice) routerID() bool {
+	return strings.HasPrefix(choice.name, "rtr_")
+}
+
+// takeAgentRouterChoice takes `--router <name>` (or `--template <name>`,
+// its earlier name), `--pay` and `--default` out of the agent's arguments.
+func takeAgentRouterChoice(launch *agentLaunch) (agentRouterChoice, error) {
+	choice := agentRouterChoice{pay: map[string]string{}}
+	if _, ok := agentSetups[launch.name]; !ok {
+		return choice, nil
 	}
 	end := slices.Index(launch.args, "--")
 	if end < 0 {
 		end = len(launch.args)
 	}
-	name, found, makeDefault := "", false, false
-	pay := map[string]string{}
+	found := false
 	var kept []string
 	for i := 0; i < end; i++ {
 		arg := launch.args[i]
 		flagName, value, inline := strings.Cut(arg, "=")
-		if flagName != "--template" && flagName != "--pay" {
+		if flagName != "--router" && flagName != "--template" && flagName != "--pay" {
 			if arg == "--default" {
-				makeDefault = true
+				choice.makeDefault = true
 			} else {
 				kept = append(kept, arg)
 			}
@@ -71,39 +85,52 @@ func takeAgentExperiment(ctx context.Context, client *api.Client, launch *agentL
 		}
 		if !inline {
 			if i+1 >= end {
-				return nil, fmt.Errorf("%s needs a value; list templates with `dari router experiments`", flagName)
+				return choice, fmt.Errorf("%s needs a value; list templates with `dari router experiments`", flagName)
 			}
 			i++
 			value = launch.args[i]
 		}
-		if flagName == "--template" {
-			name, found = value, true
+		if flagName != "--pay" {
+			choice.name, found = value, true
 			continue
 		}
 		model, way, ok := strings.Cut(value, "=")
 		if !ok || model == "" {
-			return nil, fmt.Errorf("--pay %s: write --pay <model>=<subscription|key|credits>", value)
+			return choice, fmt.Errorf("--pay %s: write --pay <model>=<subscription|key|credits>", value)
 		}
-		pay[model] = way
+		choice.pay[model] = way
 	}
-	if !found && len(pay) > 0 {
-		return nil, errors.New("--pay goes with --template <name>")
+	if !found && (len(choice.pay) > 0 || choice.makeDefault) {
+		return choice, errors.New("--pay and --default go with --router <name>")
 	}
-	if !found {
-		return nil, nil
+	if found {
+		launch.args = append(kept, launch.args[end:]...)
 	}
+	return choice, nil
+}
+
+// takeAgentExperiment takes the launch's router choice and, when it names a
+// template, returns that template with the choice's answers.
+func takeAgentExperiment(ctx context.Context, client *api.Client, launch *agentLaunch, stderr io.Writer) (*agentExperiment, error) {
+	choice, err := takeAgentRouterChoice(launch)
+	if err != nil || choice.name == "" {
+		return nil, err
+	}
+	return lookupAgentExperiment(ctx, client, choice)
+}
+
+func lookupAgentExperiment(ctx context.Context, client *api.Client, choice agentRouterChoice) (*agentExperiment, error) {
 	experiments, err := listAgentExperiments(ctx, client)
 	if err != nil {
-		return nil, fmt.Errorf("look up template %q: %w", name, err)
+		return nil, fmt.Errorf("look up template %q: %w", choice.name, err)
 	}
 	for _, experiment := range experiments {
-		if experiment.Flag == name {
-			launch.args = append(kept, launch.args[end:]...)
-			experiment.pay, experiment.makeDefault = pay, makeDefault
+		if experiment.Flag == choice.name {
+			experiment.pay, experiment.makeDefault = choice.pay, choice.makeDefault
 			return &experiment, nil
 		}
 	}
-	return nil, fmt.Errorf("no template %q; list them with `dari router experiments`", name)
+	return nil, fmt.Errorf("no template %q; list them with `dari router experiments`", choice.name)
 }
 
 // experimentClientKeyPrefix marks the copy of a template an organization

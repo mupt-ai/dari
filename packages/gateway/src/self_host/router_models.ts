@@ -17,6 +17,7 @@ import {
   type RouterConfig,
   type RouterModelConfig,
 } from "./config.js";
+import type { RouterSpecStore } from "./router_specs.js";
 
 // A router's own list is saved under no agent.
 const ROUTER_LIST = "";
@@ -93,19 +94,21 @@ export const ROUTER_MODELS_ROUTE = /^(?:\/([^/]+))?\/v1\/router\/models(?:\/([^/
  * - `PUT` and `DELETE /v1/router/models/<agent>` do the same for one coding
  *   agent's list.
  *
- * Each answers with the lists as served after the change. Returns null for
- * any other path.
+ * Each answers with the lists as served after the change. A router served
+ * from a spec has its spec's lists, which change with the spec. Returns null
+ * for any other path.
  */
 export async function handleRouterModelsRequest(
   request: Request,
-  deps: { config: GatewayConfig; routerModels: RouterModelStore },
+  deps: { config: GatewayConfig; routerModels: RouterModelStore; routerSpecs: RouterSpecStore },
 ): Promise<Response | null> {
   const route = ROUTER_MODELS_ROUTE.exec(new URL(request.url).pathname);
   if (route === null) return null;
   try {
     const routerId = route[1] ?? DEFAULT_ROUTER_ALIAS;
+    const spec = deps.routerSpecs.get(routerId);
     const configured = deps.config.routers[routerId];
-    if (configured === undefined) {
+    if (spec === undefined && configured === undefined) {
       throw new HttpError(404, `Router ${routerId} is not configured on this gateway.`, "router_not_found");
     }
     const agent = route[2] as ClientHarness | undefined;
@@ -116,6 +119,13 @@ export async function handleRouterModelsRequest(
         "coding_agent_not_found",
       );
     }
+    if (spec !== undefined && (request.method === "PUT" || request.method === "DELETE")) {
+      throw new HttpError(
+        400,
+        `Router ${routerId} is served from a router spec; change its models in the spec (PUT /v1/routers/${routerId}).`,
+        "router_spec_models",
+      );
+    }
     if (request.method === "PUT") {
       deps.routerModels.save(routerId, agent, await requestedModels(request, routerId));
     } else if (request.method === "DELETE") {
@@ -123,14 +133,14 @@ export async function handleRouterModelsRequest(
     } else if (request.method !== "GET" || agent !== undefined) {
       throw new HttpError(405, "Method not allowed.", "method_not_allowed");
     }
-    const served = deps.routerModels.served(routerId, configured);
+    const served = spec?.router ?? deps.routerModels.served(routerId, configured!);
     return Response.json(
       {
         models: served.models,
         agent_models: served.agentModels,
         // False while the router serves the gateway's built-in default
         // models, which nobody chose.
-        chosen: deps.config !== DEFAULT_GATEWAY_CONFIG || deps.routerModels.hasRouterList(routerId),
+        chosen: spec !== undefined || deps.config !== DEFAULT_GATEWAY_CONFIG || deps.routerModels.hasRouterList(routerId),
       },
       { headers: { "Cache-Control": "no-store" } },
     );

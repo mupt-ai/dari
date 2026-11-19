@@ -6,11 +6,12 @@ import { pkceChallenge } from "../link/endpoints.js";
 import type { InteractionRequest } from "../interaction/types.js";
 import { linkGrantAccess } from "../link/grant_access.js";
 import type { ResolveRouterRequest } from "../platform/platform.js";
-import { parseGatewayConfig } from "./config.js";
+import { parseGatewayConfig, parseRouterSpec } from "./config.js";
 import { providersWithoutCredentials, resolveSelfHostedRouter, type SelfHostedResolverDeps } from "./resolve.js";
 import { linkGrants } from "../link/grants.js";
 import { SqliteLinkStore } from "../link/sqlite_store.js";
 import { RouterModelStore } from "./router_models.js";
+import { RouterSpecStore } from "./router_specs.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 import { codexAccessToken, tokens } from "./subscriptions/test_support.js";
 import { addTestApp, approveTestGrant } from "../link/test_support.js";
@@ -35,6 +36,7 @@ function deps(overrides: {
       },
     }),
     routerModels: new RouterModelStore(db),
+    routerSpecs: new RouterSpecStore(db),
     gatewayKeys: ["gw-1", "gw-2"],
     subscriptions: new SubscriptionStore(db),
     links: new SqliteLinkStore(db),
@@ -222,6 +224,56 @@ describe("resolveSelfHostedRouter", () => {
       api: "openai-completions",
       base_url: "http://127.0.0.1:8000/v1",
     });
+  });
+
+  test("a model bound to OpenCode Go runs as its OpenCode Go model on the Go plan", async () => {
+    const resolver = deps({
+      config: {
+        routers: {
+          default: { models: [{ id: "deepseek-ai/DeepSeek-V4.1-Flash-1017", provider: "opencode-go", thinking: ["high"] }] },
+        },
+      },
+    });
+    const plan = resolver.subscriptions.connect(
+      tokens({ provider: "opencode_go", accessToken: "go-plan-key", expiresAt: FUTURE }),
+      null,
+    )!;
+    const resolved = await resolveSelfHostedRouter(resolver, request());
+    expect(resolved).toMatchObject({
+      enabled_models: ["deepseek-ai/DeepSeek-V4.1-Flash-1017"],
+      provider_keys: { "opencode-go": "go-plan-key" },
+      provider_key_sources: { "opencode-go": "subscription" },
+      subscription_credential_ids: { "opencode-go": plan.id },
+      model_thinking_levels: { "deepseek-ai/DeepSeek-V4.1-Flash-1017": ["high"] },
+    });
+    expect(resolved.model_configs?.["deepseek-ai/DeepSeek-V4.1-Flash-1017"]).toMatchObject({
+      provider: "opencode-go",
+      native_model_id: "deepseek-v4.1-flash",
+      api: "openai-completions",
+      base_url: "https://opencode.ai/inference/go/openai/v1",
+    });
+    // Priced as the OpenCode Go model, for estimates; the plan bills no tokens.
+    expect(resolved.model_prices?.["deepseek-ai/DeepSeek-V4.1-Flash-1017"]).toBeDefined();
+  });
+
+  test("a saved router spec is served in place of the config file's router", async () => {
+    const resolver = deps({ apiKeys: { openai: "sk-openai", anthropic: "sk-ant" } });
+    const db = new Database(":memory:");
+    resolver.routerSpecs = new RouterSpecStore(db);
+    resolver.routerSpecs.save("default", {
+      ...parseRouterSpec("default", { name: "Spec", models: ["openai/gpt-6.1-sol"], payment: { allow: ["key"] } }),
+      text: "",
+    });
+    resolver.routerSpecs.save("specced", {
+      ...parseRouterSpec("specced", { name: "Other", models: ["anthropic/claude-opus-5-5"] }),
+      text: "",
+    });
+    expect((await resolveSelfHostedRouter(resolver, request())).enabled_models).toEqual(["openai/gpt-6.1-sol"]);
+    expect((await resolveSelfHostedRouter(resolver, request({ routerId: "specced" }))).enabled_models)
+      .toEqual(["anthropic/claude-opus-5-5"]);
+    resolver.routerSpecs.remove("default");
+    expect((await resolveSelfHostedRouter(resolver, request())).enabled_models)
+      .toEqual(["anthropic/claude-sonnet-4-5", "openai/gpt-5.5"]);
   });
 });
 

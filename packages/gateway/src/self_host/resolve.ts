@@ -11,13 +11,14 @@ import { HttpError } from "../http/errors.js";
 import type { ResolveRouterRequest } from "../platform/platform.js";
 import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
 import { codexModelConfig, subscriptionModelProvider } from "../models/subscriptions.js";
-import { CANONICAL_MODELS } from "../models/canonical.js";
+import { CANONICAL_MODELS, providerModel } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
 import { linkNothingServed, plansExhausted, providersUnavailable } from "../link/errors.js";
 import { registeredModelPrice } from "../providers/pi.js";
 import type { LinkUnavailable, ProviderCredential as SuppliedProviderCredential, ProviderKeySource, ResolvedRouter } from "../types.js";
 import {
   allRouterModels,
+  modelProvider,
   routerModelsFor,
   type GatewayConfig,
   type RouterConfig,
@@ -27,6 +28,7 @@ import type { ActiveLinkGrant } from "../link/grants.js";
 import type { SqliteLinkStore } from "../link/sqlite_store.js";
 import { linkTokenGrant } from "../link/service.js";
 import type { RouterModelStore } from "./router_models.js";
+import { servedRouter, type RouterSpecStore } from "./router_specs.js";
 import { refreshedAccessToken } from "./subscriptions/access.js";
 import {
   activeModelHolds,
@@ -46,6 +48,8 @@ export type SelfHostedResolverDeps = {
   config: GatewayConfig;
   // Model lists saved through the API, served in place of the config's.
   routerModels: RouterModelStore;
+  // Router specs, each served in place of the config's router of its id.
+  routerSpecs: RouterSpecStore;
   gatewayKeys: readonly string[];
   subscriptions: SubscriptionStore;
   links: SqliteLinkStore;
@@ -94,11 +98,10 @@ export async function resolveSelfHostedRouter(
   if (grant !== null && request.routerId !== DEFAULT_ROUTER_ALIAS) {
     throw new HttpError(403, "Dari Link tokens serve only the default router.", "permission_denied");
   }
-  const configured = deps.config.routers[request.routerId];
-  if (configured === undefined) {
+  const router = servedRouter(deps, request.routerId);
+  if (router === undefined) {
     throw new HttpError(404, `Router ${request.routerId} is not configured on this gateway.`, "router_not_found");
   }
-  const router = deps.routerModels.served(request.routerId, configured);
 
   const routed = routerModelsFor(router, request.clientHarness);
   const granted = grant === null
@@ -113,7 +116,7 @@ export async function resolveSelfHostedRouter(
   const servable = grant === null ? undefined : new Set(grant.credentialIds);
   const credentials = new Map<string, ProviderCredential | null>();
   const exhausted = new Set<SubscriptionProvider>();
-  for (const provider of new Set(listed.map((model) => providerForModel(model.id)))) {
+  for (const provider of new Set(listed.map(modelProvider))) {
     // A grant uses the subscriptions its user chose, whatever the router allows.
     const subscription = router.subscriptions || grant !== null
       ? subscriptionProviderFor(provider, request.clientHarness)
@@ -158,7 +161,7 @@ export async function resolveSelfHostedRouter(
     );
   const models = [];
   for (const model of listed) {
-    const credential = credentials.get(providerForModel(model.id));
+    const credential = credentials.get(modelProvider(model));
     if (credential == null) continue;
     const plan = credential.subscription;
     const hold = plan === undefined ? undefined : activeModelHolds(plan, now).find((held) => held.model === model.id);
@@ -259,12 +262,24 @@ export async function resolveSelfHostedRouter(
     resolved.provider_key_sources![provider] = "user";
   }
   for (const model of models) {
-    const price = registeredModelPrice(model.id);
+    const provider = modelProvider(model);
+    // A model another provider serves runs as that provider's own model.
+    const served = model.provider === undefined ? undefined : providerModel(model.id, provider);
+    const price = served === undefined
+      ? registeredModelPrice(model.id)
+      : registeredModelPrice(`${provider}/${served.native_model_id}`);
     if (price !== null) resolved.model_prices![model.id] = price;
-    const provider = providerForModel(model.id);
     const endpoint = deps.config.providers[provider];
     if (credentials.get(provider)?.subscription?.provider === "openai_codex") {
       resolved.model_configs![model.id] = codexModelConfig(model.id, price, deps.config.providers["openai-codex"]?.baseUrl);
+    } else if (served !== undefined) {
+      resolved.model_configs![model.id] = {
+        provider,
+        native_model_id: served.native_model_id,
+        api: endpoint?.api ?? served.api,
+        base_url: endpoint?.baseUrl ?? served.base_url,
+        cost: price ?? { input: 0, output: 0 },
+      };
     } else if (endpoint !== undefined) {
       resolved.model_configs![model.id] = {
         provider,
@@ -379,7 +394,7 @@ export async function providersWithoutCredentials(
   router: RouterConfig,
 ): Promise<string[]> {
   const missing: string[] = [];
-  for (const provider of new Set(allRouterModels(router).map((model) => providerForModel(model.id)))) {
+  for (const provider of new Set(allRouterModels(router).map(modelProvider))) {
     const plans = router.subscriptions
       ? [subscriptionProviderFor(provider, "claude_code"), subscriptionProviderFor(provider, "muse_code")]
       : [];

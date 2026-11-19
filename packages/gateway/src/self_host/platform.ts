@@ -6,6 +6,7 @@ import type { GatewayPlatform } from "../platform/platform.js";
 import { subscriptionOAuthProviderFor } from "../providers/subscription_limits.js";
 import { SELF_HOSTED_BLOB_BUCKET, type ActivityStore } from "./activity_store.js";
 import type { PrefixStore } from "./prefix_store.js";
+import { servedRouter } from "./router_specs.js";
 import type { SessionPinStore } from "./session_pin_store.js";
 import {
   gatewayKeyIndex,
@@ -17,9 +18,10 @@ import { type SubscriptionStore } from "./subscriptions/index.js";
 import { refreshedAccessToken } from "./subscriptions/access.js";
 
 /**
- * The self-hosted platform: routers from the config file, subscriptions,
- * Dari Link grants, prefix-cache state, session pins, and Activity in the
- * gateway's SQLite database, and one content-free log line per request.
+ * The self-hosted platform: routers from the config file and router specs,
+ * subscriptions, Dari Link grants, prefix-cache state, session pins, and
+ * Activity in the gateway's SQLite database, and one content-free log line
+ * per request.
  */
 export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "prefixHits"> & {
   activity: ActivityStore;
@@ -37,7 +39,7 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
       deps.prefixes.write(write);
     },
     writePendingLease: async (write) => {
-      deps.prefixes.writePendingLease(write, deps.config.routers[write.router_id]?.zdr ?? false);
+      deps.prefixes.writePendingLease(write, servedRouter(deps, write.router_id)?.zdr ?? false);
     },
     readSessionPin: async (key) => deps.sessionPins.read(key),
     writeSessionPin: async (write) => {

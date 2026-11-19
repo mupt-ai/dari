@@ -12,10 +12,9 @@ import { createPrioritySelectorBackend } from "../strategies/priority_selector.j
 import type { SelectorBackend } from "../strategies/routing.js";
 import { ActivityStore } from "./activity_store.js";
 import { createSelfHostedPlatform } from "./platform.js";
-import { providerForModel } from "@mupt-ai/dari-router/policy-engine";
 import { checkProviderKey } from "../providers/key_check.js";
 import { CANONICAL_MODELS } from "../models/canonical.js";
-import { allRouterModels, loadGatewayConfig, type GatewayConfig, type RouterConfig } from "./config.js";
+import { allRouterModels, loadGatewayConfig, modelProvider, type GatewayConfig, type RouterConfig } from "./config.js";
 import {
   configuredProviderApiKey,
   gatewayKeyIndex,
@@ -26,6 +25,15 @@ import { SqliteLinkStore } from "../link/sqlite_store.js";
 import { secretBoxFromEnv } from "./secret_box.js";
 import { PrefixStore } from "./prefix_store.js";
 import { handleRouterModelsRequest, ROUTER_MODELS_ROUTE, RouterModelStore } from "./router_models.js";
+import {
+  handleRouterSpecsRequest,
+  loadRouterSpecDirectory,
+  ROUTERS_ROUTE,
+  RouterSpecStore,
+  servedRouter,
+  servedRouterIds,
+  type ServedRouters,
+} from "./router_specs.js";
 import { SessionPinStore } from "./session_pin_store.js";
 import { handleSubscriptionRequest, SubscriptionStore } from "./subscriptions/index.js";
 
@@ -39,10 +47,14 @@ const CANONICAL_MODELS_ROUTE = "/v1/canonical-models";
  * - `DARI_GATEWAY_KEYS` (required): comma-separated bearer keys clients use.
  * - `DARI_GATEWAY_CONFIG`: router config file. Unset, `dari-gateway.yaml`
  *   serves when present, and otherwise the default router.
+ * - `DARI_GATEWAY_ROUTERS_DIR`: a directory of router specs, read at startup:
+ *   each `<id>.yaml` (or `.yml`) is router `<id>`, served in place of a
+ *   config file router of that id. Specs saved through `PUT /v1/routers/<id>`
+ *   are served in place of both.
  * - `DARI_GATEWAY_DB`: SQLite database for subscriptions, Dari Link grants,
- *   saved model lists, prefix-cache state, and Activity: each request's log
- *   row and, outside ZDR routers, its request and response bodies (default
- *   `dari-gateway.db`). It holds subscription tokens.
+ *   saved model lists and router specs, prefix-cache state, and Activity:
+ *   each request's log row and, outside ZDR routers, its request and response
+ *   bodies (default `dari-gateway.db`). It holds subscription tokens.
  * - `DARI_GATEWAY_ENCRYPTION_KEY`: encrypts the subscription tokens and API
  *   keys in the database (`openssl rand -base64 32`; see secret_box.ts for
  *   rotation). Unset, they are stored as they are, and the Dari Link approval
@@ -64,6 +76,8 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     throw new Error("Set DARI_GATEWAY_KEYS to the comma-separated keys clients authenticate with.");
   }
   const config = await loadGatewayConfig(env.DARI_GATEWAY_CONFIG?.trim() || undefined);
+  const routersDir = env.DARI_GATEWAY_ROUTERS_DIR?.trim();
+  const specFiles = routersDir ? await loadRouterSpecDirectory(routersDir) : undefined;
   const databasePath = env.DARI_GATEWAY_DB ?? "dari-gateway.db";
   const created = databasePath !== ":memory:" && !existsSync(databasePath);
   const db = new Database(databasePath, { create: true });
@@ -79,13 +93,17 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   const prefixes = new PrefixStore(db);
   const sessionPins = new SessionPinStore(db);
   const routerModels = new RouterModelStore(db);
+  const routerSpecs = new RouterSpecStore(db, specFiles);
+  const routers: ServedRouters = { config, routerModels, routerSpecs };
   const links = new SqliteLinkStore(db, secrets);
   const activity = new ActivityStore(db);
-  activity.syncDirectory(
+  // Activity lists the routers served, so it follows each saved spec.
+  const syncActivityRouters = () => activity.syncDirectory(
     SELF_HOSTED_ORGANIZATION_ID,
-    Object.entries(config.routers).map(([id, router]) => ({ id, zdr: router.zdr })),
+    servedRouterIds(routers).map((id) => ({ id, zdr: servedRouter(routers, id)!.zdr })),
     gatewayKeys.length,
   );
+  syncActivityRouters();
   // Pi's provider auth reads each provider's standard key variable, such as
   // OPENAI_API_KEY, from this environment only.
   const piModels = builtinModels({
@@ -98,6 +116,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     activity,
     config,
     routerModels,
+    routerSpecs,
     gatewayKeys,
     subscriptions,
     links,
@@ -110,9 +129,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   });
   // A model without a credential is dropped at request time, so a missing key
   // would otherwise surface only as a 424 on the first request.
-  const routers = Object.entries(config.routers)
-    .map(([routerId, router]) => [routerId, routerModels.served(routerId, router)] as const);
-  for (const [routerId, router] of routers) {
+  const warnWithoutCredentials = async (routerId: string, router: RouterConfig) => {
     const missing = await providersWithoutCredentials({ config, subscriptions, providerApiKey, env }, router);
     if (missing.length > 0) {
       console.warn(
@@ -120,9 +137,17 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
         JSON.stringify({ router: routerId, providers: missing }),
       );
     }
-  }
-  await checkConfiguredProviderKeys(config, routers.map(([, router]) => router), (provider) =>
+  };
+  const served = servedRouterIds(routers).map((routerId) => [routerId, servedRouter(routers, routerId)!] as const);
+  for (const [routerId, router] of served) await warnWithoutCredentials(routerId, router);
+  await checkConfiguredProviderKeys(config, served.map(([, router]) => router), (provider) =>
     configuredProviderApiKey({ config, providerApiKey, env }, provider));
+  // A saved or removed spec changes what is served at once.
+  const routersChanged = (routerId: string) => {
+    syncActivityRouters();
+    const router = servedRouter(routers, routerId);
+    if (router !== undefined) void warnWithoutCredentials(routerId, router);
+  };
   const selectorBackend: SelectorBackend = autoRoutingKey
     ? createAutoRoutingSelectorBackend({
         apiKey: autoRoutingKey,
@@ -131,14 +156,15 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     : createPrioritySelectorBackend();
   const gateway = createRequestHandler({ platform, selectorBackend });
 
-  // Subscriptions and model lists are managed with any gateway key; every
-  // other path is the gateway's own.
+  // Subscriptions, model lists, and router specs are managed with any gateway
+  // key; every other path is the gateway's own.
   const handler = async (request: Request): Promise<Response> => {
     const { pathname } = new URL(request.url);
     const manages = pathname === SUBSCRIPTION_ROUTES
       || pathname.startsWith(`${SUBSCRIPTION_ROUTES}/`)
       || pathname === CANONICAL_MODELS_ROUTE
-      || ROUTER_MODELS_ROUTE.test(pathname);
+      || ROUTER_MODELS_ROUTE.test(pathname)
+      || ROUTERS_ROUTE.test(pathname);
     if (!manages) return await gateway(request);
     try {
       if (gatewayKeyIndex(gatewayKeys, bearerToken(request.headers)) === null) {
@@ -151,7 +177,8 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
       return Response.json({ data: CANONICAL_MODELS }, { headers: { "Cache-Control": "no-store" } });
     }
     return (await handleSubscriptionRequest(request, { store: subscriptions, fetch }))
-      ?? (await handleRouterModelsRequest(request, { config, routerModels }))
+      ?? (await handleRouterModelsRequest(request, routers))
+      ?? (await handleRouterSpecsRequest(request, { ...routers, changed: routersChanged }))
       ?? errorResponse(new HttpError(404, "Not found", "not_found"));
   };
 
@@ -165,9 +192,11 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
       hostname,
       // The bound port, so PORT=0 reports the port the OS assigned.
       port: server.port,
-      routers: Object.keys(config.routers),
+      routers: servedRouterIds(routers),
       // These serve lists saved with `dari gateway models`, not the config file's.
       saved_model_lists: routerModels.routersWithSavedLists(),
+      // These serve router specs saved through the API.
+      saved_routers: routerSpecs.savedIds(),
       auto_routing: autoRoutingKey ? "dari" : "priority",
     }),
   );
@@ -184,7 +213,7 @@ async function checkConfiguredProviderKeys(
   providerApiKey: (provider: string) => Promise<string | undefined>,
 ): Promise<void> {
   const providers = new Set(
-    routers.flatMap((router) => allRouterModels(router).map((model) => providerForModel(model.id))),
+    routers.flatMap((router) => allRouterModels(router).map(modelProvider)),
   );
   const checks = await Promise.all([...providers].map(async (provider) => {
     const endpoint = config.providers[provider];

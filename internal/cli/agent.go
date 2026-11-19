@@ -34,13 +34,13 @@ const (
 // reaches the agent untouched. Cobra only sees them when a Dari flag comes
 // first, which would be dropped, so those commands refuse to run.
 var agentLaunchers = map[string]string{
-	"claude":   "Launch Claude Code through Dari; forward all following arguments (--setup-cli sets up plain `claude`, --setup-desktop the Claude app)",
-	"codex":    "Launch Codex through Dari; forward all following arguments (--setup-cli or --setup-desktop sets up plain `codex` and the Codex app, which share a config)",
-	"opencode": "Launch OpenCode through Dari; forward all following arguments (--setup-cli sets up plain `opencode`)",
-	"pi":       "Launch Pi through Dari; forward all following arguments (--setup-cli sets up plain `pi`)",
-	"muse":     "Launch Muse Code through Dari; forward all following arguments",
-	"openclaw": "Launch OpenClaw, set up once with --setup-cli to route through Dari; forward all following arguments",
-	"hermes":   "Launch Hermes Agent, set up once with --setup-cli to route through Dari; forward all following arguments",
+	"claude":   "Launch Claude Code through Dari; forward all following arguments (`dari setup claude` for setup)",
+	"codex":    "Launch Codex through Dari; forward all following arguments (`dari setup codex` for setup)",
+	"opencode": "Launch OpenCode through Dari; forward all following arguments (`dari setup opencode` for setup)",
+	"pi":       "Launch Pi through Dari; forward all following arguments (`dari setup pi` for setup)",
+	"muse":     "Launch Muse Code through Dari; forward all following arguments (`dari setup muse` for setup)",
+	"openclaw": "Launch OpenClaw, set up once with `dari setup openclaw --cli`; forward all following arguments",
+	"hermes":   "Launch Hermes Agent, set up once with `dari setup hermes --cli`; forward all following arguments",
 }
 
 // A launch routes only its own session and leaves the agent's config alone.
@@ -74,20 +74,27 @@ type agentLaunch struct {
 	setupCLI     bool
 	setupDesktop bool
 	removeSetup  bool
+	// reconfigure opens the models picker on a router set up earlier, as
+	// `dari setup <agent>` does.
+	reconfigure bool
 }
 
 func (l agentLaunch) setup() bool { return l.setupCLI || l.setupDesktop }
 
-// setupFlags are the setup flags as the user would type them again.
-func (l agentLaunch) setupFlags() string {
-	flags := []string{}
+// setupCommand is the `dari setup` command a --setup-cli, --setup-desktop,
+// or --remove-setup launch now is.
+func (l agentLaunch) setupCommand() string {
+	command := "dari setup " + l.name
 	if l.setupCLI {
-		flags = append(flags, agentSetupCLIFlag)
+		command += " --cli"
 	}
 	if l.setupDesktop {
-		flags = append(flags, agentSetupDesktopFlag)
+		command += " --desktop"
 	}
-	return strings.Join(flags, " ")
+	if l.removeSetup {
+		command += " --remove"
+	}
+	return command
 }
 
 func parseAgentLaunch(args []string) (agentLaunch, bool) {
@@ -123,6 +130,7 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 
 func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, stdout, stderr io.Writer) int {
 	if launch.setup() || launch.removeSetup {
+		agentPrintln(stderr, ansiGray+"Next time: "+launch.setupCommand()+ansiReset)
 		if err := runAgentSetup(ctx, launch, stdin, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -137,7 +145,7 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 
 	if routesOnlyWhenSetUp[launch.name] && !agents.OnlyRequestsInfo(launch.args) {
 		if !gatewayAgentSetUp(ctx, launch.name) {
-			fmt.Fprintf(stderr, "%s routes through Dari only once it is set up; run `dari %s %s` first\n", agentApps[launch.name].name, launch.name, agentSetupCLIFlag)
+			fmt.Fprintf(stderr, "%s routes through Dari only once it is set up; run `dari setup %s --cli` first\n", agentApps[launch.name].name, launch.name)
 			return 1
 		}
 		// Its config may name the local gateway, which launches start as they
@@ -244,19 +252,27 @@ func inheritsStdio(stdin io.Reader, stdout, stderr io.Writer) bool {
 // experimental router's flag, which it takes out of the launch's arguments,
 // launches on that router instead.
 func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Reader, stderr io.Writer) (string, string, agents.Models, error) {
+	choice, err := takeAgentRouterChoice(launch)
+	if err != nil {
+		return "", "", agents.Models{}, err
+	}
 	gateway, err := agentGateway(ctx, stdin, stderr)
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
 	if gateway != nil {
-		models, err := gatewayAgentModels(ctx, gateway, *launch, stdin, stderr)
+		baseURL, err := gatewayAgentRouter(ctx, gateway, launch, choice, stdin, stderr)
+		if err != nil {
+			return "", "", agents.Models{}, err
+		}
+		models, err := gatewayAgentModels(ctx, gateway, baseURL, *launch, stdin, stderr)
 		if err != nil {
 			return "", "", agents.Models{}, err
 		}
 		// The launch starts on the user's saved pick; say so accurately.
 		models.Saved = savedAgentModel(launch.name)
 		models = reportGatewayModels(ctx, gateway, launch.name, models, stderr)
-		return gateway.key, gateway.url, models, nil
+		return gateway.key, baseURL, models, nil
 	}
 	// Onboarding pages follow one another on the alternate screen; their
 	// summary prints once setup is done.
@@ -270,15 +286,17 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
-	experiment, err := takeAgentExperiment(ctx, client, launch, stderr)
-	if err != nil {
-		return "", "", agents.Models{}, err
-	}
 	var routerID string
-	if experiment != nil {
-		routerID, err = applyAgentExperiment(ctx, client, launch.name, *experiment, stdin, stderr)
-	} else {
-		routerID, err = ensureAgentRouter(ctx, launch.name, access, stdin, stderr)
+	switch {
+	case choice.name == "":
+		routerID, err = ensureAgentRouter(ctx, launch.name, access, launch.reconfigure, stdin, stderr)
+	case choice.file() || choice.routerID():
+		routerID, err = useHostedRouter(ctx, client, launch.name, choice, stderr)
+	default:
+		var experiment *agentExperiment
+		if experiment, err = lookupAgentExperiment(ctx, client, choice); err == nil {
+			routerID, err = applyAgentExperiment(ctx, client, launch.name, *experiment, stdin, stderr)
+		}
 	}
 	if err != nil {
 		return "", "", agents.Models{}, err

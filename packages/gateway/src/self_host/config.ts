@@ -1,10 +1,12 @@
 import {
   isReasoningEffort,
   isRecord,
+  providerForModel,
   type ReasoningEffort,
 } from "@mupt-ai/dari-router/policy-engine";
 
 import { CLIENT_HARNESSES } from "../ingress/client_harness.js";
+import { otherModelProviders, providerModel } from "../models/canonical.js";
 import type { ClientHarness, RouterRole, RouterRoleModels, RouterRolePrompts } from "../types.js";
 
 /**
@@ -43,7 +45,8 @@ import type { ClientHarness, RouterRole, RouterRoleModels, RouterRolePrompts } f
  * provider API keys from each provider's standard environment variable, and
  * personal subscriptions from the gateway database. Model lists saved through
  * the gateway's API (`dari gateway models`) live in the database too, and are
- * served in place of this file's.
+ * served in place of this file's. So do router specs (parseRouterSpec), each a
+ * whole router, which are served in place of this file's router of their id.
  */
 export type GatewayConfig = {
   routers: Record<string, RouterConfig>;
@@ -92,9 +95,17 @@ export type RouterModelConfig = {
   // Thinking levels the router offers; absent offers every level the model
   // supports.
   thinking?: ReasoningEffort[];
+  // The provider that serves the model when not the one its id names, such as
+  // `opencode-go` for `deepseek-ai/DeepSeek-V4.1-Flash-1017`.
+  provider?: string;
 };
 
-const ROUTER_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+/** The provider that serves a router's model, whose credential it needs. */
+export function modelProvider(model: RouterModelConfig): string {
+  return model.provider ?? providerForModel(model.id);
+}
+
+export const ROUTER_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9.-]*$/;
 const MODEL_ID_PATTERN = /^[a-z0-9][a-z0-9.-]*\/\S+$/;
 
@@ -206,26 +217,14 @@ export function allRouterModels(router: RouterConfig): RouterModelConfig[] {
 
 function parseRouter(id: string, raw: unknown): RouterConfig {
   if (!isRecord(raw)) throw new Error(`Router "${id}" needs a non-empty \`models\` list.`);
-  const agentModels: RouterConfig["agentModels"] = {};
-  if (raw.agentModels !== undefined) {
-    if (!isRecord(raw.agentModels)) {
-      throw new Error(`routers.${id}.agentModels must map coding agents to model lists.`);
-    }
-    for (const [agent, models] of Object.entries(raw.agentModels)) {
-      if (!CLIENT_HARNESSES.includes(agent)) {
-        throw new Error(
-          `Router "${id}" has models for an unknown coding agent "${agent}"; use ${CLIENT_HARNESSES.join(", ")}.`,
-        );
-      }
-      agentModels[agent as ClientHarness] = parseRouterModels(id, `agentModels.${agent}`, models);
-    }
-  }
+  const agentModels = parseAgentModels(id, `routers.${id}.agentModels`, raw.agentModels);
   const models = parseRouterModels(id, "models", raw.models);
   return {
     models,
     agentModels,
-    roleModels: parseRoleModels(id, raw.roleModels, [models, ...Object.values(agentModels)].flat()),
-    rolePrompts: parseRolePrompts(id, raw.rolePrompts),
+    roleModels: parseRoleMap(`routers.${id}.roleModels`, raw.roleModels, (field, model) =>
+      roleModel(field, model, [models, ...Object.values(agentModels)].flat())),
+    rolePrompts: parseRoleMap(`routers.${id}.rolePrompts`, raw.rolePrompts, rolePrompt),
     retries: optionalRetries(raw.retries, `routers.${id}.retries`) ?? 1,
     subscriptions: optionalBoolean(raw.subscriptions, `routers.${id}.subscriptions`) ?? true,
     sessionPinning: optionalBoolean(raw.sessionPinning, `routers.${id}.sessionPinning`) ?? false,
@@ -234,44 +233,55 @@ function parseRouter(id: string, raw: unknown): RouterConfig {
   };
 }
 
+function parseAgentModels(routerId: string, field: string, raw: unknown): RouterConfig["agentModels"] {
+  const agentModels: RouterConfig["agentModels"] = {};
+  if (raw == null) return agentModels;
+  if (!isRecord(raw)) throw new Error(`${field} must map coding agents to model lists.`);
+  for (const [agent, models] of Object.entries(raw)) {
+    if (!CLIENT_HARNESSES.includes(agent)) {
+      throw new Error(
+        `Router "${routerId}" has models for an unknown coding agent "${agent}"; use ${CLIENT_HARNESSES.join(", ")}.`,
+      );
+    }
+    agentModels[agent as ClientHarness] = parseRouterModels(routerId, `${field}.${agent}`, models);
+  }
+  return agentModels;
+}
+
 const ROUTER_ROLES: readonly RouterRole[] = ["main", "subagent"];
 
-function parseRoleModels(routerId: string, raw: unknown, models: RouterModelConfig[]): RouterRoleModels {
-  if (raw === undefined) return {};
-  if (!isRecord(raw)) throw new Error(`routers.${routerId}.roleModels must map main and subagent to models.`);
-  const roleModels: RouterRoleModels = {};
-  for (const [role, model] of Object.entries(raw)) {
+// A map of main and subagent to values `read` checks, leaving out nulls.
+function parseRoleMap(
+  field: string,
+  raw: unknown,
+  read: (field: string, value: unknown) => string,
+): Partial<Record<RouterRole, string>> {
+  if (raw == null) return {};
+  if (!isRecord(raw)) throw new Error(`${field} must map main and subagent.`);
+  const roles: Partial<Record<RouterRole, string>> = {};
+  for (const [role, value] of Object.entries(raw)) {
     if (!(ROUTER_ROLES as readonly string[]).includes(role)) {
-      throw new Error(`routers.${routerId}.roleModels has an unknown role "${role}"; use main or subagent.`);
+      throw new Error(`${field} has an unknown role "${role}"; use main or subagent.`);
     }
-    if (model === null) continue;
-    if (typeof model !== "string" || !models.some((listed) => listed.id === model)) {
-      throw new Error(`routers.${routerId}.roleModels.${role} must be one of the router's models.`);
-    }
-    roleModels[role as RouterRole] = model;
+    if (value !== null) roles[role as RouterRole] = read(`${field}.${role}`, value);
   }
-  return roleModels;
+  return roles;
+}
+
+function roleModel(field: string, model: unknown, models: readonly RouterModelConfig[]): string {
+  if (typeof model !== "string" || !models.some((listed) => listed.id === model)) {
+    throw new Error(`${field} must be one of the router's models.`);
+  }
+  return model;
 }
 
 export const ROLE_PROMPT_MAX_LENGTH = 4000;
 
-function parseRolePrompts(routerId: string, raw: unknown): RouterRolePrompts {
-  if (raw === undefined) return {};
-  if (!isRecord(raw)) throw new Error(`routers.${routerId}.rolePrompts must map main and subagent to text.`);
-  const rolePrompts: RouterRolePrompts = {};
-  for (const [role, prompt] of Object.entries(raw)) {
-    if (!(ROUTER_ROLES as readonly string[]).includes(role)) {
-      throw new Error(`routers.${routerId}.rolePrompts has an unknown role "${role}"; use main or subagent.`);
-    }
-    if (prompt === null) continue;
-    if (typeof prompt !== "string" || !prompt.trim() || prompt.length > ROLE_PROMPT_MAX_LENGTH) {
-      throw new Error(
-        `routers.${routerId}.rolePrompts.${role} must be text of at most ${ROLE_PROMPT_MAX_LENGTH} characters.`,
-      );
-    }
-    rolePrompts[role as RouterRole] = prompt.trim();
+function rolePrompt(field: string, prompt: unknown): string {
+  if (typeof prompt !== "string" || !prompt.trim() || prompt.length > ROLE_PROMPT_MAX_LENGTH) {
+    throw new Error(`${field} must be text of at most ${ROLE_PROMPT_MAX_LENGTH} characters.`);
   }
-  return rolePrompts;
+  return prompt.trim();
 }
 
 /** Read one model list of a router, naming `field` in what it rejects. */
@@ -295,17 +305,30 @@ function parseModel(routerId: string, raw: unknown): RouterModelConfig {
       `Router "${routerId}" has an invalid model; use a canonical "provider/model" id.`,
     );
   }
-  if (entry.thinking === undefined) return { id: entry.id };
-  if (
-    !Array.isArray(entry.thinking) ||
-    entry.thinking.length === 0 ||
-    !entry.thinking.every(isReasoningEffort)
-  ) {
-    throw new Error(
-      `Model ${entry.id} on router "${routerId}" has invalid thinking levels; use off, minimal, low, medium, high, xhigh, or max.`,
-    );
+  const model: RouterModelConfig = { id: entry.id };
+  if (entry.thinking != null) {
+    if (
+      !Array.isArray(entry.thinking) ||
+      entry.thinking.length === 0 ||
+      !entry.thinking.every(isReasoningEffort)
+    ) {
+      throw new Error(
+        `Model ${entry.id} on router "${routerId}" has invalid thinking levels; use off, minimal, low, medium, high, xhigh, or max.`,
+      );
+    }
+    model.thinking = [...new Set(entry.thinking)];
   }
-  return { id: entry.id, thinking: [...new Set(entry.thinking)] };
+  if (entry.provider != null && entry.provider !== providerForModel(entry.id)) {
+    if (typeof entry.provider !== "string" || providerModel(entry.id, entry.provider) === undefined) {
+      const others = otherModelProviders(entry.id);
+      throw new Error(
+        `Model ${entry.id} on router "${routerId}" cannot be served by provider ${String(entry.provider)} on a self-hosted gateway; `
+          + `${others.length > 0 ? `use ${others.join(" or ")}, or ` : ""}leave out \`provider\` to use ${providerForModel(entry.id)}.`,
+      );
+    }
+    model.provider = entry.provider;
+  }
+  return model;
 }
 
 function optionalBoolean(value: unknown, field: string): boolean | undefined {
@@ -320,4 +343,138 @@ function optionalRetries(value: unknown, field: string): number | undefined {
     throw new Error(`${field} must be an integer from 0 to 5.`);
   }
   return value;
+}
+
+/**
+ * A router spec: a whole router as one document, the same one hosted Dari
+ * applies (`dari router apply`), with no credentials:
+ *
+ * ```yaml
+ * name: Opus 5.5 + DeepSeek Subagents
+ * models:
+ *   - anthropic/claude-opus-5-5
+ *   - id: deepseek-ai/DeepSeek-V4.1-Flash-1017
+ *     thinking: [high]
+ *     provider: opencode-go   # served by this provider, not the one its id names
+ * roles:
+ *   main: { model: anthropic/claude-opus-5-5 }
+ *   subagent: { model: deepseek-ai/DeepSeek-V4.1-Flash-1017, prompt: Be brief. }
+ * routing: { session_pinning: false, retries: 1 }
+ * payment: { allow: [subscription, key, credits] }
+ * native_compaction: false
+ * agents: { codex: [openai/gpt-6.1-sol] }
+ * ```
+ *
+ * The gateway pays with connected subscriptions when `payment.allow` lists
+ * `subscription`, and otherwise with provider API keys; it has no credits.
+ * `hosted` settings and a model's `fast` apply only on hosted Dari, and are
+ * accepted and left unused; `routing.rules` runs only there and is refused.
+ */
+export type RouterSpec = { name: string; router: RouterConfig };
+
+const SPEC_FIELDS = ["name", "models", "roles", "routing", "payment", "native_compaction", "agents", "hosted"];
+const SPEC_MODEL_FIELDS = ["id", "thinking", "provider", "fast"];
+const PAYMENT_KINDS = ["subscription", "key", "credits"];
+const SPEC_NAME_MAX_LENGTH = 120;
+
+/** Read a router spec's YAML (or JSON) text; YAML 1.2, so `off` stays a thinking level. */
+export function parseRouterSpecText(text: string): unknown {
+  try {
+    return Bun.YAML.parse(text);
+  } catch (error) {
+    throw new Error(`The router spec is not valid YAML: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** Check a router spec and read it as the router `id` serves it. */
+export function parseRouterSpec(id: string, raw: unknown): RouterSpec {
+  const spec = specMap("The router spec", raw, SPEC_FIELDS);
+  if (typeof spec.name !== "string" || !spec.name.trim() || spec.name.length > SPEC_NAME_MAX_LENGTH) {
+    throw new Error(`name must be text of at most ${SPEC_NAME_MAX_LENGTH} characters.`);
+  }
+  if (Array.isArray(spec.models)) {
+    for (const [index, model] of spec.models.entries()) {
+      if (!isRecord(model)) continue;
+      specMap(`models[${index}]`, model, SPEC_MODEL_FIELDS);
+      optionalBoolean(model.fast ?? undefined, `models[${index}].fast`);
+    }
+  }
+  const models = parseRouterModels(id, "models", spec.models);
+  const agentModels = parseAgentModels(id, "agents", spec.agents);
+  const roles = specMap("roles", spec.roles, ROUTER_ROLES);
+  const roleSpecs = Object.fromEntries(
+    ROUTER_ROLES.map((role) => [role, specMap(`roles.${role}`, roles[role], ["model", "prompt"])]),
+  );
+  const roleValues = (key: string) =>
+    Object.fromEntries(ROUTER_ROLES.map((role) => [role, roleSpecs[role]![key] ?? null]));
+  const routing = specMap("routing", spec.routing, ["session_pinning", "retries", "rules"]);
+  if (routing.rules != null && (!Array.isArray(routing.rules) || routing.rules.length > 0)) {
+    throw new Error("routing.rules runs only on hosted Dari; remove it to serve this router on a self-hosted gateway.");
+  }
+  const payment = specMap("payment", spec.payment, ["allow"]);
+  const allow = payment.allow ?? PAYMENT_KINDS;
+  if (!Array.isArray(allow) || !allow.every((kind) => PAYMENT_KINDS.includes(kind))) {
+    throw new Error(`payment.allow must list ${PAYMENT_KINDS.join(", ")}.`);
+  }
+  if (allow.length === 0) throw new Error("payment.allow needs at least one way to pay.");
+  if (spec.hosted != null && !isRecord(spec.hosted)) throw new Error("hosted must be a map.");
+  return {
+    name: spec.name.trim(),
+    router: {
+      models,
+      agentModels,
+      roleModels: parseRoleMap("roles", roleValues("model"), (field, model) =>
+        roleModel(`${field}.model`, model, [models, ...Object.values(agentModels)].flat())),
+      rolePrompts: parseRoleMap("roles", roleValues("prompt"), (field, prompt) => rolePrompt(`${field}.prompt`, prompt)),
+      retries: optionalRetries(routing.retries ?? undefined, "routing.retries") ?? 1,
+      subscriptions: allow.includes("subscription"),
+      sessionPinning: optionalBoolean(routing.session_pinning ?? undefined, "routing.session_pinning") ?? false,
+      nativeCompaction: optionalBoolean(spec.native_compaction ?? undefined, "native_compaction") ?? false,
+      zdr: false,
+    },
+  };
+}
+
+/** The spec of a router, such as one from the config file. */
+export function routerSpecFor(name: string, router: RouterConfig): Record<string, unknown> {
+  const roles = Object.fromEntries(ROUTER_ROLES.flatMap((role) => {
+    const model = router.roleModels[role];
+    const prompt = router.rolePrompts[role];
+    if (model == null && prompt == null) return [];
+    return [[role, { ...(model == null ? {} : { model }), ...(prompt == null ? {} : { prompt }) }]];
+  }));
+  const agents = Object.entries(router.agentModels);
+  return {
+    name,
+    models: router.models.map(specModel),
+    ...(Object.keys(roles).length > 0 ? { roles } : {}),
+    routing: { session_pinning: router.sessionPinning, retries: router.retries },
+    // The gateway pays with plans and API keys; it has no credits.
+    payment: { allow: router.subscriptions ? ["subscription", "key"] : ["key"] },
+    native_compaction: router.nativeCompaction,
+    ...(agents.length > 0
+      ? { agents: Object.fromEntries(agents.map(([agent, models]) => [agent, models!.map(specModel)])) }
+      : {}),
+  };
+}
+
+/** A spec as YAML text. */
+export function routerSpecYaml(spec: unknown): string {
+  // Bun writes "key: " before a nested value; strings never span lines.
+  return `${Bun.YAML.stringify(spec, null, 2).replace(/: $/gm, ":")}\n`;
+}
+
+function specModel(model: RouterModelConfig): string | Record<string, unknown> {
+  return model.thinking === undefined && model.provider === undefined ? model.id : { ...model };
+}
+
+// A spec section as a map, refusing fields the spec does not have; absent is empty.
+function specMap(field: string, raw: unknown, fields: readonly string[]): Record<string, unknown> {
+  if (raw == null) return {};
+  if (!isRecord(raw)) throw new Error(`${field} must be a map.`);
+  const unknown = Object.keys(raw).filter((key) => !fields.includes(key));
+  if (unknown.length > 0) {
+    throw new Error(`${field} has unknown field${unknown.length > 1 ? "s" : ""} ${unknown.join(", ")}; use ${fields.join(", ")}.`);
+  }
+  return raw;
 }

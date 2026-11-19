@@ -33,6 +33,7 @@ func launchWithRouters(t *testing.T, agent string, routers []map[string]any) (st
 		context.Background(),
 		agent,
 		agentRoutingAccess{apiURL: server.URL, scope: "test-org", key: "dari_route"},
+		false,
 		strings.NewReader(""),
 		io.Discard,
 	)

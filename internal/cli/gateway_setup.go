@@ -329,32 +329,35 @@ func saveLocalGateway(ctx context.Context, gw *gatewayConfig, stderr io.Writer) 
 	return gw.ensure(ctx, stderr)
 }
 
-// gatewayAgentModels lists a gateway's models for a launch. When no account
-// can serve them yet, it opens the Accounts page first.
-func gatewayAgentModels(ctx context.Context, gw *gatewayConfig, launch agentLaunch, stdin io.Reader, stderr io.Writer) (agents.Models, error) {
+// gatewayAgentModels lists the models a launch's gateway router serves. When
+// no account can serve them yet, it opens the Accounts page first. The
+// gateway's default router chooses its models on the first launch, and on
+// each `dari setup <agent>`.
+func gatewayAgentModels(ctx context.Context, gw *gatewayConfig, baseURL string, launch agentLaunch, stdin io.Reader, stderr io.Writer) (agents.Models, error) {
 	if err := gw.ensure(ctx, stderr); err != nil {
 		return agents.Models{}, err
 	}
-	models, err := routerModels(ctx, gw.url, gw.key, launch.name)
+	models, err := routerModels(ctx, baseURL, gw.key, launch.name)
 	if errors.Is(err, errNoProviderCredentials) && agentInputIsTerminal(stdin) {
 		agentStep(stderr, "Connect an account to start")
 		page := accountsPage{client: api.New(gw.url).WithBearer(gw.key), providers: agentSubscriptionProviders(launch.name), gw: gw}
 		if _, err := page.run(ctx, stdin, stderr); err != nil {
 			return agents.Models{}, err
 		}
-		models, err = routerModels(ctx, gw.url, gw.key, launch.name)
+		models, err = routerModels(ctx, baseURL, gw.key, launch.name)
 	}
-	// A local gateway's first launch chooses its models, as a hosted
-	// router's first launch does.
-	if err == nil && gw.local && agentInputIsTerminal(stdin) {
-		if lists, listsErr := fetchGatewayModelLists(ctx, gw); listsErr == nil && !lists.Chosen {
-			if err := chooseGatewayModels(ctx, gw, "", stdin, stderr); err != nil {
-				return agents.Models{}, err
-			}
-			models, err = routerModels(ctx, gw.url, gw.key, launch.name)
+	if err != nil || baseURL != gw.url || !agentInputIsTerminal(stdin) || !(gw.local || launch.reconfigure) {
+		return models, err
+	}
+	if !launch.reconfigure {
+		if lists, listsErr := fetchGatewayModelLists(ctx, gw); listsErr != nil || lists.Chosen {
+			return models, err
 		}
 	}
-	return models, err
+	if err := chooseGatewayModels(ctx, gw, "", stdin, stderr); err != nil {
+		return agents.Models{}, err
+	}
+	return routerModels(ctx, baseURL, gw.key, launch.name)
 }
 
 // gatewayModelConfig is one model of a gateway router's model list.

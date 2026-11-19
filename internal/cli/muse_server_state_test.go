@@ -33,7 +33,7 @@ func TestFreshMachineReusesConfiguredMusePlan(t *testing.T) {
 	for range 2 {
 		t.Setenv("DARI_CONFIG_DIR", t.TempDir())
 		var output strings.Builder
-		id, err := ensureAgentRouter(context.Background(), "muse", agentRoutingAccess{apiURL: server.URL}, strings.NewReader(""), &output)
+		id, err := ensureAgentRouter(context.Background(), "muse", agentRoutingAccess{apiURL: server.URL}, false, strings.NewReader(""), &output)
 		if err != nil {
 			t.Fatal(err)
 		}

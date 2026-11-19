@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -19,7 +20,8 @@ func newRouterApplyCmd(gf *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "apply <router.yaml>",
 		Short: "Create or update a router from a router spec file",
-		Long: "Create or update a router from a router spec file. It updates the router named by --router, " +
+		Long: "Create or update a router from a router spec file. On a gateway it saves the file there, under " +
+			"--router or the file's name. Hosted, it updates the router named by --router, " +
 			"else your org's router with the spec's name, else creates one. Each model is paid for with your " +
 			"subscription, then your org's key, then Dari credits, as the spec's payment.allow permits; " +
 			"an existing router keeps the choices it already made. `dari router get <id> --yaml` prints a " +
@@ -29,6 +31,12 @@ func newRouterApplyCmd(gf *globalFlags) *cobra.Command {
 			spec, err := loadRouterSpec(args[0])
 			if err != nil {
 				return err
+			}
+			if gw, err := routerGateway(cmd); err != nil || gw != nil {
+				if err != nil {
+					return err
+				}
+				return putGatewayRouter(cmd, gw, cmp.Or(routerID, gatewayRouterIDForFile(args[0])), spec)
 			}
 			body := map[string]any{"spec_yaml": spec}
 			if routerID != "" {

@@ -64,7 +64,8 @@ docker run -p 8080:8080 \
 | --- | --- |
 | `DARI_GATEWAY_KEYS` | Required. Comma-separated bearer keys clients authenticate with. |
 | `DARI_GATEWAY_CONFIG` | Router config file. Default `dari-gateway.yaml`. |
-| `DARI_GATEWAY_DB` | SQLite database for subscriptions, Dari Link grants, model lists saved with `dari gateway models`, conversation state, and Activity (each request's log row and, outside ZDR routers, its request and response bodies). Default `dari-gateway.db`. Without `DARI_GATEWAY_ENCRYPTION_KEY` it stores subscription tokens in plaintext; protect it like a secret either way. |
+| `DARI_GATEWAY_ROUTERS_DIR` | Optional. A directory of [router specs](#router-specs), read at startup: each `<id>.yaml` or `<id>.yml` is router `<id>`. |
+| `DARI_GATEWAY_DB` | SQLite database for subscriptions, Dari Link grants, model lists saved with `dari gateway models`, router specs saved through the API, conversation state, and Activity (each request's log row and, outside ZDR routers, its request and response bodies). Default `dari-gateway.db`. Without `DARI_GATEWAY_ENCRYPTION_KEY` it stores subscription tokens in plaintext; protect it like a secret either way. |
 | `DARI_GATEWAY_ENCRYPTION_KEY` | Encrypts the subscription tokens, pending sign-ins, and API keys in the database: a 32-byte key in base64 (`openssl rand -base64 32`). Each value is sealed with AES-256-GCM and bound to its own row, so a copied database, or a token moved into another row, is useless without the key. Keep the key outside the database's storage and backups (a secret manager, not the same disk). To rotate, list the new key first and the old one after a comma, start the gateway once (it re-encrypts everything under the first), then drop the old one. Required for Dari Link: without it the approval page takes nobody's subscriptions or keys. Losing the key loses the stored subscriptions; users connect again. |
 | `DARI_LINK_SESSION_SECRET` | Signs the cookie that remembers the user of Dari Link's approval and connections pages. Unset, each gateway process makes its own, so a restart forgets who connected which plans. Set it on any gateway that serves Dari Link. |
 | `DARI_AUTO_ROUTING_API_KEY` | Optional. Select among a router's models with Dari Auto Routing. |
@@ -102,6 +103,35 @@ providers:                 # endpoints outside the built-in catalog
 Model ids are `provider/model`. Clients send `model: "dari/routing"` to let the router choose, or `model: "dari/model/<id>"` to pin one of its models. A Claude Code subscription serves Anthropic models only for Claude Code itself; a ChatGPT subscription serves OpenAI models for every client. Each coding agent is offered the router's models that a credential can serve it, or its own `agentModels` list (`claude_code`, `codex`, `muse_code`, `opencode`, `pi`, `openclaw`, `hermes`) when the router has one.
 
 `dari gateway models` changes either list on a running gateway, with any gateway key: `dari gateway models --agent codex openai/gpt-6.2-sol`, or no models for the picker. It calls `PUT` and `DELETE /v1/router/models[/<agent>]` (`GET /v1/router/models` reads them). The gateway saves the list in its database and serves it at once in place of the config file's, until `--reset` removes it.
+
+### Router specs
+
+A router spec is a whole router as one YAML file with no credentials, the same file hosted Dari applies:
+
+```yaml
+name: Opus 5.5 + DeepSeek Subagents
+models:
+  - anthropic/claude-opus-5-5
+  - id: deepseek-ai/DeepSeek-V4.1-Flash-1017
+    thinking: [high]
+    provider: opencode-go   # served by this provider, not the one its id names
+roles:
+  main: { model: anthropic/claude-opus-5-5 }
+  subagent: { model: deepseek-ai/DeepSeek-V4.1-Flash-1017, prompt: Be brief. }
+routing: { session_pinning: false, retries: 1 }
+payment: { allow: [subscription, key] }   # without subscription, only API keys pay
+native_compaction: false
+agents: { codex: [openai/gpt-6.1-sol] }
+```
+
+The gateway pays with connected subscriptions when `payment.allow` lists `subscription`, and otherwise with provider API keys; it has no Dari credits. `hosted` settings and a model's `fast` apply only on hosted Dari and are ignored here; `routing.rules` runs only on hosted Dari and is refused. A model's `provider` must be one that serves it, such as `opencode-go` or `fireworks` for the DeepSeek, Kimi, and GLM models.
+
+With any gateway key:
+
+- `PUT /v1/routers/<id>` with `{"spec_yaml": "<the file's text>"}` (or `{"spec": {...}}`) checks the spec, saves it, and serves it at once at `/<id>/v1/...` (`default` at `/v1/...`), in place of any router of that id. It answers `{"id", "name"}`, or 400 with the reason.
+- `GET /v1/routers` lists `{"routers": [{"id", "name", "source"}]}`, `source` being `saved` or `config` (the config file or `DARI_GATEWAY_ROUTERS_DIR`).
+- `GET /v1/routers/<id>` answers the spec as `application/yaml`: a saved or file spec as written, and a config file router as the spec it amounts to.
+- `DELETE /v1/routers/<id>` removes a saved spec, so a config router of that id serves again. Routers from files are changed in their files.
 
 ### Model catalog
 

@@ -86,16 +86,23 @@ func runAgentSetup(ctx context.Context, launch agentLaunch, stdin io.Reader, std
 			names = append(names, name)
 		}
 		slices.Sort(names)
-		return fmt.Errorf("%s and %s are only available for %s", agentSetupCLIFlag, agentRemoveSetupFlag, strings.Join(names, ", "))
+		return fmt.Errorf("--cli, --desktop, and --remove are only available for %s", strings.Join(names, ", "))
 	}
 	if launch.setup() && launch.removeSetup {
-		return fmt.Errorf("use either %s or setup, not both", agentRemoveSetupFlag)
+		return errors.New("use either --remove or --cli/--desktop, not both")
 	}
 	if launch.setupDesktop && app.desktop == "" {
-		return fmt.Errorf("%s has no desktop app; use `dari %s %s`", app.name, launch.name, agentSetupCLIFlag)
+		return fmt.Errorf("%s has no desktop app; use `dari setup %s --cli`", app.name, launch.name)
 	}
-	if len(launch.args) > 0 {
-		return errors.New("setup does not take agent arguments")
+	// Setup takes the launch's router choice (--router, --pay, --default),
+	// which the routing step below reads, and no agent arguments.
+	if probe := launch; true {
+		if _, err := takeAgentRouterChoice(&probe); err != nil {
+			return err
+		}
+		if len(probe.args) > 0 {
+			return errors.New("setup does not take agent arguments")
+		}
 	}
 	if launch.removeSetup {
 		// Removal undoes both, whichever was set up.
@@ -120,7 +127,7 @@ func runAgentSetup(ctx context.Context, launch agentLaunch, stdin io.Reader, std
 	}
 	target, applies := app.target(launch.setupCLI, launch.setupDesktop)
 	agentStep(stderr, fmt.Sprintf("Dari is set up in %s, starting on %s; %s", target, startModel(launch.name, models), applies))
-	agentStep(stderr, fmt.Sprintf("Run `dari %s %s` again after changing the router's models, or `dari %s %s` to undo", launch.name, launch.setupFlags(), launch.name, agentRemoveSetupFlag))
+	agentStep(stderr, fmt.Sprintf("Run `dari setup %s` to change models, then `%s` again; `dari setup %s --remove` undoes it", launch.name, launch.setupCommand(), launch.name))
 	return nil
 }
 
@@ -353,8 +360,8 @@ func moveAgentSetups(ctx context.Context, stdin io.Reader, stderr io.Writer) {
 		}
 		target, applies := agentApps[name].target(cli, desktop)
 		if err := moveAgentSetup(ctx, name, cli, desktop, stdin, stderr); err != nil {
-			flags := agentLaunch{setupCLI: cli, setupDesktop: desktop}.setupFlags()
-			agentPrintln(stderr, fmt.Sprintf("%s still routes the old way (%v); run `dari %s %s`", capitalized(target), err, name, flags))
+			command := agentLaunch{name: name, setupCLI: cli, setupDesktop: desktop}.setupCommand()
+			agentPrintln(stderr, fmt.Sprintf("%s still routes the old way (%v); run `%s`", capitalized(target), err, command))
 			continue
 		}
 		agentStep(stderr, capitalized(target)+" moved; "+applies)

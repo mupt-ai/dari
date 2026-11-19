@@ -386,7 +386,7 @@ for arg in "$@"; do printf 'ARG %s\n' "$arg" >> "` + record + `"; done
 	launch := agentLaunch{name: "hermes", args: []string{"chat", "-q", "hello"}}
 
 	var stderr strings.Builder
-	if code := runAgentLaunch(context.Background(), launch, strings.NewReader(""), io.Discard, &stderr); code != 1 || !strings.Contains(stderr.String(), "run `dari hermes --setup-cli` first") {
+	if code := runAgentLaunch(context.Background(), launch, strings.NewReader(""), io.Discard, &stderr); code != 1 || !strings.Contains(stderr.String(), "run `dari setup hermes --cli` first") {
 		t.Fatalf("launch before setup: exit %d, stderr %q", code, stderr.String())
 	}
 	if _, err := os.Stat(record); !os.IsNotExist(err) {

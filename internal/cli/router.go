@@ -21,9 +21,9 @@ func init() {
 		cmd := &cobra.Command{
 			Use:     "router",
 			Aliases: []string{"routers"},
-			Short:   "Manage Dari Routers for the current org",
-			GroupID: hostedGroup,
+			Short:   "Manage routers: your hosted org's, or on a local or self-hosted gateway, a router spec file each",
 		}
+		cmd.PersistentFlags().Bool("hosted", false, "Act on your hosted Dari org even while agents route through a gateway")
 		cmd.AddCommand(
 			newRouterListCmd(gf),
 			newRouterGetCmd(gf),
@@ -37,6 +37,7 @@ func init() {
 			newRouterPublishCmd(gf),
 			newRouterUnpublishCmd(gf),
 			newRouterDeleteCmd(gf),
+			newRouterPullCmd(gf),
 		)
 		root.AddCommand(cmd)
 	})
@@ -45,9 +46,15 @@ func init() {
 func newRouterListCmd(gf *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List routers for the current org",
+		Short: "List routers for the current org, or on the gateway",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if gw, err := routerGateway(cmd); err != nil || gw != nil {
+				if err != nil {
+					return err
+				}
+				return listGatewayRouters(cmd, gw)
+			}
 			var resp map[string]any
 			if err := orgKeyRequest(cmd, gf, http.MethodGet, "/v1/organizations/current/routers", nil, &resp); err != nil {
 				return err
@@ -64,6 +71,12 @@ func newRouterGetCmd(gf *globalFlags) *cobra.Command {
 		Short: "Show one router for the current org; --yaml prints it as a router spec",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if gw, err := routerGateway(cmd); err != nil || gw != nil {
+				if err != nil {
+					return err
+				}
+				return getGatewayRouter(cmd, gw, args[0])
+			}
 			routerID, err := normalizeRouterID(args[0])
 			if err != nil {
 				return err
@@ -604,6 +617,12 @@ func newRouterDeleteCmd(gf *globalFlags) *cobra.Command {
 		Short: "Soft-delete a router for the current org",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if gw, err := routerGateway(cmd); err != nil || gw != nil {
+				if err != nil {
+					return err
+				}
+				return deleteGatewayRouter(cmd, gw, args[0])
+			}
 			routerID, err := normalizeRouterID(args[0])
 			if err != nil {
 				return err

@@ -8,6 +8,7 @@ import { SqliteLinkStore } from "./sqlite_store.js";
 import { createSelfHostedPlatform } from "../self_host/platform.js";
 import { PrefixStore } from "../self_host/prefix_store.js";
 import { RouterModelStore } from "../self_host/router_models.js";
+import { RouterSpecStore } from "../self_host/router_specs.js";
 import { SecretBox } from "../self_host/secret_box.js";
 import { SessionPinStore } from "../self_host/session_pin_store.js";
 import { SubscriptionStore } from "../self_host/subscriptions/index.js";
@@ -31,6 +32,7 @@ function gateway(responses: Array<() => Response>, signIn?: LinkSignIn) {
     config: parseGatewayConfig({ routers: { default: { models: ["anthropic/claude-sonnet-5-5", "openai/gpt-5.5"] } } }),
     activity: new ActivityStore(db),
     routerModels: new RouterModelStore(db),
+    routerSpecs: new RouterSpecStore(db),
     gatewayKeys: ["k"],
     subscriptions,
     links,
@@ -178,6 +180,7 @@ test("without an encryption key the page connects nothing and says why", async (
     config: parseGatewayConfig({ routers: { default: { models: ["openai/gpt-5.5"] } } }),
     activity: new ActivityStore(db),
     routerModels: new RouterModelStore(db),
+    routerSpecs: new RouterSpecStore(db),
     gatewayKeys: ["k"],
     subscriptions,
     links,

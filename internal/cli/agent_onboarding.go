@@ -286,6 +286,7 @@ func ensureAgentRouter(
 	ctx context.Context,
 	agent string,
 	access agentRoutingAccess,
+	reconfigure bool,
 	stdin io.Reader,
 	stderr io.Writer,
 ) (string, error) {
@@ -319,6 +320,18 @@ func ensureAgentRouter(
 	})
 	if !ok {
 		return "", errors.New("organization has no default router")
+	}
+	// `dari setup <agent>` opens the picker on the router the agent uses.
+	if reconfigure && agentInputIsTerminal(stdin) {
+		target, found := findAgentRouter(routers, func(router agentRouter) bool {
+			return slices.Contains(router.CodingAgents, setup.codingAgent)
+		})
+		if !found && !setup.ownsRouter() {
+			target, found = defaultRouter, true
+		}
+		if found {
+			return target.ID, reconfigureAgentRouter(ctx, client, setup, target, stdin, stderr)
+		}
 	}
 	if assigned, ok := setup.assignedAgentRouter(routers); ok {
 		return configured(assigned.ID)
@@ -513,6 +526,62 @@ func ensureAgentRouter(
 		}
 	}
 	return routerID, nil
+}
+
+// reconfigureAgentRouter opens the models picker on a router the agent
+// already uses, starting from its models, and saves what is chosen.
+func reconfigureAgentRouter(ctx context.Context, client *api.Client, setup agentSetup, router agentRouter, stdin io.Reader, stderr io.Writer) error {
+	models, err := listAgentModels(ctx, client)
+	if err != nil {
+		return err
+	}
+	models = includeCurrentAgentModels(models, router)
+	connected, err := connectedAgentSubscriptions(ctx, client, setup.subscriptions)
+	if err != nil {
+		return err
+	}
+	subscribed := slices.DeleteFunc(connected, func(subscription agentSubscriptionProvider) bool {
+		return !slices.Contains(router.SubscriptionProviders, subscription.routerProvider)
+	})
+	keyContext, err := loadAgentKeyContext(ctx, client, subscribed)
+	if err != nil {
+		return err
+	}
+	suggestion, err := fetchAgentModelSuggestion(ctx, client, setup.suggestion)
+	if err != nil {
+		return err
+	}
+	modelProviders := agentProvidersFor(models, modelIDs(models))
+	maps.Copy(modelProviders, router.ModelProviders)
+	picked, err := pickAgentModels(ctx, client, stdin, stderr, agentModelPickInput{
+		title:             "Choose Models for " + setup.label,
+		intro:             "Checked models are the ones " + router.Name + " uses now.",
+		models:            models,
+		defaultIDs:        router.EnabledModels,
+		currentLevels:     router.ModelThinkingLevels,
+		recommendedLevels: suggestion.levels,
+		keyContext:        keyContext,
+		modelProviders:    modelProviders,
+		askPinning:        true,
+		pinningDefault:    router.SessionPinning,
+	})
+	if err != nil {
+		return err
+	}
+	choices := keyContext.withSources(models, picked.choices, modelProviders)
+	agentStep(stderr, "Paying with "+agentSourceSummary(models, choices))
+	keys := keyContext.keys(choices)
+	body := agentRouterUpdateBody(router, models, choices)
+	keys.apply(body.ModelProviders, body.ProviderKeySources)
+	body.ProviderCredentialIDs = keys.credentialIDs
+	body.SubscriptionAPIFallbackModels = keys.fallbackModels(router.SubscriptionAPIFallbackModels, body.EnabledModels)
+	body.SessionPinning = picked.sessionPinning
+	body.SubscriptionModels = subscriptionModelsFor(router, choices, keyContext.subscriptions)
+	if _, err := putAgentRouter(ctx, client, router.ID, body); err != nil {
+		return err
+	}
+	agentStep(stderr, router.Name+" updated")
+	return nil
 }
 
 // agentModelPickInput is what the models picker starts from.

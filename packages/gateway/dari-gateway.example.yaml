@@ -3,6 +3,10 @@
 # Each router is an endpoint: `default` serves /v1/..., any other router
 # serves /<router>/v1/.... Clients send `model: dari/routing` to let the
 # router choose, or `model: dari/model/<id>` to pin one of its models.
+#
+# A router can also be a router spec, the YAML file hosted Dari applies:
+# saved with PUT /v1/routers/<id>, or read from DARI_GATEWAY_ROUTERS_DIR as
+# <id>.yaml. A spec is served in place of the router of its id here.
 routers:
   default:
     models:

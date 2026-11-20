@@ -337,59 +337,63 @@ func gatewayAgentModels(ctx context.Context, gw *gatewayConfig, baseURL string, 
 	if err := gw.ensure(ctx, stderr); err != nil {
 		return agents.Models{}, err
 	}
-	// A router from a spec file or template may need OpenCode Go, which
-	// serves any agent, besides the agent's own plans.
-	plans := agentSubscriptionProviders(launch.name)
-	if baseURL != gw.url {
-		plans = templateSubscriptions(agentSetups[launch.name])
-	}
+	terminal := agentInputIsTerminal(stdin)
 	models, err := routerModels(ctx, baseURL, gw.key, launch.name)
-	if errors.Is(err, errNoProviderCredentials) && agentInputIsTerminal(stdin) {
-		agentStep(stderr, "Connect an account to start")
-		page := accountsPage{client: api.New(gw.url).WithBearer(gw.key), providers: plans, gw: gw}
-		if _, err := page.run(ctx, stdin, stderr); err != nil {
-			return agents.Models{}, err
-		}
-		models, err = routerModels(ctx, baseURL, gw.key, launch.name)
+	nothingServed := errors.Is(err, errNoProviderCredentials)
+	if err != nil && !nothingServed {
+		return agents.Models{}, err
 	}
-	if err == nil && baseURL != gw.url && agentInputIsTerminal(stdin) {
-		// A router from a spec file or template needs an account for each
-		// of its models; offer to connect the missing ones now.
-		if lists, listsErr := fetchGatewayRouterModelLists(ctx, gw, baseURL); listsErr == nil {
-			var missing []string
-			for _, model := range lists.offered(launch.name) {
-				if !slices.Contains(models.Enabled, model.ID) {
-					missing = append(missing, model.ID)
-				}
-			}
-			if len(missing) > 0 {
-				agentStep(stderr, "Connect an account for "+strings.Join(missing, ", "))
-				page := accountsPage{client: api.New(gw.url).WithBearer(gw.key), providers: plans, gw: gw}
-				if _, err := page.run(ctx, stdin, stderr); err != nil && !errors.Is(err, errAgentChoiceCanceled) {
-					return agents.Models{}, err
-				}
-				models, err = routerModels(ctx, baseURL, gw.key, launch.name)
-			}
-		}
+	// With nothing served, or on a router from a spec file or template,
+	// whose every model matters, show what each missing model needs and
+	// connect it here.
+	if terminal && (nothingServed || baseURL != gw.url) {
+		models, err = connectGatewayMissing(ctx, gw, baseURL, launch, stdin, stderr)
 	}
-	if err != nil || baseURL != gw.url || !agentInputIsTerminal(stdin) || !(gw.local || launch.reconfigure) {
-		return models, err
+	if errors.Is(err, errNoProviderCredentials) {
+		return agents.Models{}, gatewayNothingServedError(ctx, gw, baseURL, launch.name, err)
+	}
+	if err != nil {
+		return agents.Models{}, err
+	}
+	if baseURL != gw.url || !terminal || !(gw.local || launch.reconfigure) {
+		return models, nil
 	}
 	if !launch.reconfigure {
 		if lists, listsErr := fetchGatewayModelLists(ctx, gw); listsErr != nil || lists.Chosen {
-			return models, err
+			return models, nil
 		}
 	}
 	if err := chooseGatewayModels(ctx, gw, "", stdin, stderr); err != nil {
 		return agents.Models{}, err
 	}
-	return routerModels(ctx, baseURL, gw.key, launch.name)
+	// The models just chosen are wanted: connect what they still need.
+	models, err = connectGatewayMissing(ctx, gw, baseURL, launch, stdin, stderr)
+	if errors.Is(err, errNoProviderCredentials) {
+		return agents.Models{}, gatewayNothingServedError(ctx, gw, baseURL, launch.name, err)
+	}
+	return models, err
+}
+
+// gatewayNothingServedError says which accounts or keys would serve the
+// router's models, for a launch with no terminal to connect them in.
+func gatewayNothingServedError(ctx context.Context, gw *gatewayConfig, baseURL, agent string, err error) error {
+	lists, listsErr := fetchGatewayRouterModelLists(ctx, gw, baseURL)
+	if listsErr != nil {
+		return err
+	}
+	lines := gatewayMissingLines(gatewayMissingModels(gw, agent, lists.offered(agent), nil))
+	if len(lines) == 0 {
+		return err
+	}
+	return errors.New(strings.Join(lines, "\n"))
 }
 
 // gatewayModelConfig is one model of a gateway router's model list.
 type gatewayModelConfig struct {
 	ID       string   `json:"id"`
 	Thinking []string `json:"thinking,omitempty"`
+	// Provider is who serves the model when a router spec names one.
+	Provider string `json:"provider,omitempty"`
 }
 
 // gatewayModelLists are the model lists of a gateway's default router: its
@@ -642,13 +646,12 @@ func reportGatewayModels(ctx context.Context, gw *gatewayConfig, baseURL, agent 
 		reportAgentModels(agent, models, false, stderr)
 		return models
 	}
-	for _, model := range lists.offered(agent) {
-		if !slices.Contains(models.Enabled, model.ID) {
-			models.Unavailable = append(models.Unavailable, model.ID)
-		}
+	missing := gatewayMissingModels(gw, agent, lists.offered(agent), models.Enabled)
+	for _, need := range missing {
+		models.Unavailable = append(models.Unavailable, need.model)
 	}
-	if len(models.Unavailable) > 0 {
-		agentPrintln(stderr, fmt.Sprintf("Not available until their provider has an account or API key: %s. Connect one with `dari accounts`.", strings.Join(models.Unavailable, ", ")))
+	for _, line := range gatewayMissingLines(missing) {
+		agentPrintln(stderr, line)
 	}
 	reportAgentModels(agent, models, false, stderr)
 	return models

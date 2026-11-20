@@ -1943,6 +1943,17 @@ func TestSubscriptionModelsForARouterUpdate(t *testing.T) {
 	if got == nil || !slices.Equal(*got, []string{"anthropic/opus", "openai/sol"}) {
 		t.Fatalf("served = %v", got)
 	}
+	// A model moved to a gateway key leaves the list: the gateway is not a
+	// subscription provider, so the router would refuse it there.
+	gateway := agentModelSource{kind: "key", provider: "vercel-ai-gateway", modelProvider: "anthropic"}
+	moved := subscriptionModelsFor(
+		agentRouter{SubscriptionProviders: []string{"anthropic", "opencode-go"}, SubscriptionModels: []string{"anthropic/opus", "deepseek/flash"}},
+		[]agentModelChoice{{ID: "anthropic/opus", Source: gateway}, {ID: "deepseek/flash", Source: sub("opencode-go")}},
+		map[string]string{"opencode-go": "OpenCode Go"},
+	)
+	if moved == nil || !slices.Equal(*moved, []string{"deepseek/flash"}) {
+		t.Fatalf("moved = %v", moved)
+	}
 	// Every offered model moved off the subscription: an empty list, not nil.
 	none := subscriptionModelsFor(agentRouter{SubscriptionProviders: []string{"anthropic"}}, []agentModelChoice{{ID: "anthropic/opus", Source: credits("anthropic")}}, map[string]string{"anthropic": "Claude Code"})
 	if none == nil || len(*none) != 0 {

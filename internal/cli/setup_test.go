@@ -111,7 +111,7 @@ func TestSetupAppliesASpecFileAndMakesItTheDefault(t *testing.T) {
 	if err := os.WriteFile(file, []byte("name: Mine\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	routerID, err := useHostedRouter(context.Background(), client, "claude", agentRouterChoice{name: file, makeDefault: true}, io.Discard)
+	routerID, err := useHostedRouter(context.Background(), client, "claude", agentRouterChoice{name: file, makeDefault: true}, strings.NewReader(""), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}

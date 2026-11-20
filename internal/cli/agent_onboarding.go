@@ -209,8 +209,8 @@ type agentRouterSubscriptionUpdateRequest struct {
 // the chosen models its subscriptions serve. A model of a provider whose
 // subscription the picker offered is served when the subscription was picked
 // for it; a model of any other subscription provider stays as the router has
-// it. Nil, which keeps the router's choice, when the picker offered none of
-// the router's subscriptions.
+// it, unless it now runs on a gateway key. Nil, which keeps the router's
+// choice, when the picker offered none of the router's subscriptions.
 func subscriptionModelsFor(router agentRouter, choices []agentModelChoice, offered map[string]string) *[]string {
 	if !slices.ContainsFunc(router.SubscriptionProviders, func(provider string) bool { _, ok := offered[provider]; return ok }) {
 		return nil
@@ -221,7 +221,9 @@ func subscriptionModelsFor(router agentRouter, choices []agentModelChoice, offer
 			if choice.Source.kind == "subscription" {
 				served = append(served, choice.ID)
 			}
-		} else if slices.Contains(router.SubscriptionModels, choice.ID) {
+		} else if choice.Source.native() && slices.Contains(router.SubscriptionModels, choice.ID) {
+			// A model moved to a gateway key is no longer its provider's, so
+			// no subscription serves it.
 			served = append(served, choice.ID)
 		}
 	}
@@ -1462,7 +1464,7 @@ func (p *agentPickerState) handleKey(key string) (done, canceled bool) {
 			}
 			for _, row := range p.rows {
 				if row.selected && len(row.sources) > 0 && row.sources[row.source].action() {
-					p.warning = row.model.DisplayName + ": press enter to " + row.sources[row.source].label + ", or choose another way to pay."
+					p.warning = row.model.DisplayName + ": press enter to " + row.sources[row.source].label + ", or choose another option."
 					return false, false
 				}
 			}

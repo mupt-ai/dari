@@ -239,11 +239,12 @@ func chooseTemplatePayments(
 	modelProviders map[string]string,
 	preferred map[string]agentModelSource,
 	keyContext agentKeyContext,
+	warning string,
 ) ([]agentModelChoice, agentKeyContext, error) {
 	// What each model is on; setting something up moves it there, without
 	// touching preferred, which quitting puts back.
 	current := maps.Clone(preferred)
-	cursor, warning := 0, ""
+	cursor := 0
 	var note []string
 	if experiment.Description != "" {
 		note = []string{experiment.Description}
@@ -430,12 +431,10 @@ func applyAgentExperiment(
 	}
 	var router agentRouter
 	path := "/v1/organizations/current/experimental-routers/" + url.PathEscape(experiment.Flag) + "/apply"
-	if err := client.Do(ctx, http.MethodPost, path, nil, &router); err != nil {
-		return "", api.HumanError(err)
+	if err := postRouterSetup(ctx, client, agent, path, nil, &router, stdin, stderr); err != nil {
+		return "", err
 	}
 	assigned := slices.Contains(router.CodingAgents, setup.codingAgent)
-	// --pay and --default answer the picker's questions without it.
-	choose := terminal && !assigned && len(experiment.pay) == 0 && !experiment.makeDefault
 
 	models, err := listAgentModels(ctx, client)
 	if err != nil {
@@ -480,58 +479,84 @@ func applyAgentExperiment(
 		}
 	}
 
-	// The template fixes its models, and may pin some to the main agent or
-	// subagents, so only how each is paid for is asked.
-	var choices []agentModelChoice
-	quit := false
-	if choose {
-		choices, keyContext, err = chooseTemplatePayments(ctx, client, stdin, stderr, setup, experiment, router, models, modelProviders, preferred, keyContext)
-		quit = errors.Is(err, errAgentChoiceCanceled) || errors.Is(err, errAgentQuit)
-		if err != nil && !quit {
-			return "", err
-		}
-		// A new copy keeps what apply set up, as a launch without a terminal
-		// does; nothing the user chose is lost.
-		if quit && !copied {
-			return "", errAgentQuit
-		}
-	}
-	if !choose || quit {
-		choices = nil
+	// What the copy pays with when nothing is asked: its earlier choices,
+	// then the launch's --pay answers.
+	settled := func() []agentModelChoice {
+		var choices []agentModelChoice
 		for _, id := range router.EnabledModels {
-			choices = append(choices, agentModelChoice{
-				ID:     id,
-				Levels: router.ModelThinkingLevels[id],
-				Source: preferred[id],
-			})
+			choices = append(choices, agentModelChoice{ID: id, Levels: router.ModelThinkingLevels[id], Source: preferred[id]})
+		}
+		return keyContext.withSources(models, choices, modelProviders)
+	}
+	answered, payErr := withTemplatePay(experiment.pay, settled(), models, modelProviders, keyContext, setup, router)
+	unpaid := slices.ContainsFunc(answered, func(choice agentModelChoice) bool { return choice.Source.kind == "" })
+	// The template fixes its models, and may pin some to the main agent or
+	// subagents, so only how each is paid for is asked: on a first launch
+	// with no answers given, and whenever something still can't be paid
+	// for, so a launch in a terminal never just fails.
+	ask := terminal && !assigned && len(experiment.pay) == 0 && !experiment.makeDefault
+	choose := ask || (terminal && (unpaid || payErr != nil))
+	if payErr != nil && !choose {
+		return "", payErr
+	}
+	start, warning := preferred, ""
+	if payErr != nil {
+		warning = payErr.Error()
+	} else if choose && !ask {
+		start = map[string]agentModelSource{}
+		for _, choice := range answered {
+			start[choice.ID] = choice.Source
 		}
 	}
-	choices = keyContext.withSources(models, choices, modelProviders)
-	if !choose {
-		if choices, err = withTemplatePay(experiment.pay, choices, models, modelProviders, keyContext, setup, router); err != nil {
-			return "", err
+	for {
+		choices, quit := answered, false
+		if choose {
+			choices, keyContext, err = chooseTemplatePayments(ctx, client, stdin, stderr, setup, experiment, router, models, modelProviders, start, keyContext, warning)
+			quit = errors.Is(err, errAgentChoiceCanceled) || errors.Is(err, errAgentQuit)
+			if err != nil && !quit {
+				return "", err
+			}
+			// A new copy keeps what apply set up, as a launch without a
+			// terminal does; nothing the user chose is lost.
+			if quit && !copied {
+				return "", errAgentQuit
+			}
+			if quit {
+				// Quitting puts back how the copy paid before the sync.
+				choices = settled()
+			} else {
+				choices = keyContext.withSources(models, choices, modelProviders)
+			}
 		}
-	}
-	for _, choice := range choices {
-		if choice.Source.kind == "" {
+		if unpaid := slices.IndexFunc(choices, func(choice agentModelChoice) bool { return choice.Source.kind == "" }); unpaid >= 0 {
 			if quit {
 				return "", errAgentQuit
 			}
-			provider := modelProviders[choice.ID]
-			return "", fmt.Errorf("%s can't be paid for in %s: %s", choice.ID, experiment.Name,
-				templatePayHelp(choice.ID, provider, nil, setup, router, keyContext))
+			id := choices[unpaid].ID
+			return "", fmt.Errorf("%s can't be paid for in %s: %s", id, experiment.Name,
+				templatePayHelp(id, modelProviders[id], nil, setup, router, keyContext))
 		}
-	}
-	if !quit {
-		agentStep(stderr, "Paying with "+agentSourceSummary(models, choices))
-	}
-	// Quitting puts back how the copy paid before the sync.
-	router, err = saveExperimentPayments(ctx, client, router, models, choices, keyContext)
-	if err != nil {
-		return "", err
-	}
-	if quit {
-		return "", errAgentQuit
+		if !quit {
+			agentStep(stderr, "Paying with "+agentSourceSummary(models, choices))
+		}
+		saved, saveErr := saveExperimentPayments(ctx, client, router, models, choices, keyContext)
+		if saveErr != nil && choose && !quit {
+			// Back to the page with what went wrong, to choose again.
+			dropAgentStep("Paying with ")
+			start, warning = map[string]agentModelSource{}, saveErr.Error()
+			for _, choice := range choices {
+				start[choice.ID] = choice.Source
+			}
+			continue
+		}
+		if saveErr != nil {
+			return "", saveErr
+		}
+		if quit {
+			return "", errAgentQuit
+		}
+		router = saved
+		break
 	}
 	if experiment.makeDefault && !assigned {
 		if err := assignAgentRouter(ctx, client, router.ID, setup.codingAgent); err != nil {
@@ -540,7 +565,7 @@ func applyAgentExperiment(
 		agentStep(stderr, experiment.Name+" is now your default for "+setup.label)
 		return router.ID, nil
 	}
-	if assigned || !choose {
+	if !ask {
 		agentStep(stderr, "Using template "+experiment.Name)
 		return router.ID, nil
 	}

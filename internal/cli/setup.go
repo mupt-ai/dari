@@ -93,7 +93,7 @@ func newSetupCmd() *cobra.Command {
 // useHostedRouter sets up a router spec file (applying it to the router with
 // its name) or uses one of the organization's routers, by ID. --default makes
 // it the agent's.
-func useHostedRouter(ctx context.Context, client *api.Client, agent string, choice agentRouterChoice, stderr io.Writer) (string, error) {
+func useHostedRouter(ctx context.Context, client *api.Client, agent string, choice agentRouterChoice, stdin io.Reader, stderr io.Writer) (string, error) {
 	if len(choice.pay) > 0 {
 		return "", errors.New("--pay goes with a template; a router file or ID keeps the router's payment")
 	}
@@ -104,8 +104,8 @@ func useHostedRouter(ctx context.Context, client *api.Client, agent string, choi
 			return "", err
 		}
 		var applied agentRouter
-		if err := client.Do(ctx, http.MethodPost, "/v1/organizations/current/routers/apply", map[string]any{"spec_yaml": spec}, &applied); err != nil {
-			return "", api.HumanError(err)
+		if err := postRouterSetup(ctx, client, agent, "/v1/organizations/current/routers/apply", map[string]any{"spec_yaml": spec}, &applied, stdin, stderr); err != nil {
+			return "", err
 		}
 		routerID = applied.ID
 		agentStep(stderr, "Using "+applied.Name)
@@ -117,6 +117,36 @@ func useHostedRouter(ctx context.Context, client *api.Client, agent string, choi
 		agentStep(stderr, "It is now your default for "+agentSetups[agent].label)
 	}
 	return routerID, nil
+}
+
+// postRouterSetup posts a router setup. Where the API refuses it because
+// nothing can pay for a model yet, a launch in a terminal offers to connect a
+// subscription or add a key right there, then tries again.
+func postRouterSetup(ctx context.Context, client *api.Client, agent, path string, body, out any, stdin io.Reader, stderr io.Writer) error {
+	for {
+		err := client.Do(ctx, http.MethodPost, path, body, out)
+		if err == nil {
+			return nil
+		}
+		// 424: not a bad spec, but one nothing can pay for yet. (402 is the
+		// API's out-of-credits answer.)
+		unpaid := api.AsHTTPError(err) != nil && api.AsHTTPError(err).Status == http.StatusFailedDependency
+		if !unpaid || !agentInputIsTerminal(stdin) {
+			return api.HumanError(err)
+		}
+		details := []string{"  " + ansiRed + api.HumanError(err).Error() + ansiReset, ""}
+		picked, pickErr := runAgentChoiceTUI(stdin, stderr, "This Router Can't Run Yet", details, []agentChoiceOption{
+			{label: "Connect a Subscription or Add an API Key"},
+			{label: "Quit"},
+		})
+		if pickErr != nil || picked == 1 {
+			return errAgentQuit
+		}
+		page := accountsPage{client: client, providers: templateSubscriptions(agentSetups[agent]), hosted: true}
+		if _, pageErr := page.run(ctx, stdin, stderr); pageErr != nil && !errors.Is(pageErr, errAgentChoiceCanceled) {
+			return pageErr
+		}
+	}
 }
 
 var gatewayRouterIDPattern = regexp.MustCompile(`[^A-Za-z0-9_-]+`)

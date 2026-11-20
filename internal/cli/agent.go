@@ -264,7 +264,7 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 	case choice.name == "":
 		routerID, err = ensureAgentRouter(ctx, launch.name, access, launch.reconfigure, stdin, stderr)
 	case choice.file() || choice.routerID():
-		routerID, err = useHostedRouter(ctx, client, launch.name, choice, stderr)
+		routerID, err = useHostedRouter(ctx, client, launch.name, choice, stdin, stderr)
 	default:
 		var experiment *agentExperiment
 		if experiment, err = lookupAgentExperiment(ctx, client, choice); err == nil {

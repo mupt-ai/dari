@@ -80,11 +80,10 @@ type ProviderCredential = {
  * neither are left out. A coding agent with its own model list on the router
  * is served that list.
  *
- * A Dari Link token resolves only the default router, served on its grant's
- * subscriptions alone and never an API key. Its `enabled_models` are the
- * router's models a granted plan serves, and `link_models` adds every other
- * catalog model of those plans' providers, which a request may name
- * explicitly. A child token serves only its one model.
+ * A Dari Link token is served apart from any router, on its grant's plans and
+ * API keys alone: `dari/routing` chooses among every catalog model they
+ * serve, which a request may also name explicitly. It comes in on the default
+ * router's path. A child token serves only its models.
  */
 export async function resolveSelfHostedRouter(
   deps: SelfHostedResolverDeps,
@@ -98,19 +97,18 @@ export async function resolveSelfHostedRouter(
   if (grant !== null && request.routerId !== DEFAULT_ROUTER_ALIAS) {
     throw new HttpError(403, "Dari Link tokens serve only the default router.", "permission_denied");
   }
-  const router = servedRouter(deps, request.routerId);
-  if (router === undefined) {
+  const router = grant === null ? servedRouter(deps, request.routerId) : undefined;
+  if (grant === null && router === undefined) {
     throw new HttpError(404, `Router ${request.routerId} is not configured on this gateway.`, "router_not_found");
   }
 
-  const routed = routerModelsFor(router, request.clientHarness);
+  const routed = router === undefined ? [] : routerModelsFor(router, request.clientHarness);
   const granted = grant === null
     ? []
     : deps.subscriptions.withIds(grant.credentialIds);
   // A grant's API keys, by the provider or gateway each is a key for.
-  const grantedKeys = new Map(
-    (grant === null ? [] : deps.links.keysWithIds(grant.credentialIds)).map((key) => [key.provider, key.apiKey]),
-  );
+  const grantKeys = grant === null ? [] : deps.links.keysWithIds(grant.credentialIds);
+  const grantedKeys = new Map(grantKeys.map((key) => [key.provider, key.apiKey]));
   const listed = grant === null ? routed : grantModels(grant, routed, granted, grantedKeys);
   const now = new Date();
   const servable = grant === null ? undefined : new Set(grant.credentialIds);
@@ -118,7 +116,7 @@ export async function resolveSelfHostedRouter(
   const exhausted = new Set<SubscriptionProvider>();
   for (const provider of new Set(listed.map(modelProvider))) {
     // A grant uses the subscriptions its user chose, whatever the router allows.
-    const subscription = router.subscriptions || grant !== null
+    const subscription = router?.subscriptions || grant !== null
       ? subscriptionProviderFor(provider, request.clientHarness)
       : null;
     const active = subscription === null
@@ -193,17 +191,13 @@ export async function resolveSelfHostedRouter(
     const missing = [...credentials].filter(([, credential]) => credential == null).map(([provider]) => provider);
     throw unavailableRouterError(request.routerId, exhausted, missing);
   }
-  // `dari/routing` chooses among the router's own models; a grant may also
-  // name any other catalog model its plans serve.
-  const routedIds = new Set(routed.map((model) => model.id));
-  const enabled = grant === null || grant.pins !== undefined ? models : models.filter((model) => routedIds.has(model.id));
-
   const resolved: ResolvedRouter = {
-    router_id: request.routerId,
+    // A grant's requests and prefix state are its own, apart from any router.
+    router_id: grant?.id ?? request.routerId,
     organization_id: SELF_HOSTED_ORGANIZATION_ID,
     api_key_id: grant === null ? `gateway_key_${keyIndex! + 1}` : grant.id,
     attributed_user_id: SELF_HOSTED_USER_ID,
-    enabled_models: enabled.map((model) => model.id),
+    enabled_models: models.map((model) => model.id),
     routing_listed: deps.autoRouting,
     provider_keys: {},
     provider_key_sources: {},
@@ -214,6 +208,7 @@ export async function resolveSelfHostedRouter(
       ? {}
       : {
           link_models: models.map((model) => model.id),
+          link_key_credential_ids: Object.fromEntries(grantKeys.map((key) => [key.provider, key.id])),
           link_key_gateways: Object.fromEntries(
             [...grantedKeys.keys()].filter((provider) => gatewayFor(provider) !== undefined).map((gateway) => {
               const endpoint = deps.config.providers[gateway];
@@ -226,21 +221,21 @@ export async function resolveSelfHostedRouter(
             : grant.pins.map((pin) => ({ model: pin.model, thinking: isReasoningEffort(pin.thinking) ? pin.thinking : null })),
           link_tags: grant.tags ?? null,
         }),
-    zdr: router.zdr,
+    zdr: router?.zdr ?? false,
     speculative_routing: false,
-    session_pinning: router.sessionPinning,
-    native_compaction: router.nativeCompaction,
-    primary_retries: router.retries,
+    session_pinning: router?.sessionPinning ?? false,
+    native_compaction: router?.nativeCompaction ?? false,
+    ...(router === undefined ? {} : { primary_retries: router.retries }),
     routing_strategy: "dari",
     custom_config: null,
     // A grant's request is served the model it named, never a role's.
-    ...(grant === null ? { role_models: router.roleModels, role_prompts: router.rolePrompts } : {}),
+    ...(router === undefined ? {} : { role_models: router.roleModels, role_prompts: router.rolePrompts }),
     evals: [],
     model_thinking_levels: thinkingLevels(listed),
     model_prices: {},
     model_configs: {},
     prefix_hits: deps.prefixHits({
-      routerId: request.routerId,
+      routerId: grant?.id ?? request.routerId,
       prefixHashes: request.prefixHashes ?? [],
       ...(request.conversationId ? { conversationId: request.conversationId } : {}),
     }),

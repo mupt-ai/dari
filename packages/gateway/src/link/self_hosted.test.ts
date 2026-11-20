@@ -183,12 +183,11 @@ test("a ChatGPT plan serves a plain chat/completions app on its grant", async ()
       usage: [],
     }],
   });
-  // The router's model first, then every other catalog model the plan serves.
-  // Each by the name a request uses, with the catalog's display name.
+  // Every catalog model the plan serves, apart from any router, each by the
+  // name a request uses, with the catalog's display name.
   const named = tokens.models as unknown as Array<{ id: string; name: string }>;
   expect(named).toContainEqual({ id: "dari/model/openai/gpt-6.1-sol", name: "GPT-6.1 Sol" });
   const models = named.map((model) => model.id);
-  expect(models[0]).toBe("dari/model/openai/gpt-5.5");
   expect(models).toContain("dari/model/openai/gpt-5.6-sol");
   expect(models.every((model) => model.startsWith("dari/model/openai/"))).toBe(true);
 
@@ -224,10 +223,10 @@ test("a ChatGPT plan serves a plain chat/completions app on its grant", async ()
   expect(claude.status).toBe(424);
   expect((await errorOf(claude)).code).toBe("model_not_granted");
   // A bare catalog id is that exact model; a name no catalog model has fails.
-  const bare = await chat(gateway, tokens.access_token!, "gpt-5.5");
+  const bare = await chat(gateway, tokens.access_token!, "gpt-6.1-sol");
   expect(bare.status).toBe(200);
-  expect(bare.headers.get("x-dari-selected-model")).toBe("openai/gpt-5.5");
-  expect(gateway.calls.at(-1)!.model).toBe("gpt-5.5");
+  expect(bare.headers.get("x-dari-selected-model")).toBe("openai/gpt-6.1-sol");
+  expect(gateway.calls.at(-1)!.model).toBe("gpt-6.1-sol");
   const unknown = await chat(gateway, tokens.access_token!, "gpt-nonexistent");
   expect(unknown.status).toBe(424);
   expect((await errorOf(unknown)).code).toBe("model_not_granted");
@@ -448,14 +447,14 @@ test("a child token serves its models, each at its pinned level, and nothing els
   const child = await childToken({
     ...client,
     accessToken: tokens.access_token!,
-    models: [{ model: "dari/model/openai/gpt-5.6-sol", thinking: "high" }, { model: "gpt-5.5" }],
+    models: [{ model: "dari/model/openai/gpt-5.6-sol", thinking: "high" }, { model: "gpt-6.1-sol" }],
     expiresIn: 12 * 60 * 60,
     tags: { run: "r1", trial: "7" },
   });
   expect(child.accessToken).toStartWith("dlk_ct_");
   expect(child.models).toEqual([
     { model: "dari/model/openai/gpt-5.6-sol", thinking: "high" },
-    { model: "dari/model/openai/gpt-5.5", thinking: null },
+    { model: "dari/model/openai/gpt-6.1-sol", thinking: null },
   ]);
   expect(child.expiresAt - Date.now()).toBeGreaterThan(11 * 60 * 60_000);
 
@@ -466,13 +465,13 @@ test("a child token serves its models, each at its pinned level, and nothing els
   expect(served.headers.get("x-dari-thinking-level")).toBe("high");
   expect(gateway.calls.at(-1)).toMatchObject({ model: "gpt-5.6-sol", effort: "high" });
   // Its unpinned model is served at whatever the request asks.
-  const unpinned = await chat(gateway, child.accessToken, "dari/model/openai/gpt-5.5", { reasoning_effort: "low" });
+  const unpinned = await chat(gateway, child.accessToken, "dari/model/openai/gpt-6.1-sol", { reasoning_effort: "low" });
   expect(unpinned.status).toBe(200);
-  expect(gateway.calls.at(-1)).toMatchObject({ model: "gpt-5.5", effort: "low" });
+  expect(gateway.calls.at(-1)).toMatchObject({ model: "gpt-6.1-sol", effort: "low" });
 
   const listed = await fetch(`${gateway.baseUrl}/v1/models`, { headers: { authorization: `Bearer ${child.accessToken}` } });
   expect(((await listed.json()) as { data: Array<{ id: string }> }).data.map((model) => model.id).sort())
-    .toEqual(["dari/model/openai/gpt-5.5", "dari/model/openai/gpt-5.6-sol"]);
+    .toEqual(["dari/model/openai/gpt-5.6-sol", "dari/model/openai/gpt-6.1-sol"]);
 
   // No other model, no routing, no grant, no minting, no refreshing.
   for (const model of ["dari/model/openai/gpt-5.4", "dari/routing"]) {
@@ -481,7 +480,7 @@ test("a child token serves its models, each at its pinned level, and nothing els
     expect((await errorOf(other)).code).toBe("model_not_granted");
   }
   expect((await fetch(`${gateway.baseUrl}/v1/link/grant`, { headers: { authorization: `Bearer ${child.accessToken}` } })).status).toBe(403);
-  expect(await childToken({ ...client, accessToken: child.accessToken, models: [{ model: "openai/gpt-5.5" }] }).catch((error: unknown) => error))
+  expect(await childToken({ ...client, accessToken: child.accessToken, models: [{ model: "openai/gpt-6.1-sol" }] }).catch((error: unknown) => error))
     .toMatchObject({ code: "invalid_grant" });
   expect(await refreshTokens({ ...client, refreshToken: child.accessToken }).catch((error: unknown) => error))
     .toMatchObject({ code: "invalid_grant" });
@@ -490,14 +489,14 @@ test("a child token serves its models, each at its pinned level, and nothing els
   expect(await childToken({
     ...client,
     accessToken: tokens.access_token!,
-    models: [{ model: "openai/gpt-5.5" }, { model: "anthropic/claude-sonnet-5-5" }],
+    models: [{ model: "openai/gpt-6.1-sol" }, { model: "anthropic/claude-sonnet-5-5" }],
   }).catch((error: unknown) => error)).toMatchObject({ code: "invalid_target" });
   const mismatched = await token(gateway, {
     grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
     client_id: clientId,
     subject_token: tokens.access_token!,
     subject_token_type: "urn:ietf:params:oauth:token-type:access_token",
-    model: "openai/gpt-5.5",
+    model: "openai/gpt-6.1-sol",
     thinking: "high",
   });
   expect(mismatched.status).toBe(200);
@@ -508,7 +507,7 @@ test("a child token serves its models, each at its pinned level, and nothing els
       ["client_id", clientId],
       ["subject_token", tokens.access_token!],
       ["subject_token_type", "urn:ietf:params:oauth:token-type:access_token"],
-      ["model", "openai/gpt-5.5"],
+      ["model", "openai/gpt-6.1-sol"],
       ["model", "openai/gpt-5.6-sol"],
       ["thinking", "high"],
       ["thinking", "low"],
@@ -534,14 +533,14 @@ test("a link token's named model is served exactly as the client asked", async (
   const { tokens } = await link(gateway, [claude!, codex!], { client: "claude_code" });
   const access = tokens.access_token!;
 
-  const unnamed = await chat(gateway, access, "dari/model/openai/gpt-5.5");
+  const unnamed = await chat(gateway, access, "dari/model/openai/gpt-6.1-sol");
   expect(unnamed.status).toBe(200);
   expect(unnamed.headers.get("x-dari-thinking-level")).toBe("default");
-  expect(gateway.calls.at(-1)).toMatchObject({ model: "gpt-5.5", effort: null });
+  expect(gateway.calls.at(-1)).toMatchObject({ model: "gpt-6.1-sol", effort: null });
 
-  const named = await chat(gateway, access, "dari/model/openai/gpt-5.5", { reasoning_effort: "high" });
+  const named = await chat(gateway, access, "dari/model/openai/gpt-6.1-sol", { reasoning_effort: "high" });
   expect(named.headers.get("x-dari-thinking-level")).toBe("high");
-  expect(gateway.calls.at(-1)).toMatchObject({ model: "gpt-5.5", effort: "high" });
+  expect(gateway.calls.at(-1)).toMatchObject({ model: "gpt-6.1-sol", effort: "high" });
 
   // Claude Code's own requests: a budget is forwarded, a concrete model id is
   // that model and never a routed substitute, and one no plan serves fails.
@@ -628,7 +627,7 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
     await response.text();
   };
   const messages = [{ role: "user", content: "hello" }];
-  const gpt = "dari/model/openai/gpt-5.5";
+  const gpt = "dari/model/openai/gpt-6.1-sol";
   await send("/v1/chat/completions", { model: gpt, messages }, "run=r1,trial=1");
   await send("/v1/chat/completions", { model: gpt, messages, stream: true }, "run=r1,trial=2");
   await send("/v1/responses", { model: gpt, input: "hello", reasoning: { effort: "high" } }, "run=r1,trial=3");
@@ -672,9 +671,9 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
     cache_write_tokens: 2,
     complete_through: expect.any(String),
     by_model: [
-      { model: "openai/gpt-5.5", thinking: "default", requests: 4, errors: 0, input_tokens: 40, output_tokens: 8, cache_read_tokens: 16, cache_write_tokens: 0 },
+      { model: "openai/gpt-6.1-sol", thinking: "default", requests: 4, errors: 0, input_tokens: 40, output_tokens: 8, cache_read_tokens: 16, cache_write_tokens: 0 },
       { model: "anthropic/claude-sonnet-5-5", thinking: "default", requests: 2, errors: 0, input_tokens: 20, output_tokens: 4, cache_read_tokens: 8, cache_write_tokens: 2 },
-      { model: "openai/gpt-5.5", thinking: "high", requests: 1, errors: 0, input_tokens: 10, output_tokens: 2, cache_read_tokens: 4, cache_write_tokens: 0 },
+      { model: "openai/gpt-6.1-sol", thinking: "high", requests: 1, errors: 0, input_tokens: 10, output_tokens: 2, cache_read_tokens: 4, cache_write_tokens: 0 },
     ],
   });
   // With nothing in flight, every request until moments ago is counted.
@@ -692,7 +691,7 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
     requests: 1,
     by_model: [{ model: "anthropic/claude-sonnet-5-5", requests: 1 }],
   });
-  expect(await filtered("?tag=run%3Dr2")).toMatchObject({ requests: 1, by_model: [{ model: "openai/gpt-5.5" }] });
+  expect(await filtered("?tag=run%3Dr2")).toMatchObject({ requests: 1, by_model: [{ model: "openai/gpt-6.1-sol" }] });
   expect((await filtered(`?since=${encodeURIComponent(new Date(Date.now() + 60_000).toISOString())}`)).requests).toBe(0);
   expect((await filtered(`?until=${encodeURIComponent(new Date(Date.now() + 60_000).toISOString())}`)).requests).toBe(7);
 
@@ -720,7 +719,7 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
   };
   const storage = { gatewayUrl: gateway.baseUrl, clientId, loadTokens: () => stored, saveTokens: (next: LinkTokenSet) => { stored = next; } };
   const viaClient = await linkUsage({ ...storage, tags: { run: "r1", trial: "3" } });
-  expect(viaClient).toMatchObject({ requests: 1, by_model: [{ model: "openai/gpt-5.5", thinking: "high" }] });
+  expect(viaClient).toMatchObject({ requests: 1, by_model: [{ model: "openai/gpt-6.1-sol", thinking: "high" }] });
   // Or through the app's own linkFetch, sharing its refresh.
   const viaFetcher = await linkUsage({ fetcher: linkFetch(storage), groupByTag: "trial", tags: { run: "r2" } });
   expect(viaFetcher.by_tag).toMatchObject([{ value: "9", requests: 1 }]);
@@ -857,7 +856,7 @@ test("the link client authorizes, exchanges, and refreshes for an app", async ()
   expect(params).toMatchObject({ state, scope: "route", code_challenge: pkceChallenge(codeVerifier) });
   const code = await approve(gateway, clientId, codeVerifier, [gateway.planIds[0]!], { state, scope: "route" });
   const tokens = await exchange({ gatewayUrl: gateway.baseUrl, clientId, redirectUri: REDIRECT_URI, code, codeVerifier });
-  expect(tokens.models.map((model) => model.id)).toContain("dari/model/openai/gpt-5.5");
+  expect(tokens.models.map((model) => model.id)).toContain("dari/model/openai/gpt-6.1-sol");
 
   // Storage is the source of truth: an expired set is refreshed before the
   // call, and the new set saved.
@@ -932,14 +931,14 @@ test("a server app runs on the refresh token alone", async () => {
   const call = () => linkFetch({ ...client, refreshToken })("/v1/chat/completions", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: "gpt-5.5", messages: [{ role: "user", content: "hi" }] }),
+    body: JSON.stringify({ model: "gpt-6.1-sol", messages: [{ role: "user", content: "hi" }] }),
   });
   expect((await Promise.all([call(), call()])).map((response) => response.status)).toEqual([200, 200]);
   const held = await linkGrant({ ...client, refreshToken });
   expect(held).toMatchObject({ grantId, state: "ready", plans: [{ id: gateway.planIds[0], kind: "openai_codex", state: "ready" }] });
   expect(held.manageUrl).toEndWith(`#${grantId}`);
-  const child = await childToken({ ...client, refreshToken, models: [{ model: "gpt-5.5" }], tags: { trial: "1" } });
-  expect((await chat(gateway, child.accessToken, "gpt-5.5")).status).toBe(200);
+  const child = await childToken({ ...client, refreshToken, models: [{ model: "gpt-6.1-sol" }], tags: { trial: "1" } });
+  expect((await chat(gateway, child.accessToken, "gpt-6.1-sol")).status).toBe(200);
   expect(refreshes).toBe(1);
   // An access token near its expiry is replaced.
   await linkGrant({ ...client, refreshToken, now: () => Date.now() + 2 * 3_600_000 });
@@ -952,7 +951,7 @@ test("a server app runs on the refresh token alone", async () => {
   await revokeToken({ ...client, token: refreshToken });
   const gone = await linkGrant({ ...client, refreshToken }).catch((error: unknown) => error);
   expect(gone).toMatchObject({ code: "grant_revoked", unlinked: true });
-  expect(await childToken({ ...client, refreshToken: `${refreshToken}x`, models: [{ model: "gpt-5.5" }] }).catch((error: unknown) => error))
+  expect(await childToken({ ...client, refreshToken: `${refreshToken}x`, models: [{ model: "gpt-6.1-sol" }] }).catch((error: unknown) => error))
     .toMatchObject({ code: "invalid_grant", unlinked: true });
 });
 
@@ -968,8 +967,8 @@ test("a child token is minted from token storage, by the names a request uses", 
     expiresAt: 0,
   } as LinkTokenSet;
   const storage = { loadTokens: () => stored, saveTokens: (next: LinkTokenSet) => { stored = next; } };
-  const child = await childToken({ ...client, ...storage, models: [{ model: "gpt-5.5" }] });
-  expect(child.models).toEqual([{ model: "dari/model/openai/gpt-5.5", thinking: null }]);
+  const child = await childToken({ ...client, ...storage, models: [{ model: "gpt-6.1-sol" }] });
+  expect(child.models).toEqual([{ model: "dari/model/openai/gpt-6.1-sol", thinking: null }]);
   expect(stored!.accessToken).not.toBe(tokens.access_token);
 
   // A dated Claude snapshot names its catalog model; its child lists it for
@@ -987,7 +986,7 @@ test("a child token is minted from token storage, by the names a request uses", 
   }
 
   stored = null;
-  expect(await childToken({ ...client, ...storage, models: [{ model: "gpt-5.5" }] }).catch((error: unknown) => error))
+  expect(await childToken({ ...client, ...storage, models: [{ model: "gpt-6.1-sol" }] }).catch((error: unknown) => error))
     .toMatchObject({ code: "not_linked" });
 });
 
@@ -1227,7 +1226,7 @@ test("an API key the user adds on the page serves a plain app on its grant", asy
   expect(response.status).toBe(200);
   expect(gateway.calls.at(-1)).toMatchObject({ kind: "api_key", token: "sk-ant-api03-test-1234", model: "claude-sonnet-5-5" });
   // It serves only its own provider's models.
-  expect((await errorOf(await chat(gateway, tokens.access_token!, "dari/model/openai/gpt-5.5"))).code).toBe("model_not_granted");
+  expect((await errorOf(await chat(gateway, tokens.access_token!, "dari/model/openai/gpt-6.1-sol"))).code).toBe("model_not_granted");
 });
 
 // A gateway key serves whatever model of its gateway the app names, and an
@@ -1246,9 +1245,9 @@ test("the stub gives its user API keys, and a gateway key serves any model of it
     expect.objectContaining({ title: "OpenAI", provider: "openai" }),
     expect.objectContaining({ title: "OpenRouter", provider: "openrouter", model_prefix: "openrouter/", models: [] }),
   ]);
-  const direct = await chat(gateway, tokens.access_token!, "gpt-5.5");
+  const direct = await chat(gateway, tokens.access_token!, "gpt-6.1-sol");
   expect(direct.status).toBe(200);
-  expect(gateway.calls.at(-1)).toMatchObject({ kind: "api_key", token: "stub-key-openai", path: "/openai/chat/completions", model: "gpt-5.5" });
+  expect(gateway.calls.at(-1)).toMatchObject({ kind: "api_key", token: "stub-key-openai", path: "/openai/chat/completions", model: "gpt-6.1-sol" });
   // No key for Vercel's gateway on this grant.
   expect((await errorOf(await chat(gateway, tokens.access_token!, "dari/model/vercel-ai-gateway/openai/gpt-5"))).code).toBe("model_not_granted");
 
@@ -1292,9 +1291,9 @@ test("the stub gateway runs as a process and reports the calls it served", async
   // The stub's own app, approved by its user: what Connect with Dari hands a page.
   const connected = (await (await fetch(`${started.controlUrl}/connect`, { method: "POST" })).json()) as { code: string; code_verifier: string };
   const tokens = await exchange({ ...started.app, code: connected.code, codeVerifier: connected.code_verifier });
-  const response = await chat({ baseUrl: started.app.gatewayUrl }, tokens.accessToken, "dari/model/openai/gpt-5.5");
+  const response = await chat({ baseUrl: started.app.gatewayUrl }, tokens.accessToken, "dari/model/openai/gpt-6.1-sol");
   expect(response.status).toBe(200);
   const served = (await (await fetch(`${started.controlUrl}/served`)).json()) as { calls: Array<Record<string, unknown>> };
-  expect(served.calls).toEqual([expect.objectContaining({ kind: "openai_codex", model: "gpt-5.5", path: "/backend-api/codex/responses" })]);
+  expect(served.calls).toEqual([expect.objectContaining({ kind: "openai_codex", model: "gpt-6.1-sol", path: "/backend-api/codex/responses" })]);
 });
 

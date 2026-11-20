@@ -13,8 +13,9 @@
      their usage limits; `resets_at` (and Retry-After) says when the first one
      is back, when that is known.
    - `grant_budget_exhausted`: the grant used the most tokens the user
-     allowed it in a window (per five hours or per week); `resets_at` (and
-     Retry-After) says when enough of the window rolls off to serve again.
+     allowed it in a window (per five hours or per week), or every plan and
+     key it shares is at its monthly spend limit; `resets_at` (and
+     Retry-After) says when it serves again.
    - `subscription_client_mismatch`: the granted plans serve only another
      client (a Claude Code plan serves only Claude Code itself); the user must
      grant a plan that serves any app, such as a ChatGPT plan.
@@ -88,6 +89,15 @@ export function budgetExhausted(resetsAt: Date): LinkUnavailable {
   return {
     code: "grant_budget_exhausted",
     message: `This Dari Link grant used the most tokens the user allowed this app. It is back at ${resetsAt.toISOString()}.`,
+    resets_at: resetsAt.toISOString(),
+  };
+}
+
+/** Every plan and key of the grant is at the monthly spend limit its user set. */
+export function limitsReached(resetsAt: Date): LinkUnavailable {
+  return {
+    code: "grant_budget_exhausted",
+    message: `Every plan and API key of this Dari Link grant is at the monthly spend limit the user set. It is back at ${resetsAt.toISOString()}.`,
     resets_at: resetsAt.toISOString(),
   };
 }

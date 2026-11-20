@@ -11,7 +11,9 @@
      race, and later reuse revokes the grant. A confidential client, which
      also proves its secret, keeps its own;
    - a child token serves only its models, for up to twelve hours, and cannot
-     refresh, mint, or read the grant.
+     refresh, mint, or read the grant;
+   - a personal endpoint's key does not expire: it is what a user pastes into
+     an app that takes their own key, and acts as the grant's access token.
 
    Revoking the grant stops them all at once. */
 
@@ -25,13 +27,19 @@ import type {
   LinkChildToken,
   LinkClient,
   LinkCodeExchange,
+  LinkLimit,
   LinkTokenExchange,
   LinkTokens,
   LinkUsage,
   LinkUsageQuery,
   LinkUsageTotals,
 } from "../platform/platform.js";
-import { LINK_ACCESS_TOKEN_PREFIX, LINK_CHILD_TOKEN_PREFIX } from "../protocol/input/router_model.js";
+import {
+  LINK_ACCESS_TOKEN_PREFIX,
+  LINK_CHILD_TOKEN_PREFIX,
+  LINK_KEY_TOKEN_PREFIX,
+  isLinkToken,
+} from "../protocol/input/router_model.js";
 
 export const LINK_ACCESS_TOKEN_TTL_MS = 60 * 60_000;
 export const LINK_CODE_TTL_MS = 10 * 60_000;
@@ -47,7 +55,7 @@ export const LINK_CODE_PREFIX = "dlk_code_";
 export const LINK_CLIENT_SECRET_PREFIX = "dlk_cs_";
 
 export type LinkRevoker = "user" | "app" | "reuse_detected";
-export type LinkTokenKind = "access" | "refresh" | "child";
+export type LinkTokenKind = "access" | "refresh" | "child" | "key";
 export type LinkPin = { model: string; thinking: string | null };
 
 export type ActiveLinkGrant = {
@@ -55,6 +63,7 @@ export type ActiveLinkGrant = {
   clientId: string;
   credentialIds: ReadonlySet<string>;
   budget: LinkBudget[];
+  limits: LinkLimit[];
   // Set for a child token: the models it serves, each with its pinned thinking.
   pins?: LinkPin[];
   tags?: Record<string, string>;
@@ -79,8 +88,9 @@ export type LinkTokenRecord = {
   grantId: string;
   clientId: string;
   credentialIds: string[];
-  // The grant's budget.
+  // The grant's budget and monthly spend limits.
   budget: LinkBudget[];
+  limits: LinkLimit[];
   revokedAt: number | null;
   revokedBy: string | null;
   // False when the platform no longer serves the grant for a reason of its
@@ -326,24 +336,23 @@ export function linkGrants(repo: LinkRepo) {
 
 export type LinkGrants = ReturnType<typeof linkGrants>;
 
-const TOKEN_PREFIX: Record<LinkTokenKind, string> = {
+export const TOKEN_PREFIX: Record<LinkTokenKind, string> = {
   access: LINK_ACCESS_TOKEN_PREFIX,
   child: LINK_CHILD_TOKEN_PREFIX,
+  key: LINK_KEY_TOKEN_PREFIX,
   refresh: LINK_REFRESH_TOKEN_PREFIX,
 };
 
-/** Whether a presented key is shaped like an access or child token. */
-export function isLinkToken(token: string): boolean {
-  return token.startsWith(LINK_ACCESS_TOKEN_PREFIX) || token.startsWith(LINK_CHILD_TOKEN_PREFIX);
-}
-
-/** What a stored access or child token is now; null when it serves nothing. */
+/** What a stored access, child, or key token is now; null when it serves nothing. */
 export function linkTokenAuth(record: LinkTokenRecord | null, now: Date): LinkTokenAuth | null {
   if (record === null || record.kind === "refresh") return null;
   if (record.revokedAt !== null) {
     return { status: "revoked", revokedBy: record.revokedBy, revokedAt: new Date(record.revokedAt).toISOString() };
   }
-  if (record.expiresAt === null || record.expiresAt <= now.getTime()) return { status: "expired" };
+  // An endpoint's key never expires; every other token does.
+  if (record.kind !== "key" && (record.expiresAt === null || record.expiresAt <= now.getTime())) {
+    return { status: "expired" };
+  }
   if (!record.usable) return null;
   const pins = record.kind === "child" ? record.pins ?? [] : undefined;
   // A child token that names no model serves nothing.
@@ -355,6 +364,7 @@ export function linkTokenAuth(record: LinkTokenRecord | null, now: Date): LinkTo
       clientId: record.clientId,
       credentialIds: new Set(record.credentialIds),
       budget: record.budget,
+      limits: record.limits,
       ...(pins === undefined ? {} : { pins }),
       ...(record.tags === null ? {} : { tags: record.tags }),
     },

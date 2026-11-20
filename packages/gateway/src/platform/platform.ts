@@ -171,8 +171,35 @@ export type LinkPlatform = {
    * is the client's (RFC 7009). Unknown tokens are ignored.
    */
   revokeToken(request: LinkClient & { token: string }): Promise<void>;
-  /** The user's grants that are not revoked. */
-  grants(apiKey: string): Promise<LinkGrant[]>;
+  /**
+   * The user's grants that are not revoked, app connections and personal
+   * endpoints alike, each with every granted credential's spend this month.
+   * `apiKey` is a personal management key, or on hosted Dari the user's session.
+   */
+  grants(apiKey: string): Promise<LinkManagedGrant[]>;
+  /** The plans and API keys the user can grant. */
+  plans(apiKey: string): Promise<LinkSubscription[]>;
+  /**
+   * A personal endpoint: a grant the user makes for themselves on their chosen
+   * plans and keys, and its key, returned this once, which an app that takes
+   * the user's own key calls with. Throws HttpError(400) for a plan or key the
+   * user does not have, or for bad limits.
+   */
+  createEndpoint(request: {
+    apiKey: string;
+    name: string;
+    credentialIds: string[];
+    limits: LinkLimit[];
+  }): Promise<{ grant: LinkManagedGrant; key: string }>;
+  /** Rename one of the user's endpoints or change its plans; false when they have none by that id. */
+  updateEndpoint(request: { apiKey: string; grantId: string; name?: string; credentialIds?: string[] }): Promise<boolean>;
+  /** Another key for one of the user's endpoints, returned this once; null when they have none by that id. */
+  issueEndpointKey(request: { apiKey: string; grantId: string }): Promise<string | null>;
+  /**
+   * Replace one of the user's grants' monthly spend limits (empty removes
+   * them); false when the user has no grant by that id.
+   */
+  setLimits(request: { apiKey: string; grantId: string; limits: LinkLimit[] }): Promise<boolean>;
   /** Revoke one of the user's grants; false when it has none by that id. */
   revokeGrant(request: { apiKey: string; grantId: string }): Promise<boolean>;
   /**
@@ -241,6 +268,8 @@ export type LinkApprovalPage = {
   disconnect(subject: string, grantId: string): Promise<boolean>;
   /** Replace one of the user's grants' budget (empty removes it); false when they have none by that id. */
   setBudget(subject: string, grantId: string, budget: LinkBudget[]): Promise<boolean>;
+  /** Replace one of the user's grants' monthly spend limits; false when they have none by that id. */
+  setLimits(subject: string, grantId: string, limits: LinkLimit[]): Promise<boolean>;
 };
 
 /**
@@ -286,6 +315,22 @@ export type LinkConnect = {
  * are counted.
  */
 export type LinkBudget = { windowMinutes: number; maxTokens: number };
+
+/**
+ * The most a grant may spend on one of its plans or API keys in a calendar
+ * month (UTC), in US dollars. A plan's spend is what its requests would have
+ * cost at API prices. See link/budget.ts.
+ */
+export type LinkLimit = { credentialId: string; monthlyUsd: number };
+
+/** A granted plan or key's spend this month, and its limit when it has one. */
+export type LinkSpend = {
+  credentialId: string;
+  spentUsd: number;
+  monthlyUsd: number | null;
+  // At its limit: the grant leaves it out until the month ends.
+  reached: boolean;
+};
 
 /** A budget window as it stands for a grant. */
 export type LinkBudgetStanding = {
@@ -384,11 +429,18 @@ export type LinkChildToken = {
 export type LinkGrant = {
   id: string;
   clientId: string;
+  // The app's name, or a personal endpoint's own.
   appName: string;
+  // A grant the user made for themselves, called with a key (see `createEndpoint`).
+  endpoint: boolean;
   credentialIds: string[];
   createdAt: string;
   budget: LinkBudget[];
+  limits: LinkLimit[];
 };
+
+/** A grant as its user manages it. */
+export type LinkManagedGrant = LinkGrant & { spend: LinkSpend[] };
 
 /** A grant as its app sees it: the granted subscriptions themselves. */
 export type LinkUsageQuery = {
@@ -426,8 +478,9 @@ export type LinkUsage = LinkUsageTotals & {
   completeThrough: string | null;
 };
 
-export type LinkGrantDetail = Omit<LinkGrant, "credentialIds" | "budget"> & {
+export type LinkGrantDetail = Omit<LinkGrant, "credentialIds" | "budget" | "limits"> & {
   budget: LinkBudgetStanding[];
+  spend: LinkSpend[];
   subscriptions: LinkSubscription[];
 };
 
@@ -536,7 +589,7 @@ export type RequestRecord = {
   tags: RequestTags;
   // Set for a Dari Link token's request: its grant, and the thinking the
   // provider was sent (as X-Dari-Thinking-Level reports it).
-  link?: { grantId: string; thinking: string | null };
+  link?: { grantId: string; thinking: string | null; costUsd: number | null; credentialId: string | null };
   // The router's non-secret routing settings, for embedders that compare or
   // replay routing decisions.
   router: RequestRecordRouter;

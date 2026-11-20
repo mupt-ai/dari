@@ -8,7 +8,7 @@ import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 
 import { type SecretBox, openWithoutKey } from "../self_host/secret_box.js";
-import type { LinkBudget, LinkUsageQuery } from "../platform/platform.js";
+import type { LinkBudget, LinkLimit, LinkUsageQuery } from "../platform/platform.js";
 import type { BudgetUse, LinkTokenCounts } from "./budget.js";
 import {
   type LinkAppRecord,
@@ -19,7 +19,7 @@ import {
   type LinkTokenRecord,
   type LinkUsageRecord,
 } from "./grants.js";
-import type { LinkGrantRecord, LinkStore } from "./service.js";
+import { LINK_PERSONAL_CLIENT_ID, type LinkGrantRecord, type LinkStore } from "./service.js";
 
 type AppRow = {
   client_id: string;
@@ -34,6 +34,7 @@ type GrantRow = {
   credential_ids: string;
   created_at: number;
   budget: string | null;
+  limits: string | null;
   subject: string | null;
 };
 
@@ -59,18 +60,19 @@ type TokenRow = {
   client_id: string;
   credential_ids: string;
   budget: string | null;
+  limits: string | null;
   revoked_at: number | null;
   revoked_by: string | null;
 };
 
 const TOKEN_WITH_GRANT = `SELECT link_tokens.kind, link_tokens.expires_at, link_tokens.rotated_at, link_tokens.model,
     link_tokens.thinking, link_tokens.pins, link_tokens.tags, link_grants.id AS grant_id, link_grants.client_id,
-    link_grants.credential_ids, link_grants.budget, link_grants.revoked_at, link_grants.revoked_by
+    link_grants.credential_ids, link_grants.budget, link_grants.limits, link_grants.revoked_at, link_grants.revoked_by
   FROM link_tokens JOIN link_grants ON link_grants.id = link_tokens.grant_id
   WHERE link_tokens.token_hash = ?`;
 
 const LIVE_GRANTS = `SELECT link_grants.id, link_grants.client_id, link_grants.credential_ids, link_grants.created_at,
-    link_grants.budget, link_grants.subject, link_apps.name AS app_name
+    link_grants.budget, link_grants.limits, link_grants.subject, COALESCE(link_grants.name, link_apps.name) AS app_name
   FROM link_grants JOIN link_apps ON link_apps.client_id = link_grants.client_id
   WHERE link_grants.revoked_at IS NULL`;
 
@@ -127,8 +129,19 @@ export class SqliteLinkStore implements LinkStore {
     if (!grantColumns.some((column) => column.name === "subject")) db.run("ALTER TABLE link_grants ADD COLUMN subject TEXT");
     const tokenColumns = db.query<{ name: string }, []>("PRAGMA table_info(link_tokens)").all();
     if (!tokenColumns.some((column) => column.name === "pins")) db.run("ALTER TABLE link_tokens ADD COLUMN pins TEXT");
+    // A personal endpoint's name, and each grant's monthly spend limits.
+    if (!grantColumns.some((column) => column.name === "name")) db.run("ALTER TABLE link_grants ADD COLUMN name TEXT");
+    if (!grantColumns.some((column) => column.name === "limits")) db.run("ALTER TABLE link_grants ADD COLUMN limits TEXT");
     const usageColumns = db.query<{ name: string }, []>("PRAGMA table_info(link_usage)").all();
     if (!usageColumns.some((column) => column.name === "status")) db.run("ALTER TABLE link_usage ADD COLUMN status TEXT");
+    // What a request cost, and the plan or key that served it.
+    if (!usageColumns.some((column) => column.name === "cost_usd")) db.run("ALTER TABLE link_usage ADD COLUMN cost_usd REAL");
+    if (!usageColumns.some((column) => column.name === "credential_id")) db.run("ALTER TABLE link_usage ADD COLUMN credential_id TEXT");
+    // The app every personal endpoint's grant belongs to.
+    db.run(
+      "INSERT OR IGNORE INTO link_apps (client_id, name, redirect_uris, client_secret_hash, created_at) VALUES (?, ?, '[]', NULL, 0)",
+      [LINK_PERSONAL_CLIENT_ID, "Personal Endpoint"],
+    );
     // API keys users added on the approval page: one per user and provider.
     db.run(`CREATE TABLE IF NOT EXISTS link_api_keys (
       id TEXT PRIMARY KEY,
@@ -210,20 +223,25 @@ export class SqliteLinkStore implements LinkStore {
 
   budgetUses(grantId: string, since: number): BudgetUse[] {
     return this.db
-      .query<UsageTokenRow & { received_at: number }, [string, number]>(
-        `SELECT received_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+      .query<UsageTokenRow & { received_at: number; cost_usd: number | null; credential_id: string | null }, [string, number]>(
+        `SELECT received_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd, credential_id
          FROM link_usage WHERE grant_id = ? AND received_at > ?`,
       )
       .all(grantId, since)
-      .map((row) => ({ at: new Date(row.received_at), ...tokenCounts(row) }));
+      .map((row) => ({
+        at: new Date(row.received_at),
+        ...tokenCounts(row),
+        costUsd: row.cost_usd ?? 0,
+        credentialId: row.credential_id,
+      }));
   }
 
   /** Record what one of a grant's requests used; a repeated request id is ignored. */
   recordUsage(entry: LinkUsageEntry): void {
     this.db.run(
       `INSERT OR IGNORE INTO link_usage (request_id, grant_id, received_at, model, thinking, tags,
-         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, status, cost_usd, credential_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         entry.requestId,
         entry.grantId,
@@ -236,6 +254,8 @@ export class SqliteLinkStore implements LinkStore {
         entry.cacheReadTokens,
         entry.cacheWriteTokens,
         entry.status,
+        entry.costUsd,
+        entry.credentialId,
       ],
     );
   }
@@ -321,7 +341,31 @@ export class SqliteLinkStore implements LinkStore {
     return id;
   }
 
-  updateGrant(grantId: string, change: { credentialIds?: string[]; budget?: LinkBudget[] }): boolean {
+  createEndpoint(request: Parameters<LinkStore["createEndpoint"]>[0]): string {
+    const id = `lgr_${randomUUID().replaceAll("-", "")}`;
+    this.db.transaction(() => {
+      this.db.run(
+        `INSERT INTO link_grants (id, client_id, credential_ids, created_at, limits, subject, name)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          LINK_PERSONAL_CLIENT_ID,
+          JSON.stringify(request.credentialIds),
+          request.now,
+          request.limits.length === 0 ? null : JSON.stringify(request.limits),
+          request.subject,
+          request.name,
+        ],
+      );
+      this.insertTokens(id, [request.key], request.now);
+    })();
+    return id;
+  }
+
+  updateGrant(
+    grantId: string,
+    change: { credentialIds?: string[]; budget?: LinkBudget[]; limits?: LinkLimit[]; name?: string },
+  ): boolean {
     return this.db.transaction(() => {
       const changed = this.grant(grantId) !== null;
       if (changed && change.credentialIds !== undefined) {
@@ -332,6 +376,15 @@ export class SqliteLinkStore implements LinkStore {
           change.budget.length === 0 ? null : JSON.stringify(change.budget),
           grantId,
         ]);
+      }
+      if (changed && change.limits !== undefined) {
+        this.db.run("UPDATE link_grants SET limits = ? WHERE id = ?", [
+          change.limits.length === 0 ? null : JSON.stringify(change.limits),
+          grantId,
+        ]);
+      }
+      if (changed && change.name !== undefined) {
+        this.db.run("UPDATE link_grants SET name = ? WHERE id = ?", [change.name, grantId]);
       }
       return changed;
     })();
@@ -382,6 +435,7 @@ export class SqliteLinkStore implements LinkStore {
           clientId: row.client_id,
           credentialIds: parseIds(row.credential_ids),
           budget: parseBudget(row.budget),
+          limits: parseLimits(row.limits),
           revokedAt: row.revoked_at,
           revokedBy: row.revoked_by,
           usable: true,
@@ -464,6 +518,10 @@ export type LinkUsageEntry = {
   cacheWriteTokens: number;
   // The request's outcome, as the request record's `status`.
   status: string;
+  // What it cost in US dollars (a plan's at API prices), and the plan or key
+  // that served it.
+  costUsd: number | null;
+  credentialId: string | null;
 };
 
 type UsageTokenRow = {
@@ -506,7 +564,12 @@ function grantRecord(row: GrantRow & { app_name: string }): LinkGrantRecord {
     credentialIds: parseIds(row.credential_ids),
     createdAt: new Date(row.created_at).toISOString(),
     budget: parseBudget(row.budget),
+    limits: parseLimits(row.limits),
   };
+}
+
+function parseLimits(value: string | null): LinkLimit[] {
+  return value === null ? [] : JSON.parse(value) as LinkLimit[];
 }
 
 function parseIds(value: string): string[] {

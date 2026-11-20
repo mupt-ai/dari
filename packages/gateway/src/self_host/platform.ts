@@ -102,6 +102,8 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
           cacheReadTokens: summary.cache_read_tokens ?? 0,
           cacheWriteTokens: summary.cache_write_tokens ?? 0,
           status: summary.status,
+          costUsd: record.link.costUsd,
+          credentialId: record.link.credentialId,
         });
       }
     },

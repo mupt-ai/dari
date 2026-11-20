@@ -9,6 +9,8 @@ export type ReportedProviderExecution = {
   providerKeySource: ProviderKeySource;
   // The thinking the provider was sent, as X-Dari-Thinking-Level reports it.
   thinkingLevel?: string;
+  // The user's subscription that served it.
+  subscriptionCredentialId?: string;
 };
 
 export function reportedExecution(
@@ -19,6 +21,9 @@ export function reportedExecution(
     model: execution.model,
     providerKeySource: execution.providerKeySource,
     ...(execution.thinkingLevel === undefined ? {} : { thinkingLevel: execution.thinkingLevel }),
+    ...(execution.subscriptionCredentialId === undefined
+      ? {}
+      : { subscriptionCredentialId: execution.subscriptionCredentialId }),
   };
 }
 

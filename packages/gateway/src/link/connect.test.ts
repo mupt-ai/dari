@@ -119,7 +119,7 @@ test("each plan says whether it serves the app now, and the stub forces each sta
     recorded = await one(requestId);
   }
   expect(recorded.status).toBe(200);
-  expect(await recorded.json()).toMatchObject({ requests: 1, input_tokens: 10, by_model: [{ model: "openai/gpt-5.5" }] });
+  expect(await recorded.json()).toMatchObject({ requests: 1, input_tokens: 10, by_model: [{ requests: 1 }] });
   expect((await one("not-a-request")).status).toBe(404);
   expect((await grantOf(gateway, tokens.accessToken)).plans[0]!.usage[0]!.utilization).toBeCloseTo(0.1);
 

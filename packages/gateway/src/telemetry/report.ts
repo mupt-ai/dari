@@ -509,11 +509,18 @@ export class RequestReporter {
         trackBackgroundTelemetry(this.prefixStatePromise);
       }
 
-      // A Dari Link request's usage is readable back by its app.
+      // A Dari Link request's usage is readable back by its app, and its cost
+      // counts toward the plan or key that served it (a plan's at API prices).
       const link = a.credentials.link_grant_id
         ? {
             grantId: a.credentials.link_grant_id,
             thinking: outcome.providerExecution?.thinkingLevel ?? reasoningBucket,
+            costUsd: costSource === null || !isRecord(usage?.cost) ? null : finiteNumber(usage.cost.total),
+            credentialId: keySource === "subscription"
+              ? outcome.providerExecution?.subscriptionCredentialId ?? (selectedProvider
+                ? a.credentials.subscription_credential_ids?.[selectedProvider] ?? null
+                : null)
+              : selectedProvider ? a.credentials.link_key_credential_ids?.[selectedProvider] ?? null : null,
           }
         : undefined;
       const ingestPayload = {
@@ -617,7 +624,17 @@ export class RequestReporter {
         }),
         prefix_entry: prefixEntry,
         touched_prefix_hash: touchedHash,
-        ...(link === undefined ? {} : { link: { grant_id: link.grantId, thinking: link.thinking, tags: a.tags } }),
+        ...(link === undefined
+          ? {}
+          : {
+              link: {
+                grant_id: link.grantId,
+                thinking: link.thinking,
+                tags: a.tags,
+                cost_usd: link.costUsd,
+                credential_id: link.credentialId,
+              },
+            }),
       };
 
       gatewayPlatform().recordRequest({

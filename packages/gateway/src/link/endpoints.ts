@@ -19,11 +19,23 @@
    - GET  /v1/link/grant         the grant a link access token belongs to
    - GET  /v1/link/usage         what the grant's requests used, by tag and time
    - POST /v1/link/apps          register an app (bearer: the user's key)
-   - GET  /v1/link/grants        the user's grants
+   - GET  /v1/link/grants        the user's grants, each granted plan and
+                                 key's spend this month with it
    - DELETE /v1/link/grants/{id} the user revokes a grant and its tokens
    - PUT  /v1/link/grants/{id}/budget  the user sets or removes the grant's
                                  budget: the most tokens the app may use per
                                  five hours and per week
+   - PUT  /v1/link/grants/{id}/limits  the user sets the most the grant may
+                                 spend on each of its plans and keys a month
+   - GET  /v1/link/plans         the plans and keys the user can grant
+   - POST /v1/link/endpoints     the user makes a personal endpoint: a grant
+                                 for themselves, and its key, which an app
+                                 that takes their own key calls with
+   - PUT  /v1/link/grants/{id}   rename an endpoint or change its plans
+   - POST /v1/link/grants/{id}/keys  another key for an endpoint
+
+   The user's own routes take their personal key, or on hosted Dari their
+   signed-in session, as the bearer.
    - GET  /v1/link/session       where a platform's sign-in returns the user
    - GET  /v1/link/connections   the page where the approval page's user sees
                                  the apps they connected, sets each one's
@@ -61,6 +73,7 @@ import type {
   LinkPlanAdded,
   LinkGrantDetail,
   LinkKeyProvider,
+  LinkManagedGrant,
   LinkUsageTotals,
   LinkUsageWindow,
   LinkPlatform,
@@ -74,7 +87,7 @@ import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
 import { explicitModelId, explicitModelSlug } from "../protocol/input/router_model.js";
 import { CANONICAL_MODELS, canonicalModelName } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
-import { budgetBody, linkTokens, validBudget } from "./budget.js";
+import { budgetBody, limitsBody, linkTokens, spendBody, validBudget, validLimits } from "./budget.js";
 import { catalogModelFor } from "./grant_access.js";
 import { requestTags } from "../runtime/request_tags.js";
 import type { ClientHarness, ResolvedRouter, SubscriptionKind } from "../types.js";
@@ -93,6 +106,9 @@ const MAX_REGISTRATION_BYTES = 8_192;
 const MAX_REGISTRATIONS_PER_MINUTE = 20;
 const GRANT_ROUTE = /^\/v1\/link\/grants\/([^/]+)$/;
 const GRANT_BUDGET_ROUTE = /^\/v1\/link\/grants\/([^/]+)\/budget$/;
+const GRANT_LIMITS_ROUTE = /^\/v1\/link\/grants\/([^/]+)\/limits$/;
+const GRANT_KEYS_ROUTE = /^\/v1\/link\/grants\/([^/]+)\/keys$/;
+const MAX_ENDPOINT_CREDENTIALS = 50;
 const MAX_TAG_KEY_CHARS = 64;
 // Who the approval page's user is. Without accounts the cookie is who they
 // are, so it lasts a year from their last plan; with accounts, a month from
@@ -216,18 +232,123 @@ export async function handleLinkRequest(request: Request, platform: GatewayPlatf
     if (pathname === "/v1/link/apps" && request.method === "POST") {
       return await registerApp(link, request);
     }
+    if (isManagementPath(pathname)) {
+      if (request.method === "OPTIONS") return withManagementCors(new Response(null, { status: 204 }));
+      const response = await manage(link, request, pathname);
+      if (response !== null) return withManagementCors(response);
+    }
+    return errorResponse(new HttpError(404, "Not found", "not_found"));
+  } catch (error) {
+    const response = linkErrorResponse(error);
+    if (isManagementPath(pathname)) return withManagementCors(response);
+    return CORS_PATHS.has(pathname) || USAGE_REQUEST_ROUTE.test(pathname) ? withCors(response) : response;
+  }
+}
+
+function isManagementPath(pathname: string): boolean {
+  return pathname === "/v1/link/grants" || pathname === "/v1/link/plans" || pathname === "/v1/link/endpoints"
+    || pathname.startsWith("/v1/link/grants/");
+}
+
+// The user's own routes are called from Dari's web app too, with a bearer
+// token and no cookie, so any origin may call.
+function withManagementCors(response: Response): Response {
+  response.headers.set("Access-Control-Allow-Origin", "*");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  response.headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  response.headers.set("Access-Control-Max-Age", "600");
+  return response;
+}
+
+function managedGrantBody(grant: LinkManagedGrant) {
+  return {
+    id: grant.id,
+    client_id: grant.clientId,
+    app_name: grant.appName,
+    endpoint: grant.endpoint,
+    credential_ids: grant.credentialIds,
+    created_at: grant.createdAt,
+    budget: budgetBody(grant.budget),
+    limits: limitsBody(grant.limits),
+    spend: spendBody(grant.spend),
+  };
+}
+
+// A plan or key the user can grant, as the grant body names its plans.
+function planBody(plan: LinkSubscription) {
+  const keyFor = plan.apiKeyProvider;
+  const kind = plan.provider as SubscriptionKind;
+  const client = keyFor === undefined ? subscriptionClient(kind) : undefined;
+  return {
+    id: plan.id,
+    kind: keyFor === undefined ? kind : API_KEY,
+    title: keyFor === undefined ? KINDS[kind]?.name ?? kind : plan.name,
+    ...(keyFor === undefined ? {} : { provider: keyFor }),
+    plan: keyFor === undefined ? SUBSCRIPTION_PLAN_LABELS[kind] ?? kind : `${plan.name} API Key`,
+    label: planLabel(plan),
+    account_email: plan.accountEmail,
+    serves: client === undefined ? "any_app" : `${client}_only`,
+  };
+}
+
+// The credential ids a request names: distinct, and not too many.
+function credentialIdsFrom(value: unknown): string[] {
+  if (
+    !Array.isArray(value) || value.length === 0 || value.length > MAX_ENDPOINT_CREDENTIALS
+    || !value.every((id) => typeof id === "string" && id.length > 0)
+  ) {
+    throw new HttpError(400, "credential_ids must list one or more of your plans and keys.", "invalid_request_error", "credential_ids");
+  }
+  return [...new Set(value as string[])];
+}
+
+function limitsFrom(value: unknown) {
+  const limits = validLimits(value ?? []);
+  if (limits === null) {
+    throw new HttpError(
+      400,
+      "limits must be a list of {credential_id, monthly_usd} with distinct credential_ids and monthly_usd a dollar amount of 0 or more; [] removes them.",
+      "invalid_request_error",
+      "limits",
+    );
+  }
+  return limits;
+}
+
+/** The user's own routes; null for a path and method none of them serve. */
+async function manage(link: LinkPlatform, request: Request, pathname: string): Promise<Response | null> {
+    const apiKey = bearerToken(request.headers);
     if (pathname === "/v1/link/grants" && request.method === "GET") {
-      const grants = await link.grants(bearerToken(request.headers));
-      return Response.json({
-        grants: grants.map((grant) => ({
-          id: grant.id,
-          client_id: grant.clientId,
-          app_name: grant.appName,
-          credential_ids: grant.credentialIds,
-          created_at: grant.createdAt,
-          budget: budgetBody(grant.budget),
-        })),
+      return Response.json({ grants: (await link.grants(apiKey)).map(managedGrantBody) });
+    }
+    if (pathname === "/v1/link/plans" && request.method === "GET") {
+      return Response.json({ plans: (await link.plans(apiKey)).map(planBody) });
+    }
+    if (pathname === "/v1/link/endpoints" && request.method === "POST") {
+      const body = (await parseJsonRequest(request)) as Record<string, unknown> | null;
+      const { grant, key } = await link.createEndpoint({
+        apiKey,
+        name: typeof body?.name === "string" ? body.name : "",
+        credentialIds: credentialIdsFrom(body?.credential_ids),
+        limits: limitsFrom(body?.limits),
       });
+      return Response.json({ grant: managedGrantBody(grant), key }, { status: 201 });
+    }
+    const keysRoute = GRANT_KEYS_ROUTE.exec(pathname);
+    if (keysRoute !== null && request.method === "POST") {
+      const grantId = decodeURIComponent(keysRoute[1]!);
+      const key = await link.issueEndpointKey({ apiKey, grantId });
+      if (key === null) throw new HttpError(404, `No endpoint ${grantId}.`, "not_found");
+      return Response.json({ id: grantId, key }, { status: 201 });
+    }
+    const limitsRoute = GRANT_LIMITS_ROUTE.exec(pathname);
+    if (limitsRoute !== null && request.method === "PUT") {
+      const grantId = decodeURIComponent(limitsRoute[1]!);
+      const limits = limitsFrom(((await parseJsonRequest(request)) as { limits?: unknown } | null)?.limits);
+      if (!(await link.setLimits({ apiKey, grantId, limits }))) {
+        throw new HttpError(404, `No grant ${grantId}.`, "not_found");
+      }
+      return Response.json({ id: grantId, limits: limitsBody(limits) });
     }
     const budgetRoute = GRANT_BUDGET_ROUTE.exec(pathname);
     if (budgetRoute !== null && request.method === "PUT") {
@@ -242,24 +363,34 @@ export async function handleLinkRequest(request: Request, platform: GatewayPlatf
           "budget",
         );
       }
-      if (!(await link.setBudget({ apiKey: bearerToken(request.headers), grantId, budget }))) {
+      if (!(await link.setBudget({ apiKey, grantId, budget }))) {
         throw new HttpError(404, `No grant ${grantId}.`, "not_found");
       }
       return Response.json({ id: grantId, budget: budgetBody(budget) });
     }
     const grantRoute = GRANT_ROUTE.exec(pathname);
+    if (grantRoute !== null && request.method === "PUT") {
+      const grantId = decodeURIComponent(grantRoute[1]!);
+      const body = (await parseJsonRequest(request)) as Record<string, unknown> | null;
+      const updated = await link.updateEndpoint({
+        apiKey,
+        grantId,
+        ...(typeof body?.name === "string" ? { name: body.name } : {}),
+        ...(body?.credential_ids === undefined ? {} : { credentialIds: credentialIdsFrom(body.credential_ids) }),
+      });
+      if (!updated) throw new HttpError(404, `No endpoint ${grantId}.`, "not_found");
+      const grant = (await link.grants(apiKey)).find((candidate) => candidate.id === grantId);
+      if (grant === undefined) throw new HttpError(404, `No endpoint ${grantId}.`, "not_found");
+      return Response.json(managedGrantBody(grant));
+    }
     if (grantRoute !== null && request.method === "DELETE") {
       const grantId = decodeURIComponent(grantRoute[1]!);
-      if (!(await link.revokeGrant({ apiKey: bearerToken(request.headers), grantId }))) {
+      if (!(await link.revokeGrant({ apiKey, grantId }))) {
         throw new HttpError(404, `No grant ${grantId}.`, "not_found");
       }
       return Response.json({ id: grantId, revoked: true });
     }
-    return errorResponse(new HttpError(404, "Not found", "not_found"));
-  } catch (error) {
-    const response = linkErrorResponse(error);
-    return CORS_PATHS.has(pathname) || USAGE_REQUEST_ROUTE.test(pathname) ? withCors(response) : response;
-  }
+    return null;
 }
 
 // A refusal keeps its own message; a failure says nothing of its cause but a
@@ -1246,13 +1377,22 @@ function connectionCard(connection: LinkConnection, csrf: string): string {
 <input id="max_${minutes}_${escapeHtml(connection.id)}" type="text" inputmode="numeric" name="max_${minutes}" value="${standing === undefined ? "" : standing.maxTokens}" placeholder="No Limit" autocomplete="off">
 ${standing === undefined ? "" : `<p class="hint">${count(standing.usedTokens)} used${standing.resetsAt === null ? "" : `, at the limit until ${escapeHtml(new Date(standing.resetsAt).toUTCString())}`}</p>`}`;
   };
+  // The most the grant may spend on each plan or key a month.
+  const spendLimit = (plan: LinkSubscription) => {
+    const spend = connection.spend.find((entry) => entry.credentialId === plan.id);
+    const id = `usd_${escapeHtml(plan.id)}_${escapeHtml(connection.id)}`;
+    return `<label class="field" for="${id}">${escapeHtml(planName(plan))} Per Month ($)</label>
+<input id="${id}" type="text" inputmode="decimal" name="usd_${escapeHtml(plan.id)}" value="${spend?.monthlyUsd ?? ""}" placeholder="No Limit" autocomplete="off">
+<p class="hint">${dollars(spend?.spentUsd ?? 0)} this month${spend?.reached ? ", at the limit until the month ends" : ""}</p>`;
+  };
   return `<form class="card" id="${escapeHtml(connection.id)}" method="post" action="${CONNECTIONS_PATH}">${csrf}
 <input type="hidden" name="grant_id" value="${escapeHtml(connection.id)}">
-<strong>${escapeHtml(connection.appName)}</strong>
+<strong>${escapeHtml(connection.appName)}${connection.endpoint ? " (Endpoint)" : ""}</strong>
 <small>Connected ${escapeHtml(new Date(connection.createdAt).toDateString())} &middot; ${count(connection.usage.requests)} requests &middot; ${count(tokens)} tokens</small>
 <small>Shares ${connection.subscriptions.length === 0 ? "nothing" : connection.subscriptions.map((plan) => escapeHtml(planName(plan))).join(", ")}</small>
 ${limit(300, "Per 5 Hours")}
 ${limit(10080, "Per Week")}
+${connection.subscriptions.map(spendLimit).join("\n")}
 <div class="row"><button class="btn outline" type="submit" name="decision" value="budget">Save Limits</button><button class="btn outline" type="submit" name="decision" value="disconnect">Disconnect</button></div>
 </form>`;
 }
@@ -1282,7 +1422,14 @@ async function connectionsSubmit(approval: LinkApprovalPage, request: Request, f
     });
     const budget = validBudget(entries);
     if (budget === null) return await connectionsPage(approval, request, "Each limit is a whole number of tokens; leave it empty for none.");
+    const limits = validLimits([...form.entries()].flatMap(([field, raw]) => {
+      const value = raw.replace(/[\s,$]/g, "");
+      if (!field.startsWith("usd_") || value === "") return [];
+      return [{ credential_id: field.slice(4), monthly_usd: /^\d+(\.\d+)?$/.test(value) ? Number(value) : Number.NaN }];
+    }));
+    if (limits === null) return await connectionsPage(approval, request, "Each monthly limit is a dollar amount; leave it empty for none.");
     await approval.setBudget(session.subject, grantId, budget);
+    await approval.setLimits(session.subject, grantId, limits);
     return back;
   }
   const removing = form.get("remove_id");
@@ -1300,6 +1447,10 @@ async function connectionsSubmit(approval: LinkApprovalPage, request: Request, f
   }
   if (plan !== undefined && decision === "remove_confirmed") await approval.remove(session.subject, plan.id);
   return back;
+}
+
+function dollars(value: number): string {
+  return `$${value.toFixed(2)}`;
 }
 
 // What a plan or key is called: "Claude", or "OpenRouter API Key".

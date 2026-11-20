@@ -148,6 +148,9 @@ export type ResolvedRouter = {
   provider_credentials?: Record<string, ProviderCredential>;
   // Execution provider -> the user's subscription credential serving it.
   subscription_credential_ids?: Partial<Record<Provider, string>>;
+  // A Dari Link grant's request: provider or gateway -> the granted API key
+  // serving it, whose monthly spend the request counts toward.
+  link_key_credential_ids?: Partial<Record<Provider, string>>;
   // Set when a Dari Link token authenticated the request: only that grant's
   // subscriptions serve it.
   link_grant_id?: string | null;

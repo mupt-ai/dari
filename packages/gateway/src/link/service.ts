@@ -2,8 +2,13 @@
    storage (`LinkStore`: the self-hosted gateway's SQLite database, hosted
    Dari's control plane) and its users (`LinkUsers`: who a key or a page
    visitor is, and where their plans and API keys live); `linkPlatform` makes
-   the rest: approving grants, managing them, budgets, and the token protocol
-   (grants.ts). */
+   the rest: approving grants, managing them, budgets and spend limits,
+   personal endpoints, and the token protocol (grants.ts).
+
+   A personal endpoint is a grant the user makes for themselves, on the plans
+   and keys they choose, called with a key that does not expire from any app
+   that takes the user's own key. Its grants belong to one built-in app,
+   `LINK_PERSONAL_CLIENT_ID`, which nothing can sign in to. */
 
 import { randomUUID } from "node:crypto";
 
@@ -12,15 +17,26 @@ import type {
   LinkBudget,
   LinkBudgetStanding,
   LinkConnect,
+  LinkGrant,
   LinkKeyProvider,
+  LinkLimit,
+  LinkManagedGrant,
   LinkPlanAdded,
   LinkPlatform,
   LinkSignIn,
+  LinkSpend,
   LinkSubscription,
 } from "../platform/platform.js";
 import type { SubscriptionKind } from "../types.js";
-import { type BudgetUse, budgetLookbackMs, budgetStandings, overBudgetUntil } from "./budget.js";
-import { budgetExhausted, linkGrantRevoked, linkTokenExpired, linkUnavailableError } from "./errors.js";
+import {
+  type BudgetUse,
+  budgetStandings,
+  grantSpend,
+  nextMonthStart,
+  overBudgetUntil,
+  usesSince,
+} from "./budget.js";
+import { budgetExhausted, limitsReached, linkGrantRevoked, linkTokenExpired, linkUnavailableError } from "./errors.js";
 import {
   type ActiveLinkGrant,
   LINK_CLIENT_SECRET_PREFIX,
@@ -28,10 +44,16 @@ import {
   LINK_CODE_TTL_MS,
   type LinkAppRecord,
   type LinkRepo,
+  type LinkTokenIssue,
   linkGrants,
   linkHash,
   linkSecret,
+  LINK_TOKEN_RETENTION_MS,
+  TOKEN_PREFIX,
 } from "./grants.js";
+
+/** The built-in app every personal endpoint's grant belongs to. */
+export const LINK_PERSONAL_CLIENT_ID = "lnk_personal";
 
 type MaybePromise<T> = T | Promise<T>;
 
@@ -39,12 +61,14 @@ type MaybePromise<T> = T | Promise<T>;
 export type LinkGrantRecord = {
   id: string;
   clientId: string;
+  // The app's name, or a personal endpoint's own.
   appName: string;
   // The user who approved it; null for a grant from before users had one.
   subject: string | null;
   credentialIds: string[];
   createdAt: string;
   budget: LinkBudget[];
+  limits: LinkLimit[];
 };
 
 /** Storage for Dari Link: the token protocol's steps, and grants. */
@@ -70,9 +94,27 @@ export type LinkStore = LinkRepo & {
     budget: LinkBudget[];
     now: number;
   }): MaybePromise<string | null>;
-  /** Change a live grant's plans or budget; false when none is live by that id. */
-  updateGrant(grantId: string, change: { credentialIds?: string[]; budget?: LinkBudget[] }): MaybePromise<boolean>;
-  /** The tokens each of a grant's requests received after `since` used. */
+  /**
+   * Store a personal endpoint: a grant of `LINK_PERSONAL_CLIENT_ID` named
+   * `name`, live at once, with its key token, in one step. Its id.
+   */
+  createEndpoint(request: {
+    subject: string;
+    name: string;
+    credentialIds: string[];
+    limits: LinkLimit[];
+    key: LinkTokenIssue;
+    now: number;
+  }): MaybePromise<string>;
+  /**
+   * Change a live grant's plans, budget, or limits, or an endpoint's name;
+   * false when none is live by that id.
+   */
+  updateGrant(
+    grantId: string,
+    change: { credentialIds?: string[]; budget?: LinkBudget[]; limits?: LinkLimit[]; name?: string },
+  ): MaybePromise<boolean>;
+  /** What each of a grant's requests received after `since` used and cost. */
   budgetUses(grantId: string, since: number): MaybePromise<BudgetUse[]>;
 };
 
@@ -119,17 +161,69 @@ export type LinkUsers = {
 export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
   const protocol = linkGrants(store);
 
-  const standings = async (grant: { id: string; budget: LinkBudget[] }, now = new Date()): Promise<LinkBudgetStanding[]> =>
-    (await linkBudgetStandings(store, grant, now)).map((standing) => ({
-      ...standing,
-      resetsAt: standing.resetsAt?.toISOString() ?? null,
-    }));
-
   // A live grant of this user's; null for anyone else's.
   const ownGrant = async (subject: string | null, grantId: string) => {
     const grant = await store.grant(grantId);
     return grant !== null && (subject === null || grant.subject === subject) ? grant : null;
   };
+
+  // A grant's budget windows and each granted plan or key's spend this month.
+  const standings = async (grant: LinkGrantRecord, now = new Date()): Promise<{
+    budget: LinkBudgetStanding[];
+    spend: LinkSpend[];
+  }> => {
+    const uses = await store.budgetUses(grant.id, usesSince(grant.budget, now));
+    return {
+      budget: budgetStandings(grant.budget, uses, now).map((standing) => ({
+        ...standing,
+        resetsAt: standing.resetsAt?.toISOString() ?? null,
+      })),
+      spend: grantSpend(grant.credentialIds, grant.limits, uses, now),
+    };
+  };
+
+  const publicGrant = ({ subject: _, ...grant }: LinkGrantRecord): LinkGrant => ({
+    ...grant,
+    endpoint: grant.clientId === LINK_PERSONAL_CLIENT_ID,
+  });
+
+  const managedGrant = async (grant: LinkGrantRecord): Promise<LinkManagedGrant> => ({
+    ...publicGrant(grant),
+    spend: (await standings(grant)).spend,
+  });
+
+  // Plans and keys the user can grant, and limits only on them.
+  const ownedCredentials = async (subject: string, credentialIds: readonly string[], limits: readonly LinkLimit[] = []) => {
+    const owned = new Set((await users.plans(subject)).map((plan) => plan.id));
+    if (credentialIds.length === 0 || !credentialIds.every((id) => owned.has(id))) {
+      throw new HttpError(400, "Choose one or more of your connected plans or API keys.", "invalid_request");
+    }
+    if (!limits.every((limit) => credentialIds.includes(limit.credentialId))) {
+      throw new HttpError(400, "Set limits only on the plans and keys the grant shares.", "invalid_request");
+    }
+    return [...new Set(credentialIds)].sort();
+  };
+
+  // The one user a key acts for: endpoints are personal, so an operator key
+  // that manages everyone cannot make one.
+  const endpointOwner = async (apiKey: string): Promise<string> => {
+    const subject = await users.manager(apiKey);
+    if (subject === null) {
+      throw new HttpError(403, "Use your personal key: an endpoint serves one user's plans.", "permission_denied");
+    }
+    return subject;
+  };
+
+  const ownEndpoint = async (subject: string | null, grantId: string) => {
+    const grant = await ownGrant(subject, grantId);
+    return grant !== null && grant.clientId === LINK_PERSONAL_CLIENT_ID ? grant : null;
+  };
+
+  const newKey = (): { key: string; issue: LinkTokenIssue } => {
+    const key = linkSecret(TOKEN_PREFIX.key);
+    return { key, issue: { tokenHash: linkHash(key), kind: "key", expiresAt: null } };
+  };
+
 
   const revoke = (grantId: string) => store.revokeGrant(grantId, "user", Date.now());
 
@@ -198,8 +292,9 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
             id: grant.id,
             clientId: grant.clientId,
             appName: grant.appName,
+            endpoint: grant.clientId === LINK_PERSONAL_CLIENT_ID,
             createdAt: grant.createdAt,
-            budget: await standings(grant),
+            ...(await standings(grant)),
             subscriptions: await users.plansWithIds(grant.credentialIds),
             usage,
           };
@@ -210,6 +305,12 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
       },
       async setBudget(subject, grantId, budget) {
         return (await ownGrant(subject, grantId)) !== null && (await store.updateGrant(grantId, { budget }));
+      },
+      async setLimits(subject, grantId, limits) {
+        const grant = await ownGrant(subject, grantId);
+        if (grant === null) return false;
+        await ownedCredentials(subject, grant.credentialIds, limits);
+        return await store.updateGrant(grantId, { limits });
       },
     },
     async registerApp({ apiKey, name, redirectUris, confidential }) {
@@ -240,8 +341,9 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
         id: grant.id,
         clientId: grant.clientId,
         appName: grant.appName,
+        endpoint: grant.clientId === LINK_PERSONAL_CLIENT_ID,
         createdAt: grant.createdAt,
-        budget: await standings(grant),
+        ...(await standings(grant)),
         subscriptions: await users.plansWithIds(grant.credentialIds),
       };
     },
@@ -253,7 +355,56 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
     },
     async grants(apiKey) {
       const subject = await users.manager(apiKey);
-      return (await store.grants(subject)).map(({ subject: _, ...grant }) => grant);
+      return await Promise.all((await store.grants(subject)).map(managedGrant));
+    },
+    async plans(apiKey) {
+      return await users.plans(await endpointOwner(apiKey));
+    },
+    async createEndpoint({ apiKey, name, credentialIds, limits }) {
+      const subject = await endpointOwner(apiKey);
+      const granted = await ownedCredentials(subject, credentialIds, limits);
+      const { key, issue } = newKey();
+      const grantId = await store.createEndpoint({
+        subject,
+        name: endpointName(name),
+        credentialIds: granted,
+        limits,
+        key: issue,
+        now: Date.now(),
+      });
+      const grant = await store.grant(grantId);
+      if (grant === null) throw new Error("A new endpoint's grant was not stored.");
+      return { grant: await managedGrant(grant), key };
+    },
+    async updateEndpoint({ apiKey, grantId, name, credentialIds }) {
+      const subject = await endpointOwner(apiKey);
+      const grant = await ownEndpoint(subject, grantId);
+      if (grant === null) return false;
+      const granted = credentialIds === undefined ? undefined : await ownedCredentials(subject, credentialIds);
+      return await store.updateGrant(grantId, {
+        ...(name === undefined ? {} : { name: endpointName(name) }),
+        ...(granted === undefined
+          ? {}
+          // A plan or key the endpoint no longer shares keeps no limit.
+          : { credentialIds: granted, limits: grant.limits.filter((limit) => granted.includes(limit.credentialId)) }),
+      });
+    },
+    async issueEndpointKey({ apiKey, grantId }) {
+      const subject = await endpointOwner(apiKey);
+      if ((await ownEndpoint(subject, grantId)) === null) return null;
+      const { key, issue } = newKey();
+      const now = Date.now();
+      const result = await store.issueTokens({ grantId, tokens: [issue], now, forgetBefore: now - LINK_TOKEN_RETENTION_MS });
+      return result === "ok" ? key : null;
+    },
+    async setLimits({ apiKey, grantId, limits }) {
+      const subject = await users.manager(apiKey);
+      const grant = await ownGrant(subject, grantId);
+      if (grant === null) return false;
+      if (!limits.every((limit) => grant.credentialIds.includes(limit.credentialId))) {
+        throw new HttpError(400, "Set limits only on the plans and keys the grant shares.", "invalid_request");
+      }
+      return await store.updateGrant(grantId, { limits });
     },
     async setBudget({ apiKey, grantId, budget }) {
       const subject = await users.manager(apiKey);
@@ -294,21 +445,33 @@ export function newLinkClientSecret(): { secret: string; hash: string } {
 
 /**
  * The grant a link token serves a request for: null when the key is no link
- * token. Throws the 401 a dead token gets, and the 424 a grant at its budget
- * gets until its window rolls on.
+ * token. Its plans and keys at their monthly spend limit are left out. Throws
+ * the 401 a dead token gets, and the 424 a grant at its budget, or with every
+ * plan and key at its limit, gets until it serves again.
  */
 export async function linkTokenGrant(store: LinkStore, token: string, now = new Date()): Promise<ActiveLinkGrant | null> {
   const auth = await linkGrants(store).authenticate(token, now);
   if (auth === null) return null;
   if (auth.status === "expired") throw linkTokenExpired();
   if (auth.status === "revoked") throw linkGrantRevoked(auth.revokedBy, auth.revokedAt);
-  const back = overBudgetUntil(await linkBudgetStandings(store, auth.grant, now));
+  const { grant } = auth;
+  if (grant.budget.length === 0 && grant.limits.length === 0) return grant;
+  const uses = await store.budgetUses(grant.id, usesSince(grant.budget, now));
+  const back = overBudgetUntil(budgetStandings(grant.budget, uses, now));
   if (back !== undefined) throw linkUnavailableError(budgetExhausted(back));
-  return auth.grant;
+  const reached = new Set(
+    grantSpend(grant.credentialIds, grant.limits, uses, now).filter((entry) => entry.reached).map((entry) => entry.credentialId),
+  );
+  if (reached.size === 0) return grant;
+  const credentialIds = new Set([...grant.credentialIds].filter((id) => !reached.has(id)));
+  if (credentialIds.size === 0) throw linkUnavailableError(limitsReached(nextMonthStart(now)));
+  return { ...grant, credentialIds };
 }
 
-async function linkBudgetStandings(store: LinkStore, grant: { id: string; budget: LinkBudget[] }, now: Date) {
-  if (grant.budget.length === 0) return [];
-  const uses = await store.budgetUses(grant.id, now.getTime() - budgetLookbackMs(grant.budget));
-  return budgetStandings(grant.budget, uses, now);
+function endpointName(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length === 0 || trimmed.length > 120) {
+    throw new HttpError(400, "Name the endpoint, in 120 characters or fewer.", "invalid_request");
+  }
+  return trimmed;
 }

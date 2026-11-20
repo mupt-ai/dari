@@ -49,12 +49,16 @@ export function explicitModelSlug(modelId: string): string {
   return EXPLICIT_MODEL_PREFIX + modelId;
 }
 
-// A Dari Link token's access and child tokens, which every platform issues.
+// A Dari Link token's access, child, and endpoint key tokens, which every
+// platform issues.
 export const LINK_ACCESS_TOKEN_PREFIX = "dlk_at_";
 export const LINK_CHILD_TOKEN_PREFIX = "dlk_ct_";
+export const LINK_KEY_TOKEN_PREFIX = "dlk_key_";
 
 export function isLinkToken(token: string): boolean {
-  return token.startsWith(LINK_ACCESS_TOKEN_PREFIX) || token.startsWith(LINK_CHILD_TOKEN_PREFIX);
+  return token.startsWith(LINK_ACCESS_TOKEN_PREFIX)
+    || token.startsWith(LINK_CHILD_TOKEN_PREFIX)
+    || token.startsWith(LINK_KEY_TOKEN_PREFIX);
 }
 
 /* A Dari Link token is served exactly the model it names, so every name but

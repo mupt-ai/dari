@@ -597,56 +597,63 @@ func requestActivity(cmd *cobra.Command, gf *globalFlags, organizationID, endpoi
 }
 
 func fetchActivity(cmd *cobra.Command, gf *globalFlags, organizationID, endpoint string, query url.Values, response any) error {
-	gw, err := currentGateway()
-	if err != nil {
-		return err
-	}
 	organizationID = strings.TrimSpace(organizationID)
 	orgPath := "current"
 	if organizationID != "" {
-		if gw != nil {
-			return fmt.Errorf("--organization-id needs the hosted Dari API; a gateway serves its own activity")
-		}
-		if auth.EnvAPIKeyValue() != "" {
-			return fmt.Errorf("--organization-id requires browser login; unset DARI_API_KEY and run `dari auth login`")
-		}
 		orgPath = url.PathEscape(organizationID)
 	}
 	path := "/v1/organizations/" + orgPath + "/routing/activity/" + endpoint
 	if len(query) > 0 {
 		path += "?" + query.Encode()
 	}
-	switch {
-	case gw != nil:
-		if err := gw.ensure(cmd.Context(), cmd.ErrOrStderr()); err != nil {
-			return err
-		}
-		if err := api.New(gw.url).WithBearer(gw.key).Do(cmd.Context(), http.MethodGet, path, nil, response); err != nil {
-			return err
-		}
-	case organizationID == "":
-		apiURL, err := gf.resolveAPIURL()
+	if organizationID == "" {
+		client, err := currentActivityClient(cmd, gf)
 		if err != nil {
 			return err
 		}
-		client, err := auth.OrgKeyClient(apiURL)
-		if err != nil {
-			return err
-		}
-		client.BaseURL = activityBaseURL(apiURL)
-		if err := client.Do(cmd.Context(), http.MethodGet, path, nil, response); err != nil {
-			return err
-		}
-	default:
-		apiURL, err := gf.resolveAPIURL()
-		if err != nil {
-			return err
-		}
-		if _, err := auth.DoAuthenticatedOn(cmd.Context(), apiURL, activityBaseURL(apiURL), http.MethodGet, path, nil, response); err != nil {
-			return err
-		}
+		return client.Do(cmd.Context(), http.MethodGet, path, nil, response)
 	}
-	return nil
+	gw, err := currentGateway()
+	if err != nil {
+		return err
+	}
+	if gw != nil {
+		return fmt.Errorf("--organization-id needs the hosted Dari API; a gateway serves its own activity")
+	}
+	if auth.EnvAPIKeyValue() != "" {
+		return fmt.Errorf("--organization-id requires browser login; unset DARI_API_KEY and run `dari auth login`")
+	}
+	apiURL, err := gf.resolveAPIURL()
+	if err != nil {
+		return err
+	}
+	_, err = auth.DoAuthenticatedOn(cmd.Context(), apiURL, activityBaseURL(apiURL), http.MethodGet, path, nil, response)
+	return err
+}
+
+// currentActivityClient reaches the current organization's Activity: on the
+// gateway this machine routes through, or on hosted Dari's routing service.
+func currentActivityClient(cmd *cobra.Command, gf *globalFlags) (*api.Client, error) {
+	gw, err := currentGateway()
+	if err != nil {
+		return nil, err
+	}
+	if gw != nil {
+		if err := gw.ensure(cmd.Context(), cmd.ErrOrStderr()); err != nil {
+			return nil, err
+		}
+		return api.New(gw.url).WithBearer(gw.key), nil
+	}
+	apiURL, err := gf.resolveAPIURL()
+	if err != nil {
+		return nil, err
+	}
+	client, err := auth.OrgKeyClient(apiURL)
+	if err != nil {
+		return nil, err
+	}
+	client.BaseURL = activityBaseURL(apiURL)
+	return client, nil
 }
 
 // activityBaseURL is the service that serves hosted Activity: the routing

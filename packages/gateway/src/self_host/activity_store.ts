@@ -11,6 +11,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 
+import { IMPORTED_ROUTER_NAME } from "../activity/imports.js";
 import type { SessionGitEvents } from "../activity/http.js";
 import { sqliteActivityDb, type ActivityDb } from "../activity/sql.js";
 import { canonicalInstant, instantFromDate } from "../activity/values.js";
@@ -23,6 +24,9 @@ const REASON_MAX_CHARS = 2000;
 const JSON_COLUMN_MAX_BYTES = 64 * 1024;
 // The blob "bucket" every retained body is filed under.
 export const SELF_HOSTED_BLOB_BUCKET = "gateway";
+// The router imported requests are filed under; no config file serves it.
+// A colon keeps it out of ROUTER_ID_PATTERN, so no configured router can take it.
+const IMPORTED_ROUTER_ID = "dari:imported";
 
 const SCHEMA = `
 create table if not exists routing_requests (
@@ -218,8 +222,8 @@ export class ActivityStore {
   ): void {
     this.db.transaction(() => {
       const now = canonicalInstant(instantFromDate(new Date()));
-      this.db.query("update model_routers set deleted_at = coalesce(deleted_at, ?) where organization_id = ?")
-        .run(now, organizationId);
+      this.db.query("update model_routers set deleted_at = coalesce(deleted_at, ?) where organization_id = ? and id <> ?")
+        .run(now, organizationId, IMPORTED_ROUTER_ID);
       for (const router of routers) {
         this.db.query(
           `insert into model_routers (id, organization_id, name, zdr, deleted_at) values (?, ?, ?, ?, null)
@@ -235,10 +239,25 @@ export class ActivityStore {
     })();
   }
 
-  /** Store one served request's report: its row, tool events, and bodies. */
-  record(report: Row): void {
+  /**
+   * Store one imported request's report under the "Imported" router, adding
+   * the router when Activity has none. False when the request is stored
+   * already.
+   */
+  importRequest(organizationId: string, report: Row): boolean {
+    this.db.query(
+      "insert into model_routers (id, organization_id, name) values (?, ?, ?) on conflict (id) do nothing",
+    ).run(IMPORTED_ROUTER_ID, organizationId, IMPORTED_ROUTER_NAME);
+    return this.record({ ...report, organization_id: organizationId, router_id: IMPORTED_ROUTER_ID });
+  }
+
+  /**
+   * Store one served request's report: its row, tool events, and bodies.
+   * False when a request with its ID is stored already.
+   */
+  record(report: Row): boolean {
     const requestId = text(report.request_id);
-    if (requestId === null) return;
+    if (requestId === null) return false;
     const zdr = report.zdr === true;
     const id = `rreq_${randomUUID().replaceAll("-", "")}`;
     const organizationId = text(report.organization_id) ?? "";
@@ -329,17 +348,17 @@ export class ActivityStore {
       metadata_json: json({ organization_id: organizationId, router_id: text(report.router_id), cost_source: "pi_registry" }),
     };
     const columns = Object.keys(row);
-    this.db.transaction(() => {
+    return this.db.transaction(() => {
       // A repeated report of the same request keeps the first.
       const inserted = this.db.query(
         `insert into routing_requests (${columns.join(", ")}) values (${columns.map(() => "?").join(", ")})
          on conflict (request_id) do nothing`,
       ).run(...(Object.values(row) as Array<string | number | null>));
-      if (inserted.changes === 0) return;
+      if (inserted.changes === 0) return false;
       for (const [kind, body] of Object.entries(bodies)) {
         if (body !== null) this.db.query("insert into routing_request_blobs (object_key, body) values (?, ?)").run(keys[kind]!, body);
       }
-      if (zdr) return;
+      if (zdr) return true;
       for (const event of list(report.tool_skill_events)) {
         this.db.query(
           `insert into routing_tool_skill_events
@@ -362,6 +381,7 @@ export class ActivityStore {
       }
       const sessionId = text(row.agent_session_id);
       if (sessionId) this.insertGitEvents(organizationId, text(row.source_protocol), sessionId, id, receivedAt, list(report.git_events));
+      return true;
     })();
   }
 

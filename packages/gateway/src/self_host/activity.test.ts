@@ -61,6 +61,87 @@ test("a self-hosted gateway serves Activity for the requests it routed", async (
   expect(anonymous.status).toBe(401);
 });
 
+// `dari traces import` posts a session; its model calls become a conversation
+// under the Imported router, with token counts and no cost.
+test("a self-hosted gateway imports a local agent session into Activity", async () => {
+  const gateway = await startStubGateway({ plans: ["openai_codex"] });
+  stop = gateway.stop;
+  const auth = { authorization: `Bearer ${gateway.gatewayKey}` };
+  const activity = `${gateway.baseUrl}/v1/organizations/current/routing/activity`;
+  const usage = { input_tokens: 10, output_tokens: 5, cache_read_tokens: 100, cache_write_tokens: 20 };
+  const session = {
+    agent: "claude",
+    session_id: "session-1",
+    items: [
+      { type: "message", role: "user", content: [{ type: "text", text: "list the files" }], contentShape: "string" },
+      { type: "tool_call", callId: "toolu_1", kind: "function", name: "Bash", input: { command: "ls" } },
+      { type: "tool_result", callId: "toolu_1", kind: "function", output: "README.md", outputShape: "string" },
+      { type: "message", role: "assistant", content: [{ type: "text", text: "One file." }], contentShape: "string" },
+    ],
+    turns: [
+      {
+        request_id: `imp_${"a".repeat(32)}`, input_items: 1, output_items: 1,
+        model: "anthropic/claude-opus-4-8", provider: "anthropic",
+        received_at: "2026-03-02T01:00:00Z", completed_at: "2026-03-02T01:00:04Z", stop_reason: "tool_use", usage,
+      },
+      {
+        request_id: `imp_${"b".repeat(32)}`, input_items: 3, output_items: 1,
+        model: "anthropic/claude-opus-4-8", provider: "anthropic",
+        received_at: "2026-03-02T01:00:05Z", completed_at: "2026-03-02T01:00:06Z", stop_reason: "stop", usage,
+      },
+    ],
+  };
+  const post = (body: unknown, headers: Record<string, string> = auth) =>
+    fetch(`${activity}/imports`, { method: "POST", headers: { ...headers, "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  const first = await post(session);
+  expect(first.status).toBe(200);
+  expect(await first.json()).toEqual({ imported: 2, existing: 0 });
+  // Importing the session again stores nothing twice.
+  expect(await (await post(session)).json()).toEqual({ imported: 0, existing: 2 });
+
+  const range = "from=2026-03-02T00:00:00Z&to=2026-03-03T00:00:00Z";
+  const read = async (path: string) => (await fetch(`${activity}/${path}`, { headers: auth })).json() as Promise<Record<string, any>>;
+  const { conversations } = await read(`conversations?${range}`);
+  expect(conversations).toHaveLength(1);
+  expect(conversations[0]).toMatchObject({ router_id: "dari:imported", router_name: "Imported", model_steps: 2 });
+
+  const { steps } = await read(`conversations/${conversations[0].conversation_ref}`);
+  expect(steps.map((step: any) => step.request_kind).sort()).toEqual(["tool_continuation", "user_message"]);
+  const answer = steps.find((step: any) => step.request_kind === "tool_continuation");
+  expect(answer).toMatchObject({
+    source_protocol: "anthropic_messages",
+    selected_model: "anthropic/claude-opus-4-8",
+    selected_provider: "anthropic",
+    provider_input_tokens: 10,
+    provider_cache_read_tokens: 100,
+    provider_cache_write_tokens: 20,
+    provider_output_tokens: 5,
+    provider_total_tokens: 135,
+    provider_spend_usd: null,
+    total_latency_ms: 1000,
+    client_request_format: "interaction_request_v1",
+  });
+  // The request holds the conversation up to the call, and the response its answer.
+  const request = await (await fetch(`${gateway.baseUrl}${answer.client_request_url}`, { headers: auth })).json() as any;
+  expect(request.items.map((item: any) => item.type)).toEqual(["message", "tool_call", "tool_result"]);
+  const response = await (await fetch(`${gateway.baseUrl}${answer.client_response_url}`, { headers: auth })).json() as any;
+  expect(response.content).toEqual([{ type: "text", text: "One file." }]);
+
+  const overview = await read(`overview?${range}&bucket_seconds=86400`);
+  expect(overview.summary).toMatchObject({
+    messages_sent: 1, model_steps: 2, provider_total_tokens: 270, provider_spend_usd: null, unpriced_model_steps: 2,
+  });
+  const tools = await read(`tools-skills?${range}&bucket_seconds=86400&mode=tools`);
+  expect(JSON.stringify(tools)).toContain("Bash");
+
+  expect((await post(session, {})).status).toBe(401);
+  const invalid = await post({ ...session, turns: [{ ...session.turns[0], request_id: "rreq_served" }] });
+  expect(invalid.status).toBe(422);
+  expect(((await invalid.json()) as any).detail).toBe("Each turn needs a request_id of imp_ and 32 hex digits.");
+  expect((await fetch(`${activity}/imports`, { headers: auth })).status).toBe(405);
+});
+
 // The Dari CLI's git hook reports a commit with the key and session ID the
 // agent's requests carried, and Activity files it on that session.
 test("a commit reported for a Claude Code session links it to its pull request", async () => {

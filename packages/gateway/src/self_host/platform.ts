@@ -153,6 +153,9 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
       async readBlob(bucket, key) {
         return bucket === SELF_HOSTED_BLOB_BUCKET ? deps.activity.readBlob(key) : null;
       },
+      async importRequest({ organizationId }, report) {
+        return deps.activity.importRequest(organizationId, report);
+      },
     },
   };
 }

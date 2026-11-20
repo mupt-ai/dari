@@ -36,7 +36,7 @@ insert.run("r3", "2026-03-03T01:00:00.000000Z", "user_message", "provider_error"
 const platform = {} as ActivityPlatform;
 async function call(route: ActivityRoute, query = ""): Promise<any> {
   const params = new Params(new URLSearchParams(`from=2026-03-02T00:00:00Z&to=2026-03-04T00:00:00Z&${query}`));
-  return route({ db: sqliteActivityDb(database), platform, params, path: {}, admitted: () => "org" });
+  return route({ db: sqliteActivityDb(database), platform, params, path: {}, body: async () => null, admitted: () => "org" });
 }
 
 test("overview sums usage, savings, and keys on SQLite", async () => {

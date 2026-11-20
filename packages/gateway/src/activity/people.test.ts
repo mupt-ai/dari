@@ -35,7 +35,7 @@ insert.run("r5", "key_b", null, "2026-02-01T00:00:00.000000Z", "user_message", "
 const platform = {} as ActivityPlatform;
 async function call(route: ActivityRoute, query: string): Promise<any> {
   const params = new Params(new URLSearchParams(`from=2026-03-02T00:00:00Z&to=2026-03-04T00:00:00Z&${query}`));
-  return route({ db: sqliteActivityDb(database), platform, params, path: {}, admitted: () => "org" });
+  return route({ db: sqliteActivityDb(database), platform, params, path: {}, body: async () => null, admitted: () => "org" });
 }
 
 test("people-keys aggregates people and unassigned keys on SQLite", async () => {

@@ -1,7 +1,8 @@
 /* Activity's HTTP surface: `GET /v1/organizations/{organization}/routing/
-   activity/...`, the reads behind the Activity dashboard and `dari activity`.
-   Every platform serves the same routes over its own database; the platform
-   only says who is asking and where retained payloads live. */
+   activity/...`, the reads behind the Activity dashboard and `dari activity`,
+   and the import `dari traces import` posts to. Every platform serves the
+   same routes over its own database; the platform only says who is asking,
+   where retained payloads live, and how an imported request is stored. */
 
 import { randomUUID } from "node:crypto";
 
@@ -34,10 +35,21 @@ export type ActivityPlatform = {
    * for one that is not an admin of the organization. Its message is the
    * response's `detail`.
    */
-  authorize(request: Request, organizationRef: string): Promise<{ organizationId: string }>;
+  authorize(request: Request, organizationRef: string): Promise<ActivityCaller>;
   /** A retained payload's bytes, or null when nothing is stored there. */
   readBlob(bucket: string, key: string): Promise<BodyInit | null>;
+  /**
+   * Optional. Store one imported request's report (imports.ts) under the
+   * organization's "Imported" router, creating the router when it has none.
+   * Resolves false when a request with the report's ID is already stored.
+   * Never bills, prices, or titles the request. Without it the import
+   * endpoint answers 404.
+   */
+  importRequest?(caller: ActivityCaller, report: Record<string, unknown>): Promise<boolean>;
 };
+
+/** An admitted caller: its organization and, where the platform has users, who it is. */
+export type ActivityCaller = { organizationId: string; userId?: string };
 
 /** One Activity request, as a route reads it. */
 export type ActivityRequest = {
@@ -46,6 +58,10 @@ export type ActivityRequest = {
   params: Params;
   /** The route's own path segments, such as `conversation_ref`. */
   path: Record<string, string>;
+  /** The request's JSON body; fails with 422 when it is not JSON. */
+  body(): Promise<unknown>;
+  /** The caller's user, once `admitted`, where the platform has users. */
+  userId?: string;
   /**
    * The organization the caller may read. Routes call it after reading their
    * parameters, so a malformed request fails with 422 or 400 before an
@@ -72,11 +88,11 @@ export async function handleActivityRequest(
     if (platform === undefined) throw activityError(404, "Not Found");
     const found = findRoute(match[2]!);
     if (found === null) throw activityError(404, "Not Found");
-    if (request.method !== "GET") throw activityError(405, "Method Not Allowed");
-    let organizationId: string | null = null;
+    if (request.method !== found.method) throw activityError(405, "Method Not Allowed");
+    let caller: ActivityCaller | null = null;
     let refused: unknown = null;
     try {
-      ({ organizationId } = await platform.authorize(request, decodePathSegment(match[1]!)));
+      caller = await platform.authorize(request, decodePathSegment(match[1]!));
     } catch (error) {
       if (!(error instanceof HttpError) || error.status === 401) throw error;
       refused = error;
@@ -86,9 +102,13 @@ export async function handleActivityRequest(
       platform,
       params: new Params(url.searchParams),
       path: found.path,
+      body: () => request.json().catch(() => {
+        throw activityError(422, "The body must be JSON.");
+      }),
+      userId: caller?.userId,
       admitted() {
         if (refused !== null) throw refused;
-        return organizationId!;
+        return caller!.organizationId;
       },
     });
     return withCors(result instanceof Response ? result : jsonResponse(result), requestId);
@@ -101,9 +121,9 @@ export async function handleActivityRequest(
   }
 }
 
-function findRoute(rest: string): { route: ActivityRoute; path: Record<string, string> } | null {
+function findRoute(rest: string): { route: ActivityRoute; method: string; path: Record<string, string> } | null {
   const segments = rest.split("/");
-  for (const [pattern, route] of ACTIVITY_ROUTES) {
+  for (const [pattern, route, method = "GET"] of ACTIVITY_ROUTES) {
     const parts = pattern.split("/");
     if (parts.length !== segments.length) continue;
     const path: Record<string, string> = {};
@@ -116,7 +136,7 @@ function findRoute(rest: string): { route: ActivityRoute; path: Record<string, s
       }
       return part === segment;
     });
-    if (matches) return { route, path };
+    if (matches) return { route, method, path };
   }
   return null;
 }
@@ -143,7 +163,7 @@ function jsonResponse(body: object, status = 200): Response {
 function withCors(response: Response, requestId?: string): Response {
   if (requestId !== undefined) response.headers.set("X-Request-Id", requestId);
   response.headers.set("Access-Control-Allow-Origin", "*");
-  response.headers.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+  response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   response.headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
   response.headers.set("Access-Control-Expose-Headers", "X-Dari-Request-Format, X-Request-Id");
   response.headers.set("Access-Control-Max-Age", "600");

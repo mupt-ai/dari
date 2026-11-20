@@ -424,7 +424,7 @@ func TestClaudeOAuthPromptKeepsURLWhole(t *testing.T) {
 	output := stripANSI(strings.Join(lines, "\n"))
 	output = regexp.MustCompile(`\x1b\]8;;[^\x1b]*\x1b\\`).ReplaceAllString(output, "")
 	output = strings.ReplaceAll(output, "\n  ", "")
-	for _, text := range []string{"Connect Claude Code", "Opened Claude Code in your browser", url, "code#state"} {
+	for _, text := range []string{"Connect Claude Code", "Opened in your browser", url, "code#state"} {
 		if !strings.Contains(output, text) {
 			t.Errorf("OAuth prompt missing %q:\n%s", text, output)
 		}
@@ -1121,9 +1121,9 @@ func TestEnsureClaudeAgentRouterExplainsModelsByPlan(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Setup always asks; the note says how the models get used.
-		want := "Auto-routing picks the best of the checked models"
+		want := "Dari picks among the checked models"
 		if !allowed {
-			want = "Switch between the checked models with /model.\nRun `dari accounts` to get auto-routing ($20/mo)"
+			want = "Switch with /model.\n`dari accounts` for auto-routing ($20/mo)"
 		}
 		if !strings.Contains(output.String(), "Choose Models for Claude Code") || !strings.Contains(output.String(), want) {
 			t.Errorf("allowed=%v: output missing %q:\n%s", allowed, want, output.String())
@@ -1485,7 +1485,7 @@ func TestAgentPickerLinesGroupByProviderAndAlign(t *testing.T) {
 
 func TestAgentTUIRenderDrawsPageFromTop(t *testing.T) {
 	var out strings.Builder
-	session := &agentTUISession{stderr: &out, panel: true}
+	session := &agentTUISession{stderr: &out}
 	session.render([]string{"one"})
 	got := out.String()
 	// Raw mode needs \r\n, and every row clears what an earlier page left.
@@ -1968,5 +1968,24 @@ func TestSubscriptionModelsForARouterUpdate(t *testing.T) {
 	omitted, _ := json.Marshal(agentRouterUpdateRequest{})
 	if !strings.Contains(string(sent), `"subscription_models":[]`) || strings.Contains(string(omitted), "subscription_models") {
 		t.Fatalf("sent %s omitted %s", sent, omitted)
+	}
+}
+
+// A payment row wider than the page continues on the next line, under its
+// first choice, rather than running past the page's edge.
+func TestPaymentRowsWrapToThePage(t *testing.T) {
+	model := agentModel{ID: "anthropic/claude-opus-5-5", DisplayName: "Claude Opus 5.5", Provider: "anthropic"}
+	p := newAgentPickerState([]agentModel{model}, []string{model.ID}, nil, nil, map[string][]agentModelSource{model.ID: {
+		{kind: "key", label: "Anthropic Key"}, {kind: "managed", label: "Dari Credits"}, {kind: "connect", label: "Connect Claude Code"},
+	}})
+	p.paying, p.fixed, p.width = true, true, 60
+	plain := stripANSI(strings.Join(agentPickerLines("Pay", nil, p), "\n"))
+	for _, line := range strings.Split(plain, "\n") {
+		if ansiVisibleWidth(line) > 60 {
+			t.Fatalf("line wider than the page:\n%s", plain)
+		}
+	}
+	if !strings.Contains(plain, "+ Connect Claude Code") {
+		t.Fatalf("a choice was lost:\n%s", plain)
 	}
 }

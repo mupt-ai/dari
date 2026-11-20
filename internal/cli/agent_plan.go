@@ -24,6 +24,9 @@ type agentSubscriptionStatus struct {
 var errNoProviderCredentials = errors.New("no connected account or API key can serve this gateway's models; " +
 	"connect one with `dari accounts` or `dari accounts subscription connect`")
 
+// errRouterKeyRefused is a router that did not accept the key it was sent.
+var errRouterKeyRefused = errors.New("the key was not accepted")
+
 // routerModels builds a launch's model menu from the router's /v1/models at
 // baseURL, the same list in hosted and gateway mode: dari/routing when the
 // router may autoroute, then every enabled model. A gateway lists the models
@@ -57,6 +60,9 @@ func routerModels(ctx context.Context, baseURL, key, agent string) (agents.Model
 		_ = json.NewDecoder(resp.Body).Decode(&failure)
 		if failure.Error.Code == "provider_credentials_missing" {
 			return agents.Models{}, errNoProviderCredentials
+		}
+		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			return agents.Models{}, errRouterKeyRefused
 		}
 		return agents.Models{}, fmt.Errorf("list router models: HTTP %d", resp.StatusCode)
 	}
@@ -115,19 +121,18 @@ func agentWebAppURL(ctx context.Context, client *api.Client, page string) string
 func getAutorouting(ctx context.Context, client *api.Client, stdin io.Reader, stderr io.Writer) (bool, error) {
 	usageURL := agentWebAppURL(ctx, client, "/usage")
 	opened := usageURL != "" && openAgentBrowser(usageURL)
-	details := []string{"  " + ansiGray + "$20/month. Dari picks the best of your router's models for each request." + ansiReset}
+	details := []string{"$20/month. Dari picks the model for each request."}
 	switch {
 	case opened:
-		details = append(details, "  "+ansiGray+"Opened the Usage page in your browser. If it didn't open, visit:"+ansiReset)
+		details = append(details, "Opened in your browser. If it didn't open:")
 	case usageURL != "":
-		details = append(details, "  "+ansiGray+"Subscribe on the Usage page:"+ansiReset)
+		details = append(details, "Subscribe at:")
 	default:
-		details = append(details, "  "+ansiGray+"Subscribe on the Usage page of the Dari web app."+ansiReset)
+		details = append(details, "Subscribe on the Usage page at app.dari.dev.")
 	}
 	if usageURL != "" {
 		details = append(details, agentURLLines(usageURL, 0)...)
 	}
-	details = append(details, "")
 	for {
 		choice, err := runAgentChoiceTUI(stdin, stderr, "Get Auto-Routing", details, []agentChoiceOption{
 			{label: "I've Subscribed, Check Again"},

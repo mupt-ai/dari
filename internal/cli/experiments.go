@@ -574,8 +574,8 @@ func applyAgentExperiment(
 		details = []string{experiment.Description}
 	}
 	choice, err := runAgentChoiceTUI(stdin, stderr, fmt.Sprintf("Make %s Your Default Setup for %s?", experiment.Name, setup.label), details, []agentChoiceOption{
-		{label: "Just This Launch", description: fmt.Sprintf("`dari %s` without --router keeps your current setup.", agent), done: "Using template " + experiment.Name + " for this launch"},
-		{label: "Make It My Default", description: fmt.Sprintf("`dari %s` uses it from now on; `dari router assign-agent` moves %s back.", agent, setup.label), done: experiment.Name + " is now your default for " + setup.label},
+		{label: "Just This Launch", done: "Using template " + experiment.Name + " for this launch"},
+		{label: "Make It My Default", description: fmt.Sprintf("Plain `dari %s` uses it too.", agent), done: experiment.Name + " is now your default for " + setup.label},
 	})
 	if err != nil {
 		return "", err

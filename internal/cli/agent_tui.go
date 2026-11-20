@@ -148,10 +148,6 @@ var agentHintKeys = []string{"↑↓", "←", "→", "enter", "esc", "space", "c
 
 // agentCursor fills the two-column gutter under a prompt's ◆, so option text
 // lines up with the prompt's other lines.
-// agentSetupHeader puts the small dari.dev title on every page while an
-// agent is being set up.
-var agentSetupHeader bool
-
 // agentSpinnerFrames spin while something the user started is still running:
 // three dots turning in the middle two rows of the Braille cell, so the
 // spinner sits level with the text beside it. (The usual frames use the top
@@ -305,9 +301,6 @@ type agentTUISession struct {
 	// The page's size: what remains inside the page margins, and the rows
 	// under the title. The resize goroutine sets them, so they are atomic.
 	cells, rowCount atomic.Int32
-	// titled puts the small dari.dev title on this session's pages, as a
-	// command's own page (sign-in) has it.
-	titled bool
 	// The last page drawn, drawn again when the terminal is resized.
 	mu       sync.Mutex
 	subtitle string
@@ -315,8 +308,6 @@ type agentTUISession struct {
 	resized  chan os.Signal
 	// resizeStop ends the resize goroutine; resizeGone is closed when it has.
 	resizeStop, resizeGone chan struct{}
-	// panel draws the title beside the page, on a command's first page only.
-	panel bool
 }
 
 // agentPageMargin indents every page, under a header, from the terminal's
@@ -367,7 +358,7 @@ func startAgentTUISession(stdin io.Reader, stderr io.Writer) (*agentTUISession, 
 				case <-time.After(50 * time.Millisecond):
 				}
 				if w, h, err := term.GetSize(fd); err == nil {
-					if session.cols() != w-2*len(agentPageMargin) || session.rows() != h-6 {
+					if session.termCols() != w-2*len(agentPageMargin) || session.rows() != h-6 {
 						session.setSize(w, h)
 						session.draw()
 					}
@@ -385,7 +376,31 @@ func (session *agentTUISession) setSize(w, h int) {
 }
 
 // cols and rows are the page's size.
-func (session *agentTUISession) cols() int { return int(session.cells.Load()) }
+// termCols is the terminal's width inside the page margins.
+func (session *agentTUISession) termCols() int { return int(session.cells.Load()) }
+
+// cols is the width a page has to lay itself out in: the terminal's, less
+// the title panel when it sits beside the page.
+func (session *agentTUISession) cols() int {
+	if panel := sidePanelWidth(session.termCols()); panel > 0 {
+		return session.termCols() - panel - agentPanelGap - 1
+	}
+	return session.termCols()
+}
+
+// agentPanelGap separates a page from the title panel beside it.
+const agentPanelGap = 4
+
+// sidePanelWidth is the title panel's width beside a page in a terminal
+// this wide, or 0 when it has no room there. It depends on the terminal
+// only, never on the page, so every page of a session looks the same.
+func sidePanelWidth(termCols int) int {
+	panel := min(termCols-agentPageColumn-agentPanelGap-1, 72)
+	if panel < sidePanelMinWidth {
+		return 0
+	}
+	return panel
+}
 func (session *agentTUISession) rows() int { return int(session.rowCount.Load()) }
 
 // Close returns to the normal screen so the caller can print its summary,
@@ -402,9 +417,13 @@ func (session *agentTUISession) Close() {
 	}
 }
 
+// agentSubtitle names what the running command is doing, under the
+// dari.dev title on each of its pages.
+var agentSubtitle = "Setting up your coding agent"
+
 // agentPageHeader is the welcome box at the top of every onboarding page.
 func agentPageHeader(width int) []string {
-	return pageHeader(width, "Setting up your coding agent")
+	return pageHeader(width, agentSubtitle)
 }
 
 // pageHeader is the welcome box at the top of a page, centered in width.
@@ -429,7 +448,7 @@ func pageHeader(width int, subtitle string) []string {
 // render draws a page from the top of the screen. Raw mode disables output
 // post-processing, so lines end in \r\n.
 func (session *agentTUISession) render(lines []string) {
-	session.renderPage("Setting up your coding agent", lines)
+	session.renderPage(agentSubtitle, lines)
 }
 
 // renderPage draws a page under the dari.dev title and its subtitle.
@@ -448,6 +467,30 @@ func (session *agentTUISession) renderLayout(subtitle string, build func(width i
 
 // sidePanelMinWidth is the narrowest title panel worth drawing beside a page.
 const sidePanelMinWidth = 36
+
+// agentTopPanelRows is how tall a terminal too narrow for the panel beside
+// the page must be to have it over the page instead, Dari's mark included.
+const agentTopPanelRows = 40
+
+// topTitlePanel is the title panel, with Dari's small mark, centered over a
+// page in a terminal too narrow to set it beside one.
+func topTitlePanel(width int, subtitle string) []string {
+	logoWidth := 0
+	for _, line := range dariLogoSmall {
+		logoWidth = max(logoWidth, len([]rune(line)))
+	}
+	panelWidth := max(logoWidth, len([]rune(subtitle))) + 8
+	indent := strings.Repeat(" ", max(width-panelWidth, 0)/2)
+	panel := titlePanel(panelWidth, len(dariLogoSmall)+7, subtitle)
+	for i, line := range panel {
+		panel[i] = indent + line
+	}
+	return append(panel, "")
+}
+
+// agentPageColumn is the narrowest a page's column gets beside the title
+// panel: room for the widest pages.
+const agentPageColumn = 80
 
 // draw lays out the last page for the terminal's size: the title in a panel
 // beside the page when there is room for one, and above it otherwise. No
@@ -475,30 +518,36 @@ func (session *agentTUISession) draw() {
 		}
 		return scrollToFocus(lines, rows)
 	}
-	const gap = 4
+	// Every page carries the same title, chosen by the terminal's size alone:
+	// the panel with Dari's mark beside the page where it fits, the title over
+	// the page where it doesn't, and none only when the rows are too few to
+	// spare for it. A page beside the panel was laid out for its column.
 	var page []string
-	if panel := min(session.cols()-pageWidth-gap-1, 72); session.panel && panel >= sidePanelMinWidth {
+	if panel := sidePanelWidth(session.termCols()); panel > 0 {
+		pageWidth = session.cols()
+		// A copy: a page drawn from fixed lines is drawn again on resize.
+		lines = slices.Clone(lines)
+		for i, line := range lines {
+			lines[i] = clipANSI(line, pageWidth)
+		}
 		lines = fit(lines, rows)
 		// Taller than the page when the terminal has room, so the mark fits.
 		height := max(len(lines), len(dariLogo)+7)
 		if rows > 0 {
 			height = max(len(lines), min(height, rows))
 		}
-		page = besidePanel(lines, pageWidth, gap, titlePanel(panel, height, session.subtitle))
-	} else if header := pageHeader(session.cols(), session.subtitle); session.panel && (rows <= 0 || rows-len(header) >= 10) {
+		page = besidePanel(lines, pageWidth, agentPanelGap, titlePanel(panel, height, session.subtitle))
+	} else if header := topTitlePanel(session.termCols(), session.subtitle); rows >= agentTopPanelRows {
 		page = append(header, fit(lines, rows-len(header))...)
-	} else if header := pageHeader(session.cols(), session.subtitle); (agentSetupHeader || session.titled) && (rows <= 0 || rows-len(header) >= len(lines)) {
-		// Setup's pages keep the small title when the whole page fits under it.
+	} else if header := pageHeader(session.termCols(), session.subtitle); rows <= 0 || rows-len(header) >= min(len(lines), 10) {
 		page = append(header, fit(lines, rows-len(header))...)
 	} else {
-		// Pages past the first carry no title, nor does a first page with
-		// too few rows to spare for one.
 		page = fit(lines, rows)
 	}
 	var frame strings.Builder
 	frame.WriteString("\033[H\033[K\r\n")
 	for _, line := range page {
-		frame.WriteString(agentPageMargin + clipANSI(line, session.cols()) + ansiReset + "\033[K\r\n")
+		frame.WriteString(agentPageMargin + clipANSI(line, session.termCols()) + ansiReset + "\033[K\r\n")
 	}
 	frame.WriteString("\033[J")
 	_, _ = session.stderr.Write([]byte(frame.String()))
@@ -807,8 +856,7 @@ func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, summar
 		buf := make([]byte, 256)
 		for {
 			at := cursor
-			session.panel = escHint == "esc close"
-			session.renderLayout("Setting up your coding agent", func(width int) []string {
+			session.renderLayout(agentSubtitle, func(width int) []string {
 				return agentChoiceLines(prompt, summary, details, options, at, escHint, width)
 			})
 			n, readErr := session.file.Read(buf)
@@ -852,7 +900,7 @@ func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, summar
 	// the next page draws or the screen is given back.
 	if err == nil && agentScreen.held {
 		startAgentSpinner(func(frame string) {
-			session.renderLayout("Setting up your coding agent", func(width int) []string {
+			session.renderLayout(agentSubtitle, func(width int) []string {
 				busy := slices.Clone(options)
 				busy[choice].busy = frame
 				return agentChoiceLines(prompt, summary, details, busy, choice, escHint, width)
@@ -862,16 +910,48 @@ func runAgentChoicePage(stdin io.Reader, stderr io.Writer, prompt string, summar
 	return choice, err
 }
 
+// Every page has the same shape:
+//
+//	◆ Title
+//	  detail lines, gray, right under the title
+//
+//	  the page's body: options, an input, a code
+//	  a red line saying what went wrong, when something did
+//
+//	  key hints
+//
+// agentDetailLines sets a page's detail lines under its title: plain text in
+// gray at the page's indent, and lines that bring their own indent as they
+// are. Blank lines at the end go; the page puts its one blank line itself.
+func agentDetailLines(details []string) []string {
+	lines := make([]string, 0, len(details))
+	for _, line := range details {
+		if line != "" && !strings.HasPrefix(line, "  ") {
+			line = "  " + ansiGray + line + ansiReset
+		}
+		lines = append(lines, line)
+	}
+	for len(lines) > 0 && strings.TrimSpace(stripAgentANSI(lines[len(lines)-1])) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// withHint ends a page with one blank line and its key hints.
+func withHint(lines []string, hint string) []string {
+	for len(lines) > 0 && strings.TrimSpace(stripAgentANSI(lines[len(lines)-1])) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return append(lines, "", hint)
+}
+
 func agentChoiceLines(prompt string, summary, details []string, options []agentChoiceOption, cursor int, escHint string, width int) []string {
 	// A page whose options are grouped under headings may have no title.
 	lines := []string{}
 	if prompt != "" {
 		lines = append(lines, agentPromptLine(prompt))
-		// A blank line between a title and the options right under it.
-		if len(details) == 0 && len(summary) == 0 && len(options) > 0 && options[0].heading == "" {
-			lines = append(lines, "")
-		}
 	}
+	details = agentDetailLines(details)
 	// Boxes shrink to fit a narrow terminal: 4 cells go to their edges.
 	fit := func(inner int) int {
 		if width > 0 {
@@ -887,6 +967,10 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 		lines = append(lines, agentBox(slices.Clone(summary), fit(inner), ansiGray)...)
 	}
 	lines = append(lines, details...)
+	// One blank line before the options; a heading brings its own.
+	if len(lines) > 0 && len(options) > 0 && options[0].heading == "" {
+		lines = append(lines, "")
+	}
 	headings := []int{}
 	// Boxed options share one width, the widest of them.
 	boxWidth := 0
@@ -901,7 +985,7 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 	}
 	for index, option := range options {
 		if option.heading != "" {
-			if len(lines) > 0 {
+			if len(lines) > 0 && lines[len(lines)-1] != "" {
 				lines = append(lines, "")
 			}
 			// The rule is drawn once the page's width is known.
@@ -986,14 +1070,14 @@ func agentChoiceLines(prompt string, summary, details []string, options []agentC
 		title := agentPromptLine(lines[i])
 		lines[i] = title + " " + ansiGray + strings.Repeat("─", max(3, ruleEnd-ansiVisibleWidth(title)-1)) + ansiReset
 	}
-	return append(lines, "", agentHintLine("↑↓ move", "enter confirm", escHint))
+	return withHint(lines, agentHintLine("↑↓ move", "enter confirm", escHint))
 }
 
 func agentOpenedLine(provider agentSubscriptionProvider, opened bool) string {
 	if opened {
-		return "  " + ansiGray + "Opened " + provider.name + " in your browser. If it didn't open, visit:" + ansiReset
+		return "  " + ansiGray + "Opened in your browser. If it didn't open:" + ansiReset
 	}
-	return "  " + ansiGray + "Open this URL to sign in to " + provider.name + ":" + ansiReset
+	return "  " + ansiGray + "Sign in at:" + ansiReset
 }
 
 // agentURLLines wraps a URL inside the prompt's indent, preferring to break
@@ -1034,12 +1118,12 @@ func wrapURL(url string, per int) []string {
 func agentOAuthLines(provider agentSubscriptionProvider, authorizationURL string, opened bool, value string, width int) []string {
 	lines := []string{agentPromptLine("Connect " + provider.name), agentOpenedLine(provider, opened)}
 	lines = append(lines, agentURLLines(authorizationURL, width)...)
-	return append(lines,
+	lines = append(lines,
 		"",
-		"  Paste the code "+provider.vendor+" shows after you approve:",
+		"  "+ansiGray+"Paste the code "+provider.vendor+" shows:"+ansiReset,
 		agentCursor(true)+inputDisplay(value, width, "code#state"),
-		agentHintLine("enter submit", "esc back"),
 	)
+	return withHint(lines, agentHintLine("enter submit", "esc back"))
 }
 
 func runAgentCodeInputTUI(
@@ -1098,11 +1182,10 @@ func runAgentDeviceCodeTUI(
 	for {
 		lines := []string{agentPromptLine("Connect " + provider.name), agentOpenedLine(provider, opened)}
 		lines = append(lines, agentURLLines(authorizationURL, session.cols())...)
-		session.render(append(lines,
+		session.render(withHint(append(lines,
 			"",
-			"  Enter this code at "+provider.vendor+":  "+ansiCoral+ansiBold+userCode+ansiReset,
-			status,
-		))
+			"  "+ansiGray+"Enter this code:"+ansiReset+"  "+ansiCoral+ansiBold+userCode+ansiReset,
+		), status))
 		n, readErr := session.file.Read(buf)
 		for _, key := range parseAgentPickerKeys(buf[:n]) {
 			switch key {
@@ -1144,10 +1227,8 @@ func runAgentTextInputTUI(stdin io.Reader, stderr io.Writer, title string, detai
 	status := ""
 	buf := make([]byte, 4096)
 	page := func(cursor string) []string {
-		lines := append([]string{agentPromptLine(title)}, details...)
-		if len(details) > 0 {
-			lines = append(lines, "")
-		}
+		lines := append([]string{agentPromptLine(title)}, agentDetailLines(details)...)
+		lines = append(lines, "")
 		display := secretDisplay(input.value, session.cols())
 		if placeholder != "" {
 			display = inputDisplay(input.value, session.cols(), placeholder)
@@ -1156,7 +1237,7 @@ func runAgentTextInputTUI(stdin io.Reader, stderr io.Writer, title string, detai
 		if status != "" {
 			lines = append(lines, "  "+ansiRed+status+ansiReset)
 		}
-		return append(lines, "", agentHintLine("enter save", "esc back"))
+		return withHint(lines, agentHintLine("enter save", "esc back"))
 	}
 	for {
 		session.render(page(agentCursor(true)))
@@ -1173,7 +1254,7 @@ func runAgentTextInputTUI(stdin io.Reader, stderr io.Writer, title string, detai
 		if submitted {
 			value := strings.TrimSpace(input.value)
 			if value == "" {
-				status = "Enter a value, or press esc to go back."
+				status = "Enter a value, or esc to go back."
 				continue
 			}
 			// A spinner stands in for the cursor while the value is saved.
@@ -1307,13 +1388,20 @@ func runAgentPickerState(stdin io.Reader, stderr io.Writer, title string, note [
 	defer session.Close()
 	buf := make([]byte, 256)
 	for {
-		session.render(agentPickerLines(title, note, p))
+		// A resize lays the page out again for its new width, under the
+		// session's lock, which key handling takes too: both touch p.
+		session.renderLayout(agentSubtitle, func(width int) []string {
+			p.width = width
+			return agentPickerLines(title, note, p)
+		})
 		n, readErr := session.file.Read(buf)
 		for _, key := range parseAgentPickerKeys(buf[:n]) {
 			if key == "a" && offerAutorouting {
 				return nil, errAgentWantsAutorouting
 			}
+			session.mu.Lock()
 			done, canceled := p.handleKey(key)
+			session.mu.Unlock()
 			if canceled && p.quit {
 				return nil, errAgentQuit
 			}
@@ -1481,7 +1569,21 @@ func agentPayingLines(title string, note []string, p *agentPickerState) []string
 			}
 			choices = append(choices, dot)
 		}
-		lines = append(lines, agentFocused(agentCursor(focused)+name+"   "+strings.Join(choices, "   "), focused))
+		// Choices that don't fit the page continue on the next line, under
+		// the first choice.
+		lead := agentCursor(focused) + name + "   "
+		indent := strings.Repeat(" ", ansiVisibleWidth(lead))
+		line := lead
+		for j, choice := range choices {
+			if j > 0 && p.width > 0 && ansiVisibleWidth(line)+3+ansiVisibleWidth(choice) > p.width {
+				lines = append(lines, agentFocused(strings.TrimRight(line, " "), focused))
+				line = indent
+			} else if j > 0 {
+				line += "   "
+			}
+			line += choice
+		}
+		lines = append(lines, agentFocused(line, focused))
 		if row.note != "" {
 			lines = append(lines, "    "+ansiGray+row.note+ansiReset, "")
 		}

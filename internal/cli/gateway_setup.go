@@ -128,10 +128,14 @@ var gatewayModeDone = map[gateway.Mode]string{
 
 // checkSelfHostedGateway confirms a self-hosted gateway accepts key.
 func checkSelfHostedGateway(ctx context.Context, url, key string) error {
-	if _, err := routerModels(ctx, url, key, ""); err != nil && !errors.Is(err, errNoProviderCredentials) {
-		return fmt.Errorf("the gateway did not accept this key: %v", err)
+	_, err := routerModels(ctx, url, key, "")
+	switch {
+	case err == nil, errors.Is(err, errNoProviderCredentials):
+		return nil
+	case errors.Is(err, errRouterKeyRefused):
+		return errors.New("That isn't one of the gateway's keys.")
 	}
-	return nil
+	return fmt.Errorf("Couldn't reach the gateway at %s.", url)
 }
 
 // setGatewayModeFromFlags saves the routing choice named by --mode without a
@@ -162,6 +166,7 @@ func setGatewayModeFromFlags(ctx context.Context, mode, url, key, autoRoutingKey
 }
 
 func runGatewaySetup(ctx context.Context, stdin io.Reader, stderr io.Writer) error {
+	agentSubtitle = "Where your agents route"
 	if !agentInputIsTerminal(stdin) {
 		return errors.New("gateway setup needs an interactive terminal; use `dari gateway setup --mode hosted|local|self-hosted` instead")
 	}
@@ -172,17 +177,17 @@ func runGatewaySetup(ctx context.Context, stdin io.Reader, stderr io.Writer) err
 				gatewaySetupHosted: {
 					label:       "Hosted",
 					note:        "Recommended",
-					description: "Dari runs the gateway. Share it with your team, see Activity analytics, and use Dari billing.",
+					description: "Dari runs it. Shared with your team, with Activity and billing.",
 					done:        gatewayModeDone[gateway.ModeHosted],
 				},
 				gatewaySetupLocal: {
 					label:       "Fully Local",
-					description: "Runs on this machine; requests go straight to model providers. Only you can use it. No observability: Activity and analytics need Hosted.",
+					description: "Runs on this machine, straight to providers. No Activity.",
 					done:        gatewayModeDone[gateway.ModeLocal],
 				},
 				gatewaySetupSelfHosted: {
 					label:       "Self-Hosted",
-					description: "Connect to a Dari Gateway your team runs on its own server, so everyone shares its accounts and routing. No observability: Activity and analytics need Hosted.",
+					description: "A gateway your team runs. No Activity.",
 					done:        gatewayModeDone[gateway.ModeSelfHosted],
 				},
 			})
@@ -223,7 +228,7 @@ func runGatewaySetup(ctx context.Context, stdin io.Reader, stderr io.Writer) err
 					}
 				}
 				if ok, err := runAgentTextInputTUI(stdin, stderr, "Gateway URL", []string{
-					"  The URL your team's Dari Gateway serves on, such as https://gateway.example.com.",
+					"Your team's gateway.",
 				}, "https://gateway.example.com", func(value string) error {
 					settings.URL, err = normalizeGatewayURL(value)
 					return err
@@ -231,7 +236,7 @@ func runGatewaySetup(ctx context.Context, stdin io.Reader, stderr io.Writer) err
 					return cmpErr(err, errAgentChoiceCanceled)
 				}
 				if ok, err := runAgentSecretInputTUI(stdin, stderr, "Gateway Key", []string{
-					"  One of the keys the gateway's operator set in DARI_GATEWAY_KEYS.",
+					"One of its DARI_GATEWAY_KEYS.",
 				}, func(value string) error {
 					if err := checkSelfHostedGateway(ctx, settings.URL, value); err != nil {
 						return err
@@ -264,12 +269,10 @@ func cmpErr(err, fallback error) error {
 // answer skips it.
 func askAutoRoutingKey(stdin io.Reader, stderr io.Writer) (string, error) {
 	choice, err := runAgentChoiceTUI(stdin, stderr, "Auto-Routing", []string{
-		"  Dari's routing policy picks the model for each request. It needs a Dari API key,",
-		"  and sends Dari the recent conversation to choose; models still run on your accounts.",
-		"",
+		"Dari picks the model for each request. Needs a Dari API key.",
 	}, []agentChoiceOption{
-		{label: "Skip for Now", description: "Start on the first model you can use; switch with /model."},
-		{label: "Add a Dari API Key", description: "Create one at https://app.dari.dev."},
+		{label: "Skip for Now", description: "Switch models with /model."},
+		{label: "Add a Dari API Key", description: "From app.dari.dev."},
 	})
 	if err != nil || choice == 0 {
 		return "", err

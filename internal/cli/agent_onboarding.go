@@ -296,8 +296,6 @@ func ensureAgentRouter(
 	if !ok {
 		return "default", nil
 	}
-	agentSetupHeader = true
-	defer func() { agentSetupHeader = false }()
 
 	client, err := auth.OrgKeyClient(access.apiURL)
 	if err != nil {
@@ -438,9 +436,9 @@ func ensureAgentRouter(
 	}
 	// Recommended models are green in the picker, and checked in the
 	// numbered list a script gets.
-	intro := "The checked models are recommended."
+	intro := "Checked models are recommended."
 	if agentInputIsTerminal(stdin) {
-		intro = "Green circles are recommended; orange ones are your own choice."
+		intro = "Green is recommended."
 	}
 	pinningDefault := false
 	if !setup.ownsRouter() {
@@ -557,7 +555,7 @@ func reconfigureAgentRouter(ctx context.Context, client *api.Client, setup agent
 	maps.Copy(modelProviders, router.ModelProviders)
 	picked, err := pickAgentModels(ctx, client, stdin, stderr, agentModelPickInput{
 		title:             "Choose Models for " + setup.label,
-		intro:             "Checked models are the ones " + router.Name + " uses now.",
+		intro:             "Checked models are in use.",
 		models:            models,
 		defaultIDs:        router.EnabledModels,
 		currentLevels:     router.ModelThinkingLevels,
@@ -631,13 +629,13 @@ func pickAgentModels(
 		if err != nil {
 			return agentModelPick{}, err
 		}
-		note := []string{in.intro, "Auto-routing picks the best of the checked models for each request."}
+		note := []string{in.intro + " Dari picks among the checked models."}
 		if !routing {
-			offer := "Run `dari accounts` to get auto-routing ($20/mo) and have Dari pick for you."
+			offer := "`dari accounts` for auto-routing ($20/mo)."
 			if agentInputIsTerminal(stdin) {
-				offer = "Press a to get auto-routing ($20/mo) and have Dari pick for you."
+				offer = "Press a for auto-routing ($20/mo)."
 			}
-			note = []string{in.intro, "Switch between the checked models with /model.", offer}
+			note = []string{in.intro + " Switch with /model.", offer}
 		}
 		pick.choices, err = selectAgentModels(stdin, stderr, in.title, note, !routing, in.models, defaultIDs, currentLevels, in.recommendedLevels, sources)
 		if errors.Is(err, errAgentWantsAutorouting) {
@@ -648,7 +646,7 @@ func pickAgentModels(
 			continue
 		}
 		if errors.Is(err, errAgentChoiceCanceled) {
-			leave, err := runAgentChoiceTUI(stdin, stderr, "Leave Setup?", []string{"  " + ansiGray + "Nothing is saved until you finish choosing models." + ansiReset, ""}, []agentChoiceOption{{label: "Keep Choosing"}, {label: "Leave Setup"}})
+			leave, err := runAgentChoiceTUI(stdin, stderr, "Leave Setup?", []string{"Nothing is saved yet."}, []agentChoiceOption{{label: "Keep Choosing"}, {label: "Leave Setup"}})
 			if (err == nil && leave == 0) || errors.Is(err, errAgentChoiceCanceled) {
 				continue
 			}
@@ -1270,6 +1268,9 @@ type agentPickerState struct {
 	fixed bool
 	// action is the row whose connect or add-key choice enter picked, or -1.
 	action int
+	// width is the page's width, which the payment page wraps its choices
+	// to; 0 is no limit.
+	width int
 }
 
 // agentPickerItem is one line the cursor can rest on.
@@ -1687,8 +1688,8 @@ func chooseAgentSessionPinning(stdin io.Reader, stderr io.Writer, current bool) 
 		return current, nil
 	}
 	choice, err := runAgentChoiceTUI(stdin, stderr, "When Should Dari Pick the Model?", nil, []agentChoiceOption{
-		{label: "Every Turn " + ansiGreen + "(Default)" + ansiReset, description: "Dari picks the best model for each request.", done: "Routing every turn"},
-		{label: "Once per Session", description: "Dari picks when a session starts and keeps that model. Each subagent gets its own pick, then keeps it.", done: "Routing once per session"},
+		{label: "Every Turn " + ansiGreen + "(Default)" + ansiReset, description: "Dari picks for each request.", done: "Routing every turn"},
+		{label: "Once per Session", description: "Dari picks once per session and subagent.", done: "Routing once per session"},
 	})
 	if err != nil {
 		return false, err

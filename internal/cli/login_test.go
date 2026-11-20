@@ -15,10 +15,10 @@ func TestLoginPageShowsTheBrowserURLAndPasteFallback(t *testing.T) {
 	page := stripANSI(strings.Join(loginPageLines(testLoginURL, true, "", nil, "⠸", 80), "\n"))
 	for _, want := range []string{
 		"Sign in to Dari",
-		"Opened your browser. Finish signing in there.",
+		"Opened in your browser. If it didn't open:",
 		testLoginURL,
 		"Waiting for your browser…",
-		"paste the callback URL (remote machines)",
+		"on another machine? paste the callback URL",
 		"enter submit · ctrl+c cancel",
 	} {
 		if !strings.Contains(page, want) {
@@ -29,7 +29,7 @@ func TestLoginPageShowsTheBrowserURLAndPasteFallback(t *testing.T) {
 
 func TestLoginPageAsksForTheURLWhenTheBrowserDidNotOpen(t *testing.T) {
 	page := strings.Join(loginPageLines(testLoginURL, false, "", nil, "⠸", 80), "\n")
-	if !strings.Contains(page, "Open this URL in your browser to sign in:") {
+	if !strings.Contains(page, "Sign in at:") {
 		t.Fatalf("login page is missing the manual URL instruction:\n%s", page)
 	}
 	if strings.Contains(page, "Opened your browser") {

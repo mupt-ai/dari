@@ -463,8 +463,7 @@ func putAgentRouter(ctx context.Context, client *api.Client, routerID string, bo
 // as an organization credential. It reports whether one was saved; esc
 // saves none.
 func saveAgentAPIKey(ctx context.Context, client *api.Client, stdin io.Reader, stderr io.Writer, provider, name string) (bool, error) {
-	details := []string{"  " + ansiGray + "Dari saves it as a credential for your organization." + ansiReset}
-	saved, err := runAgentSecretInputTUI(stdin, stderr, "Connect "+name, details, func(key string) error {
+	saved, err := runAgentSecretInputTUI(stdin, stderr, name+" API Key", nil, func(key string) error {
 		var created agentProviderCredential
 		if err := client.Do(ctx, http.MethodPost, "/v1/organizations/current/credentials/provider-credentials", map[string]any{
 			"provider": provider,

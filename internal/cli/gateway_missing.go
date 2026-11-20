@@ -83,19 +83,28 @@ func (need gatewayMissing) help() string {
 	return strings.Join(ways, " or ")
 }
 
-// note is the line under a missing model on the connect page: what it lacks,
-// and why a plan one might expect is not offered.
+// note is the short line under a missing model on the connect page: what
+// serves it, and why a plan one might expect is not offered.
 func (need gatewayMissing) note() string {
-	note := "No account or API key serves it yet"
-	if need.key >= 0 && !need.local {
-		note = "Needs " + localProviderKeys[need.key].env + " set on the gateway"
-		if len(need.plans) > 0 {
-			note = "Needs a subscription, or " + localProviderKeys[need.key].env + " set on the gateway"
+	var ways []string
+	for _, plan := range need.plans {
+		ways = append(ways, plan.name)
+	}
+	if need.key >= 0 {
+		key := localProviderKeys[need.key].name + " key"
+		if !need.local {
+			key = localProviderKeys[need.key].env + " on the gateway"
 		}
+		ways = append(ways, key)
+	}
+	note := "Needs " + strings.Join(ways, " or ")
+	if len(ways) == 0 {
+		// Its ID names who made it, not who serves it.
+		note = "Name its provider in the router spec"
 	}
 	for _, plan := range allSubscriptionProviders {
 		if plan.routerProvider == need.provider && !slices.Contains(need.plans, plan) {
-			note += "; a " + plan.name + " subscription serves only " + plan.name
+			note += " · " + plan.name + " plans serve " + plan.name + " only"
 		}
 	}
 	return note
@@ -173,7 +182,7 @@ func connectGatewayMissing(ctx context.Context, gw *gatewayConfig, baseURL strin
 				p.rows[i].note = missing[j].note()
 			}
 		}
-		note := []string{"A model runs once its provider has a subscription or API key on the gateway."}
+		var note []string
 		if _, pickErr := runAgentPickerState(stdin, stderr, "What "+label+"'s Models Need", note, false, p); pickErr != nil {
 			return agents.Models{}, pickErr
 		}

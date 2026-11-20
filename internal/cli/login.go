@@ -84,7 +84,6 @@ func (ui *browserLoginUI) wait(
 		return auth.CallbackResult{}, err
 	}
 	ui.session = session
-	session.titled = true
 	header := ui.pageSubtitle()
 
 	waitCtx, cancel := context.WithCancel(ctx)
@@ -160,34 +159,30 @@ func (ui *browserLoginUI) close() {
 }
 
 func loginPageLines(loginURL string, opened bool, input string, inputErr error, spinner string, width int) []string {
-	lines := []string{agentPromptLine("Sign in to Dari"), ""}
+	lines := []string{agentPromptLine("Sign in to Dari")}
 	if opened {
-		lines = append(lines,
-			"  "+ansiGray+"Opened your browser. Finish signing in there."+ansiReset,
-			"",
-			"  "+ansiGray+"If it didn't open, visit:"+ansiReset,
-		)
+		lines = append(lines, "  "+ansiGray+"Opened in your browser. If it didn't open:"+ansiReset)
 	} else {
-		lines = append(lines, "  "+ansiGray+"Open this URL in your browser to sign in:"+ansiReset)
+		lines = append(lines, "  "+ansiGray+"Sign in at:"+ansiReset)
 	}
 	lines = append(lines, agentURLLines(loginURL, width)...)
 	lines = append(lines,
 		"",
 		"  "+ansiCoral+spinner+ansiReset+" "+ansiGray+"Waiting for your browser…"+ansiReset,
 		"",
-		agentCursor(true)+inputDisplay(input, width, "paste the callback URL (remote machines)"),
+		agentCursor(true)+inputDisplay(input, width, "on another machine? paste the callback URL"),
 	)
 	if inputErr != nil {
-		lines = append(lines, "  "+ansiCoral+inputErr.Error()+ansiReset)
+		lines = append(lines, "  "+ansiRed+inputErr.Error()+ansiReset)
 	}
-	return append(lines, agentHintLine("enter submit", "ctrl+c cancel"))
+	return withHint(lines, agentHintLine("enter submit", "ctrl+c cancel"))
 }
 
 // loginCompletingLines replaces the wait once the code arrives; the exchange
 // and organization setup run while this stays on screen.
 func loginCompletingLines() []string {
 	return []string{
-		"  " + ansiGreen + "✓" + ansiReset + " Browser sign-in complete.",
+		agentPromptLine("Sign in to Dari"),
 		"",
 		"  " + ansiCoral + "⠸" + ansiReset + " " + ansiGray + "Signing you in…" + ansiReset,
 	}

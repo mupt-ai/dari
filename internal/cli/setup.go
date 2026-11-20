@@ -67,6 +67,9 @@ func newSetupCmd() *cobra.Command {
 			if makeDefault {
 				launch.args = append(launch.args, "--default")
 			}
+			if setup, ok := agentSetups[name]; ok {
+				agentSubtitle = "Setting up " + setup.label
+			}
 			stdin, stderr := cmd.InOrStdin(), cmd.ErrOrStderr()
 			if launch.setup() || launch.removeSetup {
 				if launch.removeSetup && len(launch.args) > 0 {

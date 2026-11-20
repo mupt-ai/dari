@@ -128,6 +128,7 @@ func newAccountsLocalKeyCmd() *cobra.Command {
 // runAccounts opens the Accounts page wherever coding agents route: the
 // hosted Dari API, or the local or self-hosted gateway.
 func runAccounts(ctx context.Context, gf *globalFlags, stdin io.Reader, stderr io.Writer) error {
+	agentSubtitle = "Subscriptions and keys"
 	if !agentInputIsTerminal(stdin) {
 		return errors.New("the Accounts page needs an interactive terminal; use `dari accounts subscription` instead")
 	}
@@ -578,9 +579,8 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			}
 			add(toggle, func() (bool, error) {
 				explain := []string{
-					"  " + ansiGray + "When every " + provider.name + " subscription is at its limit, Dari spends one" + ansiReset,
-					"  " + ansiGray + "banked reset so requests keep going. Now: " + ansiReset + state,
-					"",
+					"Spends one when every " + provider.name + " subscription is at its limit.",
+					"  " + ansiGray + "Now: " + ansiReset + state,
 				}
 				confirm, err := runAgentChoiceTUI(stdin, stderr, "Use Banked Resets Automatically?", explain, []agentChoiceOption{{label: keep}, {label: turn}})
 				if err != nil || confirm == 0 {
@@ -602,7 +602,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 			})
 		}
 		add(agentChoiceOption{label: "Rename"}, func() (bool, error) {
-			return runAgentTextInputTUI(stdin, stderr, "Rename "+name, []string{"  " + ansiGray + "Leave empty to show the account email." + ansiReset}, name, func(label string) error {
+			return runAgentTextInputTUI(stdin, stderr, "Rename "+name, []string{"Empty shows the account email."}, name, func(label string) error {
 				var updated map[string]any
 				return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/label", map[string]string{"label": strings.TrimSpace(label)}, &updated))
 			})
@@ -620,7 +620,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 		})
 		disconnected := false
 		add(agentChoiceOption{label: "Disconnect"}, func() (bool, error) {
-			details := []string{"  " + ansiGray + "Routing stops using this subscription. You can connect it again later." + ansiReset, ""}
+			details := []string{"Routing stops using it."}
 			confirm, err := runAgentChoiceTUI(stdin, stderr, "Disconnect "+name+"?", details, []agentChoiceOption{{label: "Keep It"}, {label: "Disconnect", done: name + " disconnected"}})
 			if err != nil || confirm == 0 {
 				return false, err
@@ -720,14 +720,13 @@ func (page accountsPage) addLocalKey(ctx context.Context, stdin io.Reader, stder
 // with another account and subscribes. It reports whether they subscribed and
 // want to connect the new account now.
 func buyAgentSubscription(stdin io.Reader, stderr io.Writer, provider agentSubscriptionProvider) (bool, error) {
-	details := []string{"  " + ansiGray + "Each " + provider.name + " subscription needs its own " + provider.vendor + " account." + ansiReset}
+	details := []string{"Needs its own " + provider.vendor + " account."}
 	if openAgentBrowser(provider.buyURL) {
-		details = append(details, "  "+ansiGray+"Opened "+provider.vendor+" in your browser. If it didn't open, visit:"+ansiReset)
+		details = append(details, "Opened in your browser. If it didn't open:")
 	} else {
-		details = append(details, "  "+ansiGray+"Subscribe at:"+ansiReset)
+		details = append(details, "Subscribe at:")
 	}
 	details = append(details, agentURLLines(provider.buyURL, 0)...)
-	details = append(details, "  "+ansiGray+"Sign in with a new account, subscribe, then connect it here."+ansiReset, "")
 	choice, err := runAgentChoiceTUI(stdin, stderr, "Buy a "+provider.name+" Subscription", details, []agentChoiceOption{
 		{label: "I've Subscribed, Connect It"},
 		{label: "Back"},
@@ -809,7 +808,7 @@ func (page accountsPage) useReset(ctx context.Context, subscription subscription
 		_, err := runAgentChoiceTUI(stdin, stderr, reset.Label+" can't be used yet", []string{"  " + ansiGray + cmp.Or(expiry, "No expiry") + ansiReset, ""}, []agentChoiceOption{{label: "Back"}})
 		return false, err
 	}
-	details := []string{"  " + ansiGray + "Clears " + name + "'s usage limits now." + ansiReset}
+	details := []string{"Clears " + name + "'s usage limits now."}
 	if expiry != "" {
 		details = append(details, "  "+ansiGray+"This reset "+strings.ToLower(expiry[:1])+expiry[1:]+"."+ansiReset)
 	}
@@ -870,7 +869,7 @@ func manageAPIKey(stdin io.Reader, stderr io.Writer, name string, remove func() 
 		if err != nil || choice == 1 {
 			return false, err
 		}
-		details := []string{"  " + ansiGray + "Routers stop using this key. You can add it again later." + ansiReset, ""}
+		details := []string{"Routers stop using it."}
 		confirm, err := runAgentChoiceTUI(stdin, stderr, "Remove "+name+"?", details, []agentChoiceOption{{label: "Keep It"}, {label: "Remove", done: name + " removed"}})
 		// Esc or Keep it comes back to the key's page.
 		if errors.Is(err, errAgentChoiceCanceled) || (err == nil && confirm == 0) {

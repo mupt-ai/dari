@@ -107,6 +107,9 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 }
 
 func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, stdout, stderr io.Writer) int {
+	if setup, ok := agentSetups[launch.name]; ok {
+		agentSubtitle = "Setting up " + setup.label
+	}
 	path, err := agentExecutable(launch.name)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

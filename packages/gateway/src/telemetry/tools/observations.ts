@@ -159,7 +159,7 @@ export function toolResultObservations(args: {
   }));
 }
 
-function newlySubmittedToolResults(
+export function newlySubmittedToolResults(
   request: InteractionRequest
 ): {
   results: Array<{ item: InteractionToolResult; ordinal: number }>;

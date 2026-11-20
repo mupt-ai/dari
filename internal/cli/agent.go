@@ -155,6 +155,12 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		return 1
 	}
 
+	// Claude Code and Codex name their session to the commands they run, so a
+	// commit they make is reported for their session.
+	if (launch.name == "claude" || launch.name == "codex") && !agents.OnlyRequestsInfo(launch.args) {
+		linkAgentCommits(ctx, stderr)
+	}
+
 	command, err := buildAgentCommand(path, launch, key, baseURL, models)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -486,7 +492,9 @@ func issueAgentRoutingKey(ctx context.Context, apiURL string) (string, error) {
 }
 
 func buildAgentCommand(path string, launch agentLaunch, key, baseURL string, models agents.Models) (agents.Command, error) {
-	command := agents.Command{Path: path, Args: launch.args, Env: agents.WithEnvironment(os.Environ(), map[string]string{agents.RoutingAPIKeyEnv: key, launchedRoutingKeyEnv: "1"})}
+	command := agents.Command{Path: path, Args: launch.args, Env: agents.WithEnvironment(os.Environ(), map[string]string{
+		agents.RoutingAPIKeyEnv: key, agents.RoutingBaseURLEnv: baseURL, launchedRoutingKeyEnv: "1",
+	})}
 	switch launch.name {
 	case "claude":
 		if err := claude.Configure(&command, key, baseURL, models); err != nil {

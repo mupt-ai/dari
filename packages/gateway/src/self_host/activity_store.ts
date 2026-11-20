@@ -11,6 +11,7 @@
 import type { Database } from "bun:sqlite";
 import { randomUUID } from "node:crypto";
 
+import type { SessionGitEvents } from "../activity/http.js";
 import { sqliteActivityDb, type ActivityDb } from "../activity/sql.js";
 import { canonicalInstant, instantFromDate } from "../activity/values.js";
 
@@ -173,6 +174,24 @@ create table if not exists users (
   email text not null,
   display_name text
 );
+create table if not exists routing_git_events (
+  id text primary key,
+  organization_id text not null,
+  routing_request_id text references routing_requests (id) on delete cascade,
+  source_protocol text not null,
+  agent_session_id text not null,
+  occurred_at text not null,
+  ordinal integer not null,
+  kind text not null,
+  repository text not null,
+  number integer,
+  title text,
+  branch text,
+  commit_sha text
+);
+create index if not exists ix_routing_git_events_organization_session on routing_git_events (organization_id, agent_session_id);
+create index if not exists ix_routing_git_events_organization_repository on routing_git_events (organization_id, repository);
+create index if not exists ix_routing_git_events_routing_request_id on routing_git_events (routing_request_id);
 `;
 
 type Row = Record<string, unknown>;
@@ -341,7 +360,39 @@ export class ActivityStore {
           text(observation.exchange_context_hash), int(observation.ordinal),
         );
       }
+      const sessionId = text(row.agent_session_id);
+      if (sessionId) this.insertGitEvents(organizationId, text(row.source_protocol), sessionId, id, receivedAt, list(report.git_events));
     })();
+  }
+
+  async saveSessionGitEvents(write: SessionGitEvents): Promise<void> {
+    const known = new Set((this.db.query(
+      `select commit_sha from routing_git_events
+       where organization_id = ? and agent_session_id = ? and kind = 'commit'`,
+    ).all(write.organizationId, write.agentSessionId) as Array<{ commit_sha: string }>).map((row) => row.commit_sha));
+    this.insertGitEvents(
+      write.organizationId, write.sourceProtocol, write.agentSessionId, null, canonicalInstant(instantFromDate(new Date())),
+      write.events.filter((event) => !known.has(event.commit_sha)),
+    );
+  }
+
+  /** Store a session's git events: what a step's tool output showed, or commits its git hook reported. */
+  private insertGitEvents(
+    organizationId: string, sourceProtocol: string | null, agentSessionId: string, routingRequestId: string | null,
+    occurredAt: string, events: readonly unknown[],
+  ): void {
+    for (const event of events.map(record)) {
+      if (event === null) continue;
+      this.db.query(
+        `insert into routing_git_events
+           (id, organization_id, routing_request_id, source_protocol, agent_session_id, occurred_at, ordinal, kind, repository, number, title, branch, commit_sha)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        `rge_${randomUUID().replaceAll("-", "")}`, organizationId, routingRequestId, sourceProtocol ?? "", agentSessionId, occurredAt,
+        int(event.ordinal), text(event.kind), text(event.repository), int(event.number), text(event.title), text(event.branch),
+        text(event.commit_sha),
+      );
+    }
   }
 
   /** A retained body, or null. */

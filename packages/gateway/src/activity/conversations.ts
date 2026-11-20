@@ -19,6 +19,7 @@ import {
 import { criteria, readActivityQuery, readSourceScope, sourceProtocols, validatedFilters } from "./filters.js";
 import type { ActivityRoute } from "./http.js";
 import { notFound } from "./params.js";
+import { withPullRequests } from "./pull_requests.js";
 import { AGENT_SESSION_KEY } from "./shared.js";
 import { likePattern, raw, sql } from "./sql.js";
 import { readInt, readOptionalString } from "./values.js";
@@ -164,7 +165,7 @@ export const conversations: ActivityRoute = async (request) => {
     keys = keys.slice(0, limit);
     nextOffset = offset + limit;
   }
-  const items: object[] = [];
+  const items: Array<ReturnType<typeof conversationSummary>> = [];
   if (keys.length > 0) {
     const [records, titles] = await Promise.all([
       loadRecords(db, sql`${where} and ${groupsCondition(keys)}`),
@@ -182,7 +183,7 @@ export const conversations: ActivityRoute = async (request) => {
     }
   }
   return {
-    conversations: items,
+    conversations: await withPullRequests(db, organizationId, items),
     conversation_count: readInt(totals.conversation_count),
     model_switches: readInt(totals.total_model_switches),
     conversations_with_model_switches: readInt(totals.conversations_with_model_switches),

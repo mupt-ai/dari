@@ -23,9 +23,6 @@ func TestConfigurePointsTheInstalledExtensionAtTheRouter(t *testing.T) {
 	if command.Cleanup != nil {
 		t.Fatal("Pi command should not need cleanup")
 	}
-	if got := agents.EnvironmentValue(command.Env, "DARI_ROUTING_BASE_URL"); got != "https://routing.test/rtr_1" {
-		t.Fatalf("DARI_ROUTING_BASE_URL = %q", got)
-	}
 	if agents.EnvironmentValue(command.Env, "DARI_STATUS_EXECUTABLE") == "" {
 		t.Error("no status executable")
 	}

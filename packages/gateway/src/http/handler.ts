@@ -3,6 +3,7 @@ import {
   handleResponsesWebSocketFallback,
 } from "../ingress/codex.js";
 import { handleActivityRequest } from "../activity/http.js";
+import { handleGitEvents } from "../ingress/git_events.js";
 import { handleLinkRequest, LINK_METADATA_PATH, LINK_ROUTE_PREFIX } from "../link/endpoints.js";
 import { handleModels } from "../ingress/models.js";
 import { handleMuseCodeModels } from "../ingress/muse_models.js";
@@ -21,8 +22,9 @@ export type GatewayHandlerOptions = {
 /**
  * The gateway's routed HTTP surface: `/v1/{chat/completions,responses,
  * messages,models}` on the default router and `/{router_id}/v1/...` on a
- * named one, the Dari Link grant endpoints under `/v1/link/`, and the
- * Activity reads under `/v1/organizations/{organization}/routing/activity/`. Binds
+ * named one, the Dari CLI's commit reports at `/v1/dari/git-events` on
+ * either, the Dari Link grant endpoints under `/v1/link/`, and the Activity
+ * reads under `/v1/organizations/{organization}/routing/activity/`. Binds
  * `options.platform` for every request it serves.
  */
 export function createRequestHandler(options: GatewayHandlerOptions) {
@@ -52,6 +54,10 @@ export function createRequestHandler(options: GatewayHandlerOptions) {
     }
     const activity = await handleActivityRequest(request, options.platform.activity);
     if (activity !== null) return activity;
+    const gitEvents = url.pathname.match(/^(?:\/([^/]+))?\/v1\/dari\/git-events$/);
+    if (request.method === "POST" && gitEvents !== null) {
+      return await handleGitEvents(request, gitEvents[1] ?? DEFAULT_ROUTER_ALIAS, options.platform.activity);
+    }
 
     const endpoint = routedEndpoint(url.pathname);
     if (endpoint?.protocol === "chat" && request.method === "POST") {

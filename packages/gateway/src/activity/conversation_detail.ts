@@ -22,6 +22,7 @@ import {
 import type { SourceProtocol } from "./filters.js";
 import type { ActivityRoute } from "./http.js";
 import { notFound } from "./params.js";
+import { sessionCommits, withPullRequests } from "./pull_requests.js";
 import { thinkingLevelValue } from "./shared.js";
 import { sql, type ActivityDb } from "./sql.js";
 import { formatInstant, readOptionalString } from "./values.js";
@@ -152,8 +153,10 @@ export const conversation: ActivityRoute = async (request) => {
     route_path: routePath(records),
   }));
   const hasMore = start > 0;
+  const [summary] = await withPullRequests(db, organizationId, [conversationSummary(all, entities, undefined, null)]);
   return {
-    conversation: conversationSummary(all, entities, undefined, null),
+    conversation: summary!,
+    commits: await sessionCommits(db, organizationId, summary!.source_protocol, summary!.agent_session_id),
     streams,
     filtered_model_steps: filtered.length,
     focused_request_class: focusedRequestClass,

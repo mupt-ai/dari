@@ -28,6 +28,7 @@ func init() {
 			newActivityRequestCmd(gf),
 			newActivityCapabilitiesCmd(gf, "tools"),
 			newActivityCapabilitiesCmd(gf, "skills"),
+			newActivityPullRequestsCmd(gf),
 		)
 		root.AddCommand(activity)
 	})

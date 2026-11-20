@@ -40,6 +40,11 @@ func TestBuildClaudeAgentCommandPassesStatusLineInline(t *testing.T) {
 			Options               []map[string]string `json:"options"`
 			ReplaceBuiltInOptions bool                `json:"replaceBuiltInOptions"`
 		} `json:"modelPicker"`
+		Hooks struct {
+			UserPromptSubmit []struct {
+				Hooks []struct{ Command string } `json:"hooks"`
+			} `json:"UserPromptSubmit"`
+		} `json:"hooks"`
 		Env map[string]string `json:"env"`
 	}
 	if err := json.Unmarshal([]byte(data), &settings); err != nil {
@@ -48,6 +53,11 @@ func TestBuildClaudeAgentCommandPassesStatusLineInline(t *testing.T) {
 	// The picker lists only the router's models, in place of Claude's own.
 	if !settings.ModelPicker.ReplaceBuiltInOptions || len(settings.ModelPicker.Options) == 0 {
 		t.Fatalf("modelPicker = %+v; want the router's models replacing the built-in lineup", settings.ModelPicker)
+	}
+	// Each prompt notes the session in its repository, for commits it makes.
+	if prompt := settings.Hooks.UserPromptSubmit; len(prompt) != 1 || len(prompt[0].Hooks) != 1 ||
+		!strings.HasSuffix(prompt[0].Hooks[0].Command, " agent-hook --claude") {
+		t.Fatalf("UserPromptSubmit hooks = %+v", prompt)
 	}
 	if settings.StatusLine.Type != "command" {
 		t.Fatalf("statusLine.type = %q", settings.StatusLine.Type)

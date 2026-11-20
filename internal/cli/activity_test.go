@@ -224,6 +224,22 @@ func TestActivityCommandsExposeActivityAPIRoutes(t *testing.T) {
 			wantPath: "/v1/organizations/current/routing/activity/requests/rreq_1/client-response",
 		},
 		{
+			name:      "pull requests",
+			args:      []string{"activity", "pull-requests", "list", "--search", "login"},
+			wantPath:  "/v1/organizations/current/routing/activity/pull-requests",
+			wantQuery: map[string]string{"search": "login", "limit": "20"},
+		},
+		{
+			name:     "pull request by URL",
+			args:     []string{"activity", "pull-requests", "show", "https://github.com/acme/web/pull/12"},
+			wantPath: "/v1/organizations/current/routing/activity/pull-requests/acme/web/12",
+		},
+		{
+			name:     "pull request by reference",
+			args:     []string{"activity", "pull-requests", "show", "acme/web#12"},
+			wantPath: "/v1/organizations/current/routing/activity/pull-requests/acme/web/12",
+		},
+		{
 			name:      "people series",
 			args:      []string{"activity", "people", "series", "--from", "2026-07-01T00:00:00Z", "--to", "2026-07-08T00:00:00Z", "--comparison-user-id", "usr_a", "--comparison-user-id", "usr_b"},
 			wantPath:  "/v1/organizations/current/routing/activity/people-series",

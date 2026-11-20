@@ -7,15 +7,26 @@ import { randomUUID } from "node:crypto";
 
 import { HttpError } from "../http/errors.js";
 import { activityError, Params } from "./params.js";
+import type { CommitEvent } from "../telemetry/tools/git_events.js";
 import type { ActivityDb } from "./sql.js";
 import { ACTIVITY_ROUTES } from "./routes.js";
 
 export const ACTIVITY_ROUTE = /^\/v1\/organizations\/([^/]+)\/routing\/activity\/(.+)$/;
 
+/** Commits an agent session made, as the Dari CLI's git hook reports them. */
+export type SessionGitEvents = {
+  organizationId: string;
+  sourceProtocol: string;
+  agentSessionId: string;
+  events: CommitEvent[];
+};
+
 /** Activity as a platform provides it. */
 export type ActivityPlatform = {
   /** The database holding `routing_requests` and the tables Activity joins. */
   db: ActivityDb;
+  /** Store a session's commits, now; a commit it already has is kept once. */
+  saveSessionGitEvents(write: SessionGitEvents): Promise<void>;
   /**
    * The organization a request may read. `organizationRef` is the path's
    * organization: an ID, or `current` for the one the bearer key belongs to.

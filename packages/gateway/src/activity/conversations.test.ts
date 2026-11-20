@@ -45,6 +45,7 @@ function platform(): ActivityPlatform {
   `);
   return {
     db: sqliteActivityDb(db),
+    saveSessionGitEvents: async () => {},
     authorize: async () => ({ organizationId: ORG }),
     readBlob: async (bucket, key) => (bucket === "bucket" && key === "key-1" ? '{"messages":[]}' : null),
   };

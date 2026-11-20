@@ -54,6 +54,23 @@ func EnsureRoutingKey(scope string, issue func() (string, error)) (string, bool,
 	return key, true, nil
 }
 
+// CachedRoutingKeys returns every cached launcher key, without issuing one.
+func CachedRoutingKeys() ([]string, error) {
+	path, err := agentKeysPath()
+	if err != nil {
+		return nil, err
+	}
+	keys, err := loadAgentKeys(path)
+	if err != nil {
+		return nil, err
+	}
+	values := make([]string, 0, len(keys.RoutingKeys))
+	for _, key := range keys.RoutingKeys {
+		values = append(values, key)
+	}
+	return values, nil
+}
+
 func agentKeysPath() (string, error) {
 	statePath, err := Path()
 	if err != nil {

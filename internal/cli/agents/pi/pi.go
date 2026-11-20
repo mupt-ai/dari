@@ -16,9 +16,6 @@ import (
 //go:embed extension.ts
 var extension string
 
-// baseURLEnv carries the router's base URL, without /v1, to the extension.
-const baseURLEnv = "DARI_ROUTING_BASE_URL"
-
 // Configure points the Dari provider extension (installed by Setup) at the
 // router at baseURL for this launch, offers the launch's models in Pi's model
 // picker, and starts on the default model.
@@ -32,7 +29,6 @@ func Configure(command *agents.Command, baseURL string, models agents.Models) er
 		return fmt.Errorf("encode Pi models: %w", err)
 	}
 	status["DARI_MODELS"] = string(menu)
-	status[baseURLEnv] = baseURL
 	command.Env = agents.WithEnvironment(command.Env, status)
 	args := []string{"--provider", "dari"}
 	// Pi loads the provider extension Setup installed on its own. A launch

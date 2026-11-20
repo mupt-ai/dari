@@ -254,7 +254,8 @@ func statusLineSettings() (map[string]any, error) {
 	}, nil
 }
 
-// injectSettings passes the status line and model picker to Claude Code. Where
+// injectSettings passes the status line, the model picker, and the prompt hook
+// that notes the session in its repository (for `dari git-hook`). Where
 // the launcher can hand its process over, they go inline, so no file is left
 // behind. Elsewhere they go in a temporary file: an npm claude.cmd shim does not
 // pass an inline JSON argument through intact.
@@ -266,6 +267,10 @@ func statusLineSettings() (map[string]any, error) {
 // processes can read: it is the same for every router.
 func injectSettings(command *agents.Command, models agents.Models, env map[string]string) error {
 	statusLine, err := statusLineSettings()
+	if err != nil {
+		return err
+	}
+	executable, err := agents.StatusExecutable()
 	if err != nil {
 		return err
 	}
@@ -282,6 +287,12 @@ func injectSettings(command *agents.Command, models agents.Models, env map[strin
 		"statusLine": statusLine,
 		// Replace Claude Code's built-in lineup: only the router's models appear.
 		"modelPicker": map[string]any{"options": pickerOptions(models), "replaceBuiltInOptions": true},
+		"hooks": map[string]any{
+			"UserPromptSubmit": []any{map[string]any{"hooks": []any{map[string]any{
+				"type":    "command",
+				"command": agents.ShellQuote(executable) + " agent-hook --claude",
+			}}}},
+		},
 	})
 	if err != nil {
 		return fmt.Errorf("encode Claude status settings: %w", err)

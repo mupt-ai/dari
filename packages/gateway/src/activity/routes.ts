@@ -4,6 +4,7 @@ import { filterOptions, models, overview, routers, series } from "./core.js";
 import { conversation, conversations, payload, toolExchanges } from "./conversations.js";
 import type { ActivityRoute } from "./http.js";
 import { peopleKeys, peopleSeries } from "./people.js";
+import { pullRequest, pullRequests } from "./pull_requests.js";
 import { toolSkillDetail, toolSkillInventory, toolSkills } from "./tools.js";
 
 export const ACTIVITY_ROUTES: ReadonlyArray<readonly [string, ActivityRoute]> = [
@@ -23,4 +24,6 @@ export const ACTIVITY_ROUTES: ReadonlyArray<readonly [string, ActivityRoute]> = 
   ["tools-skills", toolSkills],
   ["tools-skills/detail", toolSkillDetail],
   ["tools-skills/inventory", toolSkillInventory],
+  ["pull-requests", pullRequests],
+  ["pull-requests/:owner/:repo/:number", pullRequest],
 ];

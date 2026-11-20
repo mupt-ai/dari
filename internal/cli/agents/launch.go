@@ -11,7 +11,10 @@ import (
 
 const (
 	RoutingAPIKeyEnv = "DARI_ROUTING_API_KEY"
-	GatewayURLEnv    = "DARI_GATEWAY_URL"
+	// RoutingBaseURLEnv is the router a launch routes through, without /v1:
+	// the Pi extension routes on it, and Dari's git hook reports commits to it.
+	RoutingBaseURLEnv = "DARI_ROUTING_BASE_URL"
+	GatewayURLEnv     = "DARI_GATEWAY_URL"
 	// NoActivityLinkEnv is set by a launch whose requests do not go through
 	// hosted Dari, such as one through a local or self-hosted gateway: the
 	// Activity dashboard never sees them, so status lines leave out its link.

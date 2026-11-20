@@ -136,6 +136,7 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
     // it serves (`current`).
     activity: {
       db: deps.activity.reads,
+      saveSessionGitEvents: (write) => deps.activity.saveSessionGitEvents(write),
       async authorize(request, organizationRef) {
         let key: string;
         try {

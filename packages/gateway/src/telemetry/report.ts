@@ -71,6 +71,7 @@ import { credentialRejectionFromFailure } from "../runtime/provider_stream_outco
 import { scrubSecrets } from "./scrub.js";
 import { encodeRetainedInteractionRequest } from "./requests/retained_interaction_request.js";
 import { toolResultObservations, toolSkillEvents } from "./tools/observations.js";
+import { gitEvents } from "./tools/git_events.js";
 
 // The decision's candidate_pruning audit: core cache-aware pruning, extended
 // with models excluded up front for missing hard capabilities (image input).
@@ -622,6 +623,7 @@ export class RequestReporter {
           request: a.interaction,
           zdr: a.zdr,
         }),
+        git_events: gitEvents(a.interaction, a.zdr),
         prefix_entry: prefixEntry,
         touched_prefix_hash: touchedHash,
         ...(link === undefined

@@ -266,8 +266,6 @@ export type LinkApprovalPage = {
   connections(subject: string): Promise<LinkConnection[]>;
   /** The user ends one of their grants; false when they have none by that id. */
   disconnect(subject: string, grantId: string): Promise<boolean>;
-  /** Replace one of the user's grants' budget (empty removes it); false when they have none by that id. */
-  setBudget(subject: string, grantId: string, budget: LinkBudget[]): Promise<boolean>;
   /** Replace one of the user's grants' monthly spend limits; false when they have none by that id. */
   setLimits(subject: string, grantId: string, limits: LinkLimit[]): Promise<boolean>;
 };

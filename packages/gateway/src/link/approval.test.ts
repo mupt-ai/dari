@@ -250,8 +250,8 @@ test("without an encryption key the page connects nothing and says why", async (
 });
 
 // The user manages what they connected on the connections page, known by the
-// same cookie: each app's budget, Disconnect, and their plans.
-test("the connections page sets a grant's budget, disconnects it, and removes plans", async () => {
+// same cookie: each app's spend limits, Disconnect, and their plans.
+test("the connections page sets a grant's spend limits, disconnects it, and removes plans", async () => {
   const browser = gateway([
     jsonResponse({ access_token: "sk-ant-oat01-a", refresh_token: "r", expires_in: 3600, account: { email_address: "me@example.com" } }),
   ]);
@@ -269,17 +269,19 @@ test("the connections page sets a grant's budget, disconnects it, and removes pl
 
   const page = await browser.connections();
   expect(page).toContain("Notes App");
-  expect(page).toContain("Shares Claude");
+  expect(page).toContain('aria-label="Shares Claude"');
   expect(page).toContain(`id="${grant!.id}"`);
 
-  // A limit is whole tokens; a forged form changes nothing.
-  expect(await (await browser.manage({ csrf, grant_id: grant!.id, decision: "budget", max_300: "lots" })).text())
-    .toContain("whole number of tokens");
-  await browser.manage({ csrf: "forged", grant_id: grant!.id, decision: "budget", max_300: "1000" });
-  expect(browser.links.grant(grant!.id)!.budget).toEqual([]);
-  expect((await browser.manage({ csrf, grant_id: grant!.id, decision: "budget", max_300: "1,000", max_10080: "" })).status).toBe(303);
-  expect(browser.links.grant(grant!.id)!.budget).toEqual([{ windowMinutes: 300, maxTokens: 1000 }]);
-  expect(await browser.connections()).toContain('value="1000"');
+  // A limit is dollars a month on a shared plan; a forged form changes nothing.
+  expect(page).toContain("Set Limit");
+  expect(page).not.toContain("Most Tokens");
+  expect(await (await browser.manage({ csrf, grant_id: grant!.id, decision: "limits", [`usd_${id}`]: "lots" })).text())
+    .toContain("dollar amount");
+  await browser.manage({ csrf: "forged", grant_id: grant!.id, decision: "limits", [`usd_${id}`]: "10" });
+  expect(browser.links.grant(grant!.id)!.limits).toEqual([]);
+  expect((await browser.manage({ csrf, grant_id: grant!.id, decision: "limits", [`usd_${id}`]: "$10" })).status).toBe(303);
+  expect(browser.links.grant(grant!.id)!.limits).toEqual([{ credentialId: id, monthlyUsd: 10 }]);
+  expect(await browser.connections()).toContain('value="10"');
 
   await browser.manage({ csrf, grant_id: grant!.id, decision: "disconnect" });
   expect(browser.links.grants(null)).toEqual([]);

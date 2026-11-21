@@ -303,9 +303,6 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
       async disconnect(subject, grantId) {
         return (await ownGrant(subject, grantId)) !== null && (await revoke(grantId));
       },
-      async setBudget(subject, grantId, budget) {
-        return (await ownGrant(subject, grantId)) !== null && (await store.updateGrant(grantId, { budget }));
-      },
       async setLimits(subject, grantId, limits) {
         const grant = await ownGrant(subject, grantId);
         if (grant === null) return false;

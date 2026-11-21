@@ -87,7 +87,7 @@ import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
 import { explicitModelId, explicitModelSlug } from "../protocol/input/router_model.js";
 import { CANONICAL_MODELS, canonicalModelName } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
-import { budgetBody, limitsBody, linkTokens, spendBody, validBudget, validLimits } from "./budget.js";
+import { budgetBody, limitsBody, spendBody, validBudget, validLimits } from "./budget.js";
 import { catalogModelFor } from "./grant_access.js";
 import { requestTags } from "../runtime/request_tags.js";
 import type { ClientHarness, ResolvedRouter, SubscriptionKind } from "../types.js";
@@ -1372,30 +1372,27 @@ ${session.account ? `<form method="post" action="${CONNECTIONS_PATH}">${csrf}${S
 }
 
 function connectionCard(connection: LinkConnection, csrf: string): string {
-  const tokens = linkTokens(connection.usage);
-  const limit = (minutes: number, label: string) => {
-    const standing = connection.budget.find((window) => window.windowMinutes === minutes);
-    return `<label class="field" for="max_${minutes}_${escapeHtml(connection.id)}">Most Tokens ${label}</label>
-<input id="max_${minutes}_${escapeHtml(connection.id)}" type="text" inputmode="numeric" name="max_${minutes}" value="${standing === undefined ? "" : standing.maxTokens}" placeholder="No Limit" autocomplete="off">
-${standing === undefined ? "" : `<p class="hint">${count(standing.usedTokens)} used${standing.resetsAt === null ? "" : `, at the limit until ${escapeHtml(new Date(standing.resetsAt).toUTCString())}`}</p>`}`;
-  };
-  // The most the grant may spend on each plan or key a month.
-  const spendLimit = (plan: LinkSubscription) => {
+  const names = connection.subscriptions.map(planName);
+  // A plan's account tells it apart only when the app shares two of the same name.
+  const shown = (plan: LinkSubscription) =>
+    names.filter((name) => name === planName(plan)).length > 1 ? `${planName(plan)} (${planLabel(plan)})` : planName(plan);
+  // One row per shared plan or key: what the app spent on it this month and
+  // the most it may spend.
+  const row = (plan: LinkSubscription) => {
     const spend = connection.spend.find((entry) => entry.credentialId === plan.id);
     const id = `usd_${escapeHtml(plan.id)}_${escapeHtml(connection.id)}`;
-    return `<label class="field" for="${id}">${escapeHtml(planName(plan))} Per Month ($)</label>
-<input id="${id}" type="text" inputmode="decimal" name="usd_${escapeHtml(plan.id)}" value="${spend?.monthlyUsd ?? ""}" placeholder="No Limit" autocomplete="off">
-<p class="hint">${dollars(spend?.spentUsd ?? 0)} this month${spend?.reached ? ", at the limit until the month ends" : ""}</p>`;
+    return `<div class="limit">${logo(plan.apiKeyProvider ?? plan.provider, planName(plan))}<label class="grow" for="${id}"><strong>${escapeHtml(shown(plan))}</strong><small>${dollars(spend?.spentUsd ?? 0)} this month${spend?.reached ? ", at the limit" : ""}</small></label>
+<input id="${id}" type="text" inputmode="decimal" name="usd_${escapeHtml(plan.id)}" value="${spend?.monthlyUsd ?? ""}" placeholder="$ / Month" aria-label="${escapeHtml(shown(plan))} Monthly Limit ($)" autocomplete="off"></div>`;
   };
+  const limited = connection.spend.some((entry) => entry.monthlyUsd !== null);
   return `<form class="card" id="${escapeHtml(connection.id)}" method="post" action="${CONNECTIONS_PATH}">${csrf}
 <input type="hidden" name="grant_id" value="${escapeHtml(connection.id)}">
 <strong>${escapeHtml(connection.appName)}${connection.endpoint ? " (Endpoint)" : ""}</strong>
-<small>Connected ${escapeHtml(new Date(connection.createdAt).toDateString())} &middot; ${count(connection.usage.requests)} requests &middot; ${count(tokens)} tokens</small>
-<small>Shares ${connection.subscriptions.length === 0 ? "nothing" : connection.subscriptions.map((plan) => escapeHtml(planName(plan))).join(", ")}</small>
-${limit(300, "Per 5 Hours")}
-${limit(10080, "Per Week")}
-${connection.subscriptions.map(spendLimit).join("\n")}
-<div class="row"><button class="btn outline" type="submit" name="decision" value="budget">Save Limits</button><button class="btn outline" type="submit" name="decision" value="disconnect">Disconnect</button></div>
+${connection.subscriptions.length === 0 ? "<small>Shares nothing</small>" : `<span class="logos" role="img" aria-label="Shares ${escapeHtml(connection.subscriptions.map(shown).join(", "))}">${[...new Map(connection.subscriptions.map((plan) => [plan.apiKeyProvider ?? plan.provider, plan])).values()].map((plan) => logo(plan.apiKeyProvider ?? plan.provider, planName(plan))).join("")}</span>`}
+${connection.subscriptions.length === 0 ? "" : `<details${limited ? " open" : ""}><summary>Set Limit</summary>
+${connection.subscriptions.map(row).join("\n")}
+<button class="btn outline" type="submit" name="decision" value="limits">Save</button></details>`}
+<div class="row"><button class="btn outline" type="submit" name="decision" value="disconnect">Disconnect</button></div>
 </form>`;
 }
 
@@ -1417,20 +1414,13 @@ async function connectionsSubmit(approval: LinkApprovalPage, request: Request, f
     await approval.disconnect(session.subject, grantId);
     return back;
   }
-  if (decision === "budget") {
-    const entries = [300, 10080].flatMap((minutes) => {
-      const value = (form.get(`max_${minutes}`) ?? "").replace(/[\s,_]/g, "");
-      return value === "" ? [] : [{ window_minutes: minutes, max_tokens: /^\d+$/.test(value) ? Number(value) : Number.NaN }];
-    });
-    const budget = validBudget(entries);
-    if (budget === null) return await connectionsPage(approval, request, "Each limit is a whole number of tokens; leave it empty for none.");
+  if (decision === "limits") {
     const limits = validLimits([...form.entries()].flatMap(([field, raw]) => {
       const value = raw.replace(/[\s,$]/g, "");
       if (!field.startsWith("usd_") || value === "") return [];
       return [{ credential_id: field.slice(4), monthly_usd: /^\d+(\.\d+)?$/.test(value) ? Number(value) : Number.NaN }];
     }));
     if (limits === null) return await connectionsPage(approval, request, "Each monthly limit is a dollar amount; leave it empty for none.");
-    await approval.setBudget(session.subject, grantId, budget);
     await approval.setLimits(session.subject, grantId, limits);
     return back;
   }
@@ -1460,10 +1450,6 @@ function planName(subscription: LinkSubscription): string {
   return subscription.apiKeyProvider !== undefined
     ? `${subscription.name} API Key`
     : KINDS[subscription.provider as SubscriptionKind]?.name ?? subscription.name;
-}
-
-function count(value: number): string {
-  return value.toLocaleString("en-US");
 }
 
 // Back to the approval page by GET, so no form is left to resubmit.
@@ -2042,13 +2028,17 @@ input[type=text]:focus-visible,input[type=password]:focus-visible{outline:1px so
 .bar{flex:0 0 100%;height:4px;margin:8px 0 2px;border-radius:999px;background:rgba(237,237,237,.08);overflow:hidden}.bar>span{display:block;height:100%;border-radius:999px;background:var(--mint)}.full .bar>span{background:#d64548}
 .actions{display:flex;justify-content:space-between;margin:4px -8px 0}.actions .btn.ghost{margin:0}.actions span{display:flex}
 .fine{color:var(--faint);font-size:12px;margin:12px 0 0;text-align:center}
+.card:has(details[open]) .logos{display:none}
+.logos{display:flex;gap:8px;margin:8px 0 0}.logos .logo,.limit .logo{width:16px;height:16px}
+.limit{display:flex;align-items:center;gap:10px;margin:10px 0 0}.limit small{display:block}.limit input{width:110px;margin:0}
+details{margin:12px 0 0}summary{cursor:pointer;list-style:none;display:inline-block;font-size:13px;color:var(--faint);text-decoration:underline;text-underline-offset:3px}summary::-webkit-details-marker{display:none}summary:hover{color:inherit}details[open] summary{display:none}details .btn{margin:12px 0 0}
 .card{display:block;margin:0 0 12px;padding:14px 12px;border:1px solid var(--rule);border-radius:6px}.card>small{margin:2px 0 0}.card .field{margin:16px 0 8px}
 .row{display:flex;gap:8px;margin:16px 0 0}.row .btn{flex:1}
 .nav{position:absolute;top:10px;display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:0;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer}
 .nav:hover{background:rgba(237,237,237,.06);color:var(--ink)}.back{left:12px}.close{right:12px}
 .done{display:inline-flex;align-items:center;justify-content:center;width:44px;height:44px;margin:0 0 20px;border:1px solid rgba(142,230,189,.4);border-radius:6px;background:rgba(142,230,189,.1);color:var(--mint)}.done .icon{width:22px;height:22px}
 a:focus-visible,button:focus-visible,input[type=checkbox]:focus-visible{outline:1px solid var(--mint);outline-offset:1px}
-[role=alert]{margin:16px 0 0;padding:10px 12px;border:1px solid rgba(214,69,72,.5);border-radius:6px;background:rgba(214,69,72,.1);color:var(--ink);font-size:13px}
+[role=alert]{margin:16px 0 24px;padding:10px 12px;border:1px solid rgba(214,69,72,.5);border-radius:6px;background:rgba(214,69,72,.1);color:var(--ink);font-size:13px}
 ::selection{background:var(--mint);color:var(--page)}`;
 
 function escapeHtml(value: string): string {

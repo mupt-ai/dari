@@ -209,9 +209,11 @@ func saveAgentConfig(ctx context.Context, name, key, baseURL string, models agen
 		}
 		// A router that serves Codex its own list is named instead of copied,
 		// so Codex follows its models; an older one gets the copy, as before.
+		// A failed check changes nothing: falling back to a copy would stop a
+		// live setup following the router over a passing network error.
 		catalogURL, err := codex.LiveCatalogURL(ctx, key, baseURL, models.Default())
 		if err != nil {
-			catalogURL = ""
+			return err
 		}
 		return codex.Setup(home, baseURL, key, models.Default(), catalog, catalogURL, disableWebSearch, models.RemoteCompaction)
 	case "pi":

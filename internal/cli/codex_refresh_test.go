@@ -21,6 +21,8 @@ type fakeCodexRouter struct {
 	models []string
 	direct bool
 	key    string
+	// failCodexFetch makes the request Codex itself sends fail.
+	failCodexFetch bool
 }
 
 func (f *fakeCodexRouter) set(models []string, direct bool) {
@@ -39,6 +41,10 @@ func (f *fakeCodexRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get("Authorization") != "Bearer "+f.key {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":{"code":"invalid_api_key","message":"bad key"}}`))
+		return
+	}
+	if f.failCodexFetch && r.URL.Query().Get("client_version") != "" {
+		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
 	body := map[string]any{"remote_compaction": "unsupported"}
@@ -230,5 +236,34 @@ func TestCodexRefreshWithARefusedKeyOrNoSetup(t *testing.T) {
 	}
 	if after := readFile(t, filepath.Join(home, "config.toml")); after != before {
 		t.Fatal("a refused key changed the config")
+	}
+}
+
+// A check of the live list that fails (a timeout, a 5xx) must not turn a live
+// setup back into a copy: refresh fails and the config is left as it was.
+func TestCodexRefreshKeepsALiveSetupWhenTheCheckFails(t *testing.T) {
+	home := codexTestHome(t)
+	router := &fakeCodexRouter{models: []string{"dari/routing", "dari/model/a/one"}, direct: true, key: "k"}
+	server := httptest.NewServer(router)
+	defer server.Close()
+	models, _ := routerModels(context.Background(), server.URL, "k", "codex")
+	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, "config.toml")
+	before := readFile(t, path)
+
+	router.mu.Lock()
+	router.failCodexFetch = true
+	router.mu.Unlock()
+	var stderr bytes.Buffer
+	if err := runCodexRefresh(context.Background(), &stderr); err == nil {
+		t.Fatal("refresh succeeded although the live list could not be checked")
+	}
+	if after := readFile(t, path); after != before {
+		t.Fatalf("a failed check changed the config:\n%s", after)
+	}
+	if _, err := os.Stat(filepath.Join(home, "dari-models.json")); !os.IsNotExist(err) {
+		t.Fatalf("a failed check wrote a copy: %v", err)
 	}
 }

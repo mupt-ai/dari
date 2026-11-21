@@ -84,7 +84,7 @@ test("Codex is told how to bring an out-of-date /model menu up to date", async (
   expect(codexError.code).toBe("model_not_enabled");
   expect(codexError.param).toBe("model");
   expect(codexError.message).toBe(
-    "Model 'openai/gpt-0-gone' is not enabled on this router. If it came from Codex's /model menu, the menu is out of date: run `dari setup codex --refresh`.",
+    "Model 'openai/gpt-0-gone' is not enabled on this router. Codex's /model list may be out of date: run `dari setup codex --refresh`.",
   );
 
   const fromOther = await request({});

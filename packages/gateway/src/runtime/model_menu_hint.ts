@@ -11,7 +11,7 @@ export function withModelMenuHint(error: unknown, clientHarness: ClientHarness |
   if (code !== "model_not_enabled") return error;
   return new HttpError(
     status,
-    `${message} If it came from Codex's /model menu, the menu is out of date: run \`dari setup codex --refresh\`.`,
+    `${message} Codex's /model list may be out of date: run \`dari setup codex --refresh\`.`,
     code,
     param,
     errorResponseHeaders(error),

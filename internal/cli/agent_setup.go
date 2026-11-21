@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os/exec"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mupt-ai/dari/internal/auth"
 	"github.com/mupt-ai/dari/internal/cli/agents"
@@ -211,9 +213,12 @@ func saveAgentConfig(ctx context.Context, name, key, baseURL string, models agen
 		// so Codex follows its models; an older one gets the copy, as before.
 		// A failed check changes nothing: falling back to a copy would stop a
 		// live setup following the router over a passing network error.
-		catalogURL, err := codex.LiveCatalogURL(ctx, key, baseURL, models.Default())
-		if err != nil {
-			return err
+		catalogURL := ""
+		if codexOnPathReadsLiveCatalog(ctx) {
+			catalogURL, err = codex.LiveCatalogURL(ctx, key, baseURL, models.Default())
+			if err != nil {
+				return err
+			}
 		}
 		return codex.Setup(home, baseURL, key, models.Default(), catalog, catalogURL, disableWebSearch, models.RemoteCompaction)
 	case "pi":
@@ -489,6 +494,31 @@ const codexBackgroundRestartNote = "Codex now reads its /model list from the rou
 	"restart its background server once so open windows switch too: `codex app-server daemon restart` " +
 	"(this interrupts running Codex turns)"
 
+// codexVersion is what `codex --version` prints for the Codex on PATH, or ""
+// when there is none. Tests replace it.
+var codexVersion = func(ctx context.Context) string {
+	executable, err := agentExecutable("codex")
+	if err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, executable, "--version").Output()
+	if err != nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// codexOnPathReadsLiveCatalog reports whether the Codex on PATH, if any, reads
+// a model_catalog_url; one too old would show OpenAI's models in /model, so
+// setup writes it a copy instead. Without one on PATH, only the Codex app
+// reads the config, and the app's own Codex is new enough.
+func codexOnPathReadsLiveCatalog(ctx context.Context) bool {
+	version := codexVersion(ctx)
+	return version == "" || codex.ReadsLiveCatalogVersion(version)
+}
+
 // codexReadsLiveCatalog reports whether agent is Codex set up to read its
 // model list from the router.
 func codexReadsLiveCatalog(agent string) bool {
@@ -547,6 +577,10 @@ func runCodexRefresh(ctx context.Context, stderr io.Writer) error {
 		agentStep(stderr, fmt.Sprintf("Codex's /model list is up to date (%s); new Codex windows show it, "+
 			"and windows already open show it after `codex app-server daemon restart` (this interrupts running Codex turns)",
 			strings.Join(models.Menu(), ", ")))
+		if !codexOnPathReadsLiveCatalog(ctx) {
+			agentStep(stderr, "Update Codex to 0.156 or newer, then run `dari setup codex --refresh` again: "+
+				"Codex then reads its /model list from the router and keeps it current")
+		}
 	}
 	if saved := models.Saved; saved != "" && !slices.Contains(models.Menu(), saved) {
 		agentStep(stderr, fmt.Sprintf("The router no longer serves %s, your last /model pick; Codex starts on %s instead", saved, models.Default()))

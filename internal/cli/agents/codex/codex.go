@@ -206,3 +206,33 @@ func codexAcceptsCatalogURL(raw string) bool {
 	}
 	return u.Scheme == "http" && strings.EqualFold(host, "localhost")
 }
+
+// liveCatalogMinVersion is the first Codex that reads a provider's
+// model_catalog_url (openai/codex#46561). Older ones accept the setting but
+// ignore it and show OpenAI's own models in /model.
+var liveCatalogMinVersion = [3]int{0, 156, 0}
+
+// ReadsLiveCatalogVersion reports whether a Codex that printed version (as
+// `codex --version` does, "codex-cli 0.171.0") reads a model_catalog_url.
+// A version it cannot read counts as too old.
+func ReadsLiveCatalogVersion(version string) bool {
+	fields := strings.Fields(version)
+	if len(fields) == 0 {
+		return false
+	}
+	core, _, _ := strings.Cut(fields[len(fields)-1], "-")
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return false
+		}
+		if n != liveCatalogMinVersion[i] {
+			return n > liveCatalogMinVersion[i]
+		}
+	}
+	return true
+}

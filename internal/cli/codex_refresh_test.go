@@ -61,6 +61,7 @@ func (f *fakeCodexRouter) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func codexTestHome(t *testing.T) string {
 	t.Helper()
+	setCodexVersion(t, "codex-cli 0.171.0")
 	setGatewayEnv(t, "http://gateway.test")
 	home := filepath.Join(os.Getenv("HOME"), ".codex")
 	t.Setenv("CODEX_HOME", home)
@@ -265,5 +266,44 @@ func TestCodexRefreshKeepsALiveSetupWhenTheCheckFails(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(home, "dari-models.json")); !os.IsNotExist(err) {
 		t.Fatalf("a failed check wrote a copy: %v", err)
+	}
+}
+
+func setCodexVersion(t *testing.T, version string) {
+	t.Helper()
+	saved := codexVersion
+	codexVersion = func(context.Context) string { return version }
+	t.Cleanup(func() { codexVersion = saved })
+}
+
+// A Codex too old to read model_catalog_url accepts it and shows OpenAI's own
+// models; with one on PATH, setup keeps writing the copy and says to update.
+func TestCodexSetupKeepsACopyForACodexTooOldForTheLiveList(t *testing.T) {
+	home := codexTestHome(t)
+	setCodexVersion(t, "codex-cli 0.153.4")
+	router := &fakeCodexRouter{models: []string{"dari/routing", "dari/model/a/one"}, direct: true, key: "k"}
+	server := httptest.NewServer(router)
+	defer server.Close()
+	models, _ := routerModels(context.Background(), server.URL, "k", "codex")
+	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+		t.Fatal(err)
+	}
+	if config := readFile(t, filepath.Join(home, "config.toml")); !strings.Contains(config, "model_catalog_json") || strings.Contains(config, "model_catalog_url") {
+		t.Fatalf("an old Codex got the live list:\n%s", config)
+	}
+	var stderr bytes.Buffer
+	if err := runCodexRefresh(context.Background(), &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "Update Codex to 0.156 or newer") {
+		t.Fatalf("refresh said:\n%s", stderr.String())
+	}
+	// No Codex on PATH: only the Codex app reads the config, and its Codex is new enough.
+	setCodexVersion(t, "")
+	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+		t.Fatal(err)
+	}
+	if config := readFile(t, filepath.Join(home, "config.toml")); !strings.Contains(config, "model_catalog_url") {
+		t.Fatalf("no Codex on PATH should get the live list:\n%s", config)
 	}
 }

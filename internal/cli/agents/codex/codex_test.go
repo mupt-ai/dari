@@ -192,3 +192,21 @@ func TestCodexAcceptsCatalogURL(t *testing.T) {
 		}
 	}
 }
+
+func TestReadsLiveCatalogVersion(t *testing.T) {
+	for version, want := range map[string]bool{
+		"codex-cli 0.171.0":            true,
+		"codex-cli 0.162.0-alpha.17.2": true,
+		"codex-cli 0.156.0":            true,
+		"codex-cli 1.0.0":              true,
+		"codex-cli 0.155.9":            false,
+		"codex-cli 0.153.4":            false,
+		"codex-cli 0.156":              false,
+		"unknown":                      false,
+		"":                             false,
+	} {
+		if got := ReadsLiveCatalogVersion(version); got != want {
+			t.Errorf("ReadsLiveCatalogVersion(%q) = %v, want %v", version, got, want)
+		}
+	}
+}

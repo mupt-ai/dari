@@ -5,17 +5,28 @@ import {
   nativeModelId,
   providerForModel,
   type ReasoningEffort,
+  type RouterModelPrice,
   type RouterPrefixHit,
 } from "@mupt-ai/dari-router/policy-engine";
 import { HttpError } from "../http/errors.js";
 import type { ResolveRouterRequest } from "../platform/platform.js";
 import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
-import { codexModelConfig, subscriptionModelProvider } from "../models/subscriptions.js";
-import { CANONICAL_MODELS, providerModel } from "../models/canonical.js";
+import {
+  codexModelConfig,
+  modelSubscriptions,
+  subscriptionClient,
+  subscriptionModelProvider,
+} from "../models/subscriptions.js";
+import { CANONICAL_MODELS, otherModelProviders, providerModel } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
 import { linkNothingServed, plansExhausted, providersUnavailable } from "../link/errors.js";
-import { registeredModelPrice } from "../providers/pi.js";
-import type { LinkUnavailable, ProviderCredential as SuppliedProviderCredential, ProviderKeySource, ResolvedRouter } from "../types.js";
+import { buildModel, pi, registeredModelPrice } from "../providers/pi.js";
+import type {
+  LinkUnavailable,
+  ModelFallback,
+  ResolvedRouter,
+  ResolvedRouterModelConfig,
+} from "../types.js";
 import {
   allRouterModels,
   modelProvider,
@@ -67,18 +78,18 @@ export type SelfHostedResolverDeps = {
   fetch: OAuthFetch;
 };
 
-type ProviderCredential = {
-  key: string;
-  source: ProviderKeySource;
-  subscription?: SubscriptionCredential;
-};
+// One way to serve a model: a connected plan, or its provider's API key.
+type Candidate =
+  | { provider: string; plan: SubscriptionCredential }
+  | { provider: string; key: string };
 
 /**
- * Resolve a configured router for one request. Each provider is served by a
- * connected personal subscription when the router allows it and one is
- * available, otherwise by the provider's API key; models whose provider has
- * neither are left out. A coding agent with its own model list on the router
- * is served that list.
+ * Resolve a configured router for one request. Each model is served by the
+ * connected personal subscriptions that serve it, when the router allows them,
+ * in plan order (see models/subscriptions.ts), then by its provider's API key:
+ * the first available serves and the rest fail over within the request.
+ * Models nothing can serve are left out. A coding agent with its own model
+ * list on the router is served that list.
  *
  * A Dari Link token is served apart from any router, on its grant's plans and
  * API keys alone: `dari/routing` chooses among every catalog model they
@@ -112,115 +123,57 @@ export async function resolveSelfHostedRouter(
   const listed = grant === null ? routed : grantModels(grant, routed, granted, grantedKeys);
   const now = new Date();
   const servable = grant === null ? undefined : new Set(grant.credentialIds);
-  const credentials = new Map<string, ProviderCredential | null>();
-  const exhausted = new Set<SubscriptionProvider>();
-  for (const provider of new Set(listed.map(modelProvider))) {
-    // A grant uses the subscriptions its user chose, whatever the router allows.
-    const subscription = router?.subscriptions || grant !== null
-      ? subscriptionProviderFor(provider, request.clientHarness)
-      : null;
-    const active = subscription === null
-      ? null
-      : deps.subscriptions.selectCredential(subscription, request.conversationId, now, servable);
-    if (active !== null) {
-      credentials.set(provider, {
-        // A provisional resolve's credentials never serve, so it neither marks
-        // the plan used nor refreshes its token.
-        key: request.provisional === true
-          ? active.accessToken
-          : await freshAccessToken(deps.subscriptions, active, { fetch: deps.fetch }),
-        source: "subscription",
-        subscription: active,
-      });
-      continue;
-    }
-    if (grant !== null) {
-      // A plan first; else the key the user added for the provider.
-      const key = grantedKeys.get(provider);
-      credentials.set(provider, key === undefined ? null : { key, source: "user" });
-      continue;
-    }
-    if (subscription !== null && deps.subscriptions.list(subscription).length > 0) exhausted.add(subscription);
-    const apiKey = await configuredProviderApiKey(deps, provider);
-    credentials.set(provider, apiKey ? { key: apiKey, source: "user" } : null);
-  }
+  // A grant uses the subscriptions its user chose, whatever the router allows.
+  const plansServe = router?.subscriptions === true || grant !== null;
 
-  // A model-specific hold tries the pool's other plans before removing the
-  // model. Its provider's active plan and conversation pin stay unchanged.
-  const modelCredentials: Record<string, SuppliedProviderCredential> = {};
-  // A provider the request wanted that no granted plan served.
-  const linkUnavailable = grant === null
-    ? {}
-    : providersUnavailable(
-      granted.map((credential) => ({ kind: credential.provider, unavailableUntil: credential.unavailableUntil })),
-      [...credentials].filter(([, credential]) => credential === null).map(([provider]) => provider),
-      request.clientHarness,
-      now,
-    );
-  const models = [];
-  for (const model of listed) {
-    const credential = credentials.get(modelProvider(model));
-    if (credential == null) continue;
-    const plan = credential.subscription;
-    const hold = plan === undefined ? undefined : activeModelHolds(plan, now).find((held) => held.model === model.id);
-    if (plan === undefined || hold === undefined) {
-      models.push(model);
-      continue;
+  // The plan of each kind that serves this conversation, chosen once.
+  const conversationPlans = new Map<SubscriptionProvider, SubscriptionCredential | null>();
+  const conversationPlan = (kind: SubscriptionProvider) => {
+    if (!conversationPlans.has(kind)) {
+      conversationPlans.set(kind, deps.subscriptions.selectCredential(kind, request.conversationId, now, servable));
     }
-    const alternate = deps.subscriptions.selectCredential(plan.provider, undefined, now, servable, model.id);
-    if (alternate !== null) {
-      modelCredentials[model.id] = {
-        apiKey: request.provisional === true
-          ? alternate.accessToken
-          // A model-only failover must not move the provider-wide rotation anchor.
-          : await refreshedAccessToken(deps.subscriptions, alternate, { fetch: deps.fetch }),
-        subscription: alternate.provider,
-        credentialId: alternate.id,
-      };
-      models.push(model);
-      continue;
+    return conversationPlans.get(kind)!;
+  };
+  // The conversation's plan of a kind for a model, or with that model held at
+  // its own limit there, another plan of the kind that serves it.
+  const planFor = (kind: SubscriptionProvider, modelId: string) => {
+    const active = conversationPlan(kind);
+    if (active !== null && !activeModelHolds(active, now).some((hold) => hold.model === modelId)) return active;
+    return deps.subscriptions.selectCredential(kind, undefined, now, servable, modelId);
+  };
+  const tokens = new Map<string, Promise<string>>();
+  const planToken = (plan: SubscriptionCredential) => {
+    // A provisional resolve's credentials never serve, so it neither marks
+    // the plan used nor refreshes its token.
+    if (request.provisional === true) return Promise.resolve(plan.accessToken);
+    if (!tokens.has(plan.id)) {
+      tokens.set(plan.id, conversationPlans.get(plan.provider)?.id === plan.id
+        ? freshAccessToken(deps.subscriptions, plan, { fetch: deps.fetch })
+        // A model-only failover must not move the provider-wide rotation anchor.
+        : refreshedAccessToken(deps.subscriptions, plan, { fetch: deps.fetch }));
     }
-    exhausted.add(plan.provider);
-    linkUnavailable[model.id] = plansExhausted([plan.provider], hold.until);
-  }
+    return tokens.get(plan.id)!;
+  };
+  const apiKeys = new Map<string, Promise<string | undefined>>();
+  const apiKey = (provider: string) => {
+    if (grant !== null) return Promise.resolve(grantedKeys.get(provider));
+    if (!apiKeys.has(provider)) apiKeys.set(provider, configuredProviderApiKey(deps, provider));
+    return apiKeys.get(provider)!;
+  };
 
-  // A grant with a gateway key serves the gateway's models by name, listed or not.
-  const gatewayKeyed = [...grantedKeys.keys()].some((provider) => gatewayFor(provider) !== undefined);
-  if (models.length === 0 && !gatewayKeyed) {
-    if (grant !== null) throw linkNothingServed(linkUnavailable, grant.pins);
-    const missing = [...credentials].filter(([, credential]) => credential == null).map(([provider]) => provider);
-    throw unavailableRouterError(request.routerId, exhausted, missing);
-  }
   const resolved: ResolvedRouter = {
     // A grant's requests and prefix state are its own, apart from any router.
     router_id: grant?.id ?? request.routerId,
     organization_id: SELF_HOSTED_ORGANIZATION_ID,
     api_key_id: grant === null ? `gateway_key_${keyIndex! + 1}` : grant.id,
     attributed_user_id: SELF_HOSTED_USER_ID,
-    enabled_models: models.map((model) => model.id),
+    enabled_models: [],
     routing_listed: deps.autoRouting,
     provider_keys: {},
     provider_key_sources: {},
-    subscription_credential_ids: {},
-    provider_credentials: modelCredentials,
+    provider_credentials: {},
+    model_fallbacks: {},
     link_grant_id: grant?.id ?? null,
-    ...(grant === null
-      ? {}
-      : {
-          link_models: models.map((model) => model.id),
-          link_key_credential_ids: Object.fromEntries(grantKeys.map((key) => [key.provider, key.id])),
-          link_key_gateways: Object.fromEntries(
-            [...grantedKeys.keys()].filter((provider) => gatewayFor(provider) !== undefined).map((gateway) => {
-              const endpoint = deps.config.providers[gateway];
-              return [gateway, endpoint === undefined ? null : { api: endpoint.api, base_url: endpoint.baseUrl }];
-            }),
-          ),
-          link_unavailable: linkUnavailable,
-          link_pins: grant.pins === undefined
-            ? null
-            : grant.pins.map((pin) => ({ model: pin.model, thinking: isReasoningEffort(pin.thinking) ? pin.thinking : null })),
-          link_tags: grant.tags ?? null,
-        }),
     zdr: router?.zdr ?? false,
     speculative_routing: false,
     session_pinning: router?.sessionPinning ?? false,
@@ -234,57 +187,124 @@ export async function resolveSelfHostedRouter(
     model_thinking_levels: thinkingLevels(listed),
     model_prices: {},
     model_configs: {},
-    prefix_hits: deps.prefixHits({
-      routerId: grant?.id ?? request.routerId,
-      prefixHashes: request.prefixHashes ?? [],
-      ...(request.conversationId ? { conversationId: request.conversationId } : {}),
-    }),
   };
-  for (const [provider, credential] of credentials) {
-    if (credential == null) continue;
-    for (const servingProvider of servingProviders(provider, credential)) {
-      resolved.provider_keys[servingProvider] = credential.key;
-      resolved.provider_key_sources![servingProvider] = credential.source;
-      if (credential.subscription) {
-        resolved.subscription_credential_ids![servingProvider] = credential.subscription.id;
+
+  // Each model is served by the user's plans that serve it, in order, then by
+  // its provider's API key; the first serves and the rest are its fallbacks.
+  // A model nothing can serve is left out.
+  const exhausted = new Set<SubscriptionProvider>();
+  // The providers of models nothing serves.
+  const unserved = new Set<string>();
+  // A model held at its own limit on every plan that serves it.
+  const modelsUnavailable: Record<string, LinkUnavailable> = {};
+  const models: RouterModelConfig[] = [];
+  for (const model of listed) {
+    const base = modelProvider(model);
+    const candidates: Candidate[] = [];
+    const heldKinds: SubscriptionProvider[] = [];
+    const modelHolds: Date[] = [];
+    for (const kind of plansServe ? modelSubscriptions(model.id) : []) {
+      const client = subscriptionClient(kind);
+      if (client !== undefined && client !== request.clientHarness) continue;
+      const plan = planFor(kind, model.id);
+      if (plan !== null) {
+        candidates.push({ provider: subscriptionModelProvider(kind), plan });
+        continue;
+      }
+      const connected = grant === null ? deps.subscriptions.list(kind) : deps.subscriptions.withIds(grant.credentialIds, kind);
+      if (connected.length === 0) continue;
+      heldKinds.push(kind);
+      for (const credential of connected) {
+        for (const hold of activeModelHolds(credential, now)) if (hold.model === model.id) modelHolds.push(hold.until);
       }
     }
+    const key = await apiKey(base);
+    if (key !== undefined) candidates.push({ provider: base, key });
+
+    if (candidates.length === 0) {
+      for (const kind of heldKinds) exhausted.add(kind);
+      unserved.add(base);
+      // A granted plan may serve another maker's model: name the plan's provider too.
+      if (grant !== null) for (const kind of heldKinds) unserved.add(subscriptionModelProvider(kind));
+      if (modelHolds.length > 0) {
+        modelsUnavailable[model.id] = plansExhausted(heldKinds, new Date(Math.min(...modelHolds.map((until) => until.getTime()))));
+      }
+      continue;
+    }
+    models.push(model);
+    const [first, ...rest] = candidates;
+    const firstConfig = candidateConfig(deps, model.id, first!);
+    const price = priceFor(model.id, first!.provider);
+    if (price !== null) resolved.model_prices![model.id] = price;
+    if (firstConfig !== undefined) resolved.model_configs![model.id] = firstConfig;
+    if ("plan" in first!) {
+      resolved.provider_credentials![model.id] = {
+        apiKey: await planToken(first.plan),
+        subscription: first.plan.provider,
+        credentialId: first.plan.id,
+      };
+    } else {
+      resolved.provider_keys[first!.provider] = first!.key;
+      resolved.provider_key_sources![first!.provider] = "user";
+    }
+    const fallbacks = rest.flatMap((candidate): ModelFallback[] => {
+      const config = candidateConfig(deps, model.id, candidate) ?? registryConfig(model.id, candidate.provider);
+      if (config === undefined) return [];
+      if ("plan" in candidate) return [{ config, subscription: candidate.plan.provider }];
+      resolved.provider_keys[candidate.provider] = candidate.key;
+      resolved.provider_key_sources![candidate.provider] = "user";
+      return [{ config }];
+    });
+    if (fallbacks.length > 0) resolved.model_fallbacks![model.id] = fallbacks;
   }
-  // A gateway key serves any model of its gateway a request names, listed or not.
+
+  // A grant's keys are all the user's: a gateway key serves any model of its
+  // gateway a request names, listed or not.
   for (const [provider, key] of grantedKeys) {
-    if (resolved.provider_keys[provider] !== undefined) continue;
     resolved.provider_keys[provider] = key;
     resolved.provider_key_sources![provider] = "user";
   }
-  for (const model of models) {
-    const provider = modelProvider(model);
-    // A model another provider serves runs as that provider's own model.
-    const served = model.provider === undefined ? undefined : providerModel(model.id, provider);
-    const price = served === undefined
-      ? registeredModelPrice(model.id)
-      : registeredModelPrice(`${provider}/${served.native_model_id}`);
-    if (price !== null) resolved.model_prices![model.id] = price;
-    const endpoint = deps.config.providers[provider];
-    if (credentials.get(provider)?.subscription?.provider === "openai_codex") {
-      resolved.model_configs![model.id] = codexModelConfig(model.id, price, deps.config.providers["openai-codex"]?.baseUrl);
-    } else if (served !== undefined) {
-      resolved.model_configs![model.id] = {
-        provider,
-        native_model_id: served.native_model_id,
-        api: endpoint?.api ?? served.api,
-        base_url: endpoint?.baseUrl ?? served.base_url,
-        cost: price ?? { input: 0, output: 0 },
+  // A provider the request wanted that no granted plan served.
+  const linkUnavailable = grant === null
+    ? {}
+    : {
+        ...providersUnavailable(
+          granted.map((credential) => ({ kind: credential.provider, unavailableUntil: credential.unavailableUntil })),
+          unserved,
+          request.clientHarness,
+          now,
+        ),
+        ...modelsUnavailable,
       };
-    } else if (endpoint !== undefined) {
-      resolved.model_configs![model.id] = {
-        provider,
-        native_model_id: nativeModelId(model.id),
-        api: endpoint.api,
-        base_url: endpoint.baseUrl,
-        cost: price ?? { input: 0, output: 0 },
-      };
-    }
+
+  const gatewayKeyed = [...grantedKeys.keys()].some((provider) => gatewayFor(provider) !== undefined);
+  if (models.length === 0 && !gatewayKeyed) {
+    if (grant !== null) throw linkNothingServed(linkUnavailable, grant.pins);
+    throw unavailableRouterError(request.routerId, exhausted, [...unserved]);
   }
+  resolved.enabled_models = models.map((model) => model.id);
+  if (grant !== null) {
+    Object.assign(resolved, {
+      link_models: models.map((model) => model.id),
+      link_key_credential_ids: Object.fromEntries(grantKeys.map((key) => [key.provider, key.id])),
+      link_key_gateways: Object.fromEntries(
+        [...grantedKeys.keys()].filter((provider) => gatewayFor(provider) !== undefined).map((gateway) => {
+          const endpoint = deps.config.providers[gateway];
+          return [gateway, endpoint === undefined ? null : { api: endpoint.api, base_url: endpoint.baseUrl }];
+        }),
+      ),
+      link_unavailable: linkUnavailable,
+      link_pins: grant.pins === undefined
+        ? null
+        : grant.pins.map((pin) => ({ model: pin.model, thinking: isReasoningEffort(pin.thinking) ? pin.thinking : null })),
+      link_tags: grant.tags ?? null,
+    });
+  }
+  resolved.prefix_hits = deps.prefixHits({
+    routerId: grant?.id ?? request.routerId,
+    prefixHashes: request.prefixHashes ?? [],
+    ...(request.conversationId ? { conversationId: request.conversationId } : {}),
+  });
   return resolved;
 }
 
@@ -294,7 +314,8 @@ export async function resolveSelfHostedRouter(
 /**
  * The models a grant's request may be served: a child token's one model, or
  * the router's own models followed by every other catalog model of the
- * providers its plans and API keys serve.
+ * providers its API keys serve and every one a granted plan has an offering
+ * of, whoever makes it (every OpenCode Go model is another maker's).
  */
 function grantModels(
   grant: ActiveLinkGrant,
@@ -306,12 +327,18 @@ function grantModels(
     ...granted.map((credential) => subscriptionModelProvider(credential.provider)),
     ...grantedKeys.keys(),
   ]);
+  const kinds = new Set(granted.map((credential) => credential.provider));
   const routedIds = new Set(routed.map((model) => model.id));
   const models = [
     ...routed,
-    ...CANONICAL_MODELS
-      .filter((model) => !routedIds.has(model.id) && providers.has(providerForModel(model.id)) && registeredModelPrice(model.id) !== null)
-      .map((model): RouterModelConfig => ({ id: model.id })),
+    ...CANONICAL_MODELS.flatMap((model): RouterModelConfig[] => {
+      if (routedIds.has(model.id)) return [];
+      if (providers.has(providerForModel(model.id))) return registeredModelPrice(model.id) !== null ? [{ id: model.id }] : [];
+      if (!modelSubscriptions(model.id).some((kind) => kinds.has(kind))) return [];
+      // The plans serve it first, then a granted key of a provider that runs it.
+      const keyed = otherModelProviders(model.id).find((provider) => grantedKeys.has(provider) && gatewayFor(provider) === undefined);
+      return [keyed === undefined ? { id: model.id } : { id: model.id, provider: keyed }];
+    }),
   ];
   if (grant.pins === undefined) return models;
   // A pinned level replaces the router's own choice of levels for the model.
@@ -342,27 +369,65 @@ export function gatewayKeyIndex(keys: readonly string[], presented: string): num
   return null;
 }
 
-// Claude Code plans serve only Claude Code itself and Muse Code plans only
-// Muse Code; ChatGPT plans serve any client through the Codex backend.
-function subscriptionProviderFor(
-  provider: string,
-  clientHarness: ResolveRouterRequest["clientHarness"],
-): SubscriptionProvider | null {
-  if (provider === "anthropic") {
-    return clientHarness === "claude_code" ? "anthropic_claude_code" : null;
+// How a candidate runs a model: a ChatGPT plan through the Codex backend, a
+// provider that serves another maker's model as its own model, a configured
+// endpoint, or (undefined) the model's own provider as the catalog has it.
+function candidateConfig(
+  deps: Pick<SelfHostedResolverDeps, "config">,
+  modelId: string,
+  candidate: Candidate,
+): ResolvedRouterModelConfig | undefined {
+  const { provider } = candidate;
+  const price = priceFor(modelId, provider);
+  if ("plan" in candidate && candidate.plan.provider === "openai_codex") {
+    return codexModelConfig(modelId, price, deps.config.providers["openai-codex"]?.baseUrl);
   }
-  if (provider === "meta") return clientHarness === "muse_code" ? "meta_muse" : null;
-  if (provider === "openai") return "openai_codex";
-  if (provider === "opencode-go") return "opencode_go";
-  return null;
+  const served = providerModel(modelId, provider);
+  const endpoint = deps.config.providers[provider];
+  if (served !== undefined) {
+    return {
+      provider,
+      native_model_id: served.native_model_id,
+      api: endpoint?.api ?? served.api,
+      base_url: endpoint?.baseUrl ?? served.base_url,
+      cost: price ?? { input: 0, output: 0 },
+    };
+  }
+  if (endpoint === undefined) return undefined;
+  return {
+    provider,
+    native_model_id: nativeModelId(modelId),
+    api: endpoint.api,
+    base_url: endpoint.baseUrl,
+    cost: price ?? { input: 0, output: 0 },
+  };
 }
 
-// A ChatGPT plan serves OpenAI models as the `openai-codex` provider, and the
-// runtime looks keys up by serving provider.
-function servingProviders(provider: string, credential: ProviderCredential): string[] {
-  return credential.subscription?.provider === "openai_codex"
-    ? [provider, "openai-codex"]
-    : [provider];
+// A fallback names its endpoint even on the model's own provider, as the
+// catalog has it; undefined when the catalog has none.
+function registryConfig(modelId: string, provider: string): ResolvedRouterModelConfig | undefined {
+  try {
+    const model = buildModel(pi, modelId, null);
+    if (typeof model.api !== "string" || typeof model.baseUrl !== "string") return undefined;
+    return {
+      provider,
+      native_model_id: nativeModelId(modelId),
+      api: model.api,
+      base_url: model.baseUrl,
+      cost: priceFor(modelId, provider) ?? { input: 0, output: 0 },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+// A model's price as a provider serves it, for estimates; a plan bills no
+// tokens.
+function priceFor(modelId: string, provider: string): RouterModelPrice | null {
+  const served = providerModel(modelId, provider);
+  return served === undefined
+    ? registeredModelPrice(modelId)
+    : registeredModelPrice(`${provider}/${served.native_model_id}`);
 }
 
 function thinkingLevels(models: readonly RouterModelConfig[]): Record<string, ReasoningEffort[]> {
@@ -376,29 +441,31 @@ const SUBSCRIPTION_PLAN_NAMES: Record<SubscriptionProvider, string> = {
   openai_codex: "ChatGPT",
   meta_muse: "Muse Code",
   opencode_go: "OpenCode Go",
+  github_copilot: "GitHub Copilot",
+  xai_grok: "Grok",
+  vercel_token_pass: "Vercel Token Pass",
 };
 
 /**
- * Providers a router lists that no credential can serve: no API key and no
- * connected subscription the router allows. Startup uses this, so it counts a
- * held subscription as connected (the request-time 424 reports holds) and
- * checks both harnesses, since startup does not know the client.
+ * Providers a router lists models of that no credential can serve: no API key
+ * and no connected subscription the router allows that serves them. Startup
+ * uses this, so it counts a held subscription as connected (the request-time
+ * 424 reports holds) and ignores which client a plan is limited to, since
+ * startup does not know the client.
  */
 export async function providersWithoutCredentials(
   deps: Pick<SelfHostedResolverDeps, "subscriptions" | "providerApiKey" | "config" | "env">,
   router: RouterConfig,
 ): Promise<string[]> {
-  const missing: string[] = [];
-  for (const provider of new Set(allRouterModels(router).map(modelProvider))) {
-    const plans = router.subscriptions
-      ? [subscriptionProviderFor(provider, "claude_code"), subscriptionProviderFor(provider, "muse_code")]
-      : [];
-    const connected = plans.some((plan) => plan !== null && deps.subscriptions.list(plan).length > 0);
-    if (connected) continue;
-    const apiKey = await configuredProviderApiKey(deps, provider);
-    if (apiKey === undefined) missing.push(provider);
+  const missing = new Set<string>();
+  for (const model of allRouterModels(router)) {
+    const provider = modelProvider(model);
+    if (missing.has(provider)) continue;
+    const plans = router.subscriptions ? modelSubscriptions(model.id) : [];
+    if (plans.some((plan) => deps.subscriptions.list(plan).length > 0)) continue;
+    if (await configuredProviderApiKey(deps, provider) === undefined) missing.add(provider);
   }
-  return missing;
+  return [...missing];
 }
 
 function unavailableRouterError(

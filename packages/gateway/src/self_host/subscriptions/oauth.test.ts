@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 
 import {
   CODEX_APPROVAL_PENDING,
+  GITHUB_APPROVAL_PENDING,
   META_APPROVAL_PENDING,
+  XAI_APPROVAL_PENDING,
   SubscriptionOAuthInputError,
   SubscriptionOAuthProviderError,
   completeOAuth,
@@ -389,4 +391,156 @@ test("an OpenCode Go plan signs in with OpenCode's console device flow", async (
     refresh_token: "oc-refresh",
     client_id: "opencode-cli",
   });
+});
+
+describe("GitHub Copilot device sign-in", () => {
+  const COPILOT_TOKEN = "tid=t1;exp=1797000000;proxy-ep=proxy.individual.githubcopilot.com;sku=pro";
+  const mintedAt = Math.floor(now.getTime() / 1000) + 1800;
+
+  test("polls GitHub, whose unfinished sign-in answers HTTP 200, then mints the Copilot token", async () => {
+    const fetch = fakeFetch([
+      jsonResponse({ device_code: "gh-dev", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 }),
+      jsonResponse({ error: "authorization_pending", error_description: "pending" }),
+      jsonResponse({ access_token: "gho_github", token_type: "bearer", scope: "read:user" }),
+      jsonResponse({ token: COPILOT_TOKEN, expires_at: mintedAt }),
+      jsonResponse({ login: "octocat", email: null }),
+    ]);
+    const started = await startOAuth("github_copilot", { fetch, now });
+    expect(started).toMatchObject({
+      authorizationUrl: "https://github.com/login/device",
+      userCode: "ABCD-1234",
+      flow: { device_code: "gh-dev" },
+    });
+    expect(fetch.calls[0]!.url).toBe("https://github.com/login/device/code");
+    expect(Object.fromEntries(new URLSearchParams(fetch.calls[0]!.body))).toEqual({
+      client_id: "Iv1.b507a08c87ecfe98",
+      scope: "read:user",
+    });
+
+    await expect(completeOAuth("github_copilot", started.flow, "", { fetch, now }))
+      .rejects.toThrow(new SubscriptionOAuthInputError(GITHUB_APPROVAL_PENDING));
+    const tokens = await completeOAuth("github_copilot", started.flow, "", { fetch, now });
+    expect(tokens).toEqual({
+      provider: "github_copilot",
+      accessToken: COPILOT_TOKEN,
+      refreshToken: "gho_github",
+      expiresAt: new Date((mintedAt - 300) * 1000),
+      accountId: null,
+      accountEmail: "octocat",
+    });
+    const mint = fetch.calls[3]!;
+    expect(mint.url).toBe("https://api.github.com/copilot_internal/v2/token");
+    expect(mint.init.method).toBe("GET");
+    const headers = new Headers(mint.init.headers);
+    expect(headers.get("authorization")).toBe("Bearer gho_github");
+    expect(headers.get("copilot-integration-id")).toBe("vscode-chat");
+    expect(headers.get("editor-version")).toBe("vscode/1.107.0");
+  });
+
+  test("refresh mints a new Copilot token from the GitHub token", async () => {
+    const fetch = fakeFetch([jsonResponse({ token: "tid=t2;proxy-ep=proxy.individual.githubcopilot.com", expires_at: mintedAt })]);
+    const refreshed = await refreshOAuth({ provider: "github_copilot", refreshToken: "gho_github", accountId: null }, { fetch, now });
+    expect(refreshed).toMatchObject({ accessToken: "tid=t2;proxy-ep=proxy.individual.githubcopilot.com", refreshToken: "gho_github" });
+  });
+
+  test("an account without Copilot cannot connect", async () => {
+    const fetch = fakeFetch([
+      jsonResponse({ access_token: "gho_github" }),
+      jsonResponse({ message: "Not Found" }, 404),
+    ]);
+    await expect(completeOAuth("github_copilot", { device_code: "gh-dev" }, "", { fetch, now }))
+      .rejects.toThrow("This GitHub account has no active Copilot plan.");
+  });
+});
+
+describe.each([
+  {
+    provider: "xai_grok" as const,
+    deviceCodeUrl: "https://auth.x.ai/oauth2/device/code",
+    tokenUrl: "https://auth.x.ai/oauth2/token",
+    clientId: "b1a00492-073a-47ea-816f-4c329264a828",
+    pending: XAI_APPROVAL_PENDING,
+    vendor: "xAI",
+  },
+])("$vendor device sign-in", ({ provider, deviceCodeUrl, tokenUrl, clientId, pending, vendor }) => {
+  test("starts, waits for approval, connects, and refreshes", async () => {
+    const fetch = fakeFetch([
+      jsonResponse({
+        device_code: "dev-1",
+        user_code: "WXYZ",
+        verification_uri: "https://example.com/device",
+        verification_uri_complete: "https://example.com/device?code=WXYZ",
+        expires_in: 900,
+      }),
+      jsonResponse({ error: "authorization_pending" }, 400),
+      jsonResponse({ access_token: "access-1", refresh_token: "refresh-1", expires_in: 7200, id_token: jwt({ email: "me@example.com" }) }),
+      // A refresh that rotates no refresh token keeps the stored one.
+      jsonResponse({ access_token: "access-2", expires_in: 600 }),
+    ]);
+    const started = await startOAuth(provider, { fetch, now });
+    expect(started).toMatchObject({
+      authorizationUrl: "https://example.com/device?code=WXYZ",
+      userCode: "WXYZ",
+      flow: { device_code: "dev-1" },
+    });
+    expect(fetch.calls[0]!.url).toBe(deviceCodeUrl);
+    expect(new URLSearchParams(fetch.calls[0]!.body).get("client_id")).toBe(clientId);
+
+    await expect(completeOAuth(provider, started.flow, "", { fetch, now }))
+      .rejects.toThrow(new SubscriptionOAuthInputError(pending));
+    expect(pending.startsWith(`${vendor} approval is still pending.`)).toBe(true);
+    expect(await completeOAuth(provider, started.flow, "", { fetch, now })).toEqual({
+      provider,
+      accessToken: "access-1",
+      refreshToken: "refresh-1",
+      expiresAt: new Date("2026-10-20T14:00:00Z"),
+      accountId: null,
+      accountEmail: "me@example.com",
+    });
+    expect(fetch.calls[2]!.url).toBe(tokenUrl);
+    expect(Object.fromEntries(new URLSearchParams(fetch.calls[2]!.body))).toEqual({
+      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      device_code: "dev-1",
+      client_id: clientId,
+    });
+
+    expect(await refreshOAuth({ provider, refreshToken: "refresh-1", accountId: null }, { fetch, now })).toMatchObject({
+      accessToken: "access-2",
+      refreshToken: "refresh-1",
+      expiresAt: new Date("2026-10-20T12:10:00Z"),
+    });
+    expect(Object.fromEntries(new URLSearchParams(fetch.calls[3]!.body))).toEqual({
+      grant_type: "refresh_token",
+      client_id: clientId,
+      refresh_token: "refresh-1",
+    });
+  });
+
+  test("a declined or expired sign-in says so", async () => {
+    for (const [error, message] of [
+      ["access_denied", `The sign-in was declined on ${vendor}. Start again to retry.`],
+      ["expired_token", `The ${vendor} sign-in code expired. Start again.`],
+    ]) {
+      const fetch = fakeFetch([jsonResponse({ error }, 400)]);
+      await expect(completeOAuth(provider, { device_code: "d" }, "", { fetch, now }))
+        .rejects.toThrow(new SubscriptionOAuthInputError(message!));
+    }
+  });
+});
+
+test("a Vercel Token Pass connects by its pasted key and never calls out", async () => {
+  const fetch = fakeFetch([]);
+  const started = await startOAuth("vercel_token_pass", { fetch, now });
+  expect(started).toMatchObject({
+    authorizationUrl: "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Ftoken-pass",
+    userCode: null,
+    flow: {},
+  });
+
+  const tokens = await completeOAuth("vercel_token_pass", started.flow, "  vck_token_pass \n", { fetch, now });
+  expect(tokens).toMatchObject({ provider: "vercel_token_pass", accessToken: "vck_token_pass", refreshToken: "vck_token_pass" });
+  expect(await refreshOAuth({ provider: "vercel_token_pass", refreshToken: "vck_token_pass", accountId: null }, { fetch, now }))
+    .toMatchObject({ accessToken: "vck_token_pass" });
+  await expect(completeOAuth("vercel_token_pass", {}, "   ", { fetch, now })).rejects.toBeInstanceOf(SubscriptionOAuthInputError);
+  expect(fetch.calls).toHaveLength(0);
 });

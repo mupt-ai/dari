@@ -302,7 +302,7 @@ var localProviderKeys = []struct{ name, article, env string }{
 
 // allSubscriptionProviders are the plans `dari accounts` offers; it is not
 // tied to one agent.
-var allSubscriptionProviders = []agentSubscriptionProvider{claudeSubscription, codexSubscription, museSubscription, opencodeGoSubscription}
+var allSubscriptionProviders = []agentSubscriptionProvider{codexSubscription, claudeSubscription, copilotSubscription, grokSubscription, museSubscription, opencodeGoSubscription, vercelTokenPassSubscription}
 
 // saveLocalGateway saves a local gateway's settings and restarts it to serve
 // them.

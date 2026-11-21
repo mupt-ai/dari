@@ -10,8 +10,10 @@ import { checkProviderKey } from "../providers/key_check.js";
 import { gatewayKeyIndex, type SelfHostedResolverDeps } from "../self_host/resolve.js";
 import {
   CODEX_APPROVAL_PENDING,
+  GITHUB_APPROVAL_PENDING,
   META_APPROVAL_PENDING,
   OPENCODE_APPROVAL_PENDING,
+  XAI_APPROVAL_PENDING,
   SUBSCRIPTION_PROVIDERS,
   SubscriptionOAuthInputError,
   SubscriptionOAuthProviderError,
@@ -132,7 +134,13 @@ export function selfHostedLink(
         tokens = await completeOAuth(session.provider, session.flow, authorizationResponse, { fetch: deps.fetch });
       } catch (error) {
         if (error instanceof SubscriptionOAuthInputError) {
-          if ([CODEX_APPROVAL_PENDING, META_APPROVAL_PENDING, OPENCODE_APPROVAL_PENDING].includes(error.message)) return null;
+          if ([
+            CODEX_APPROVAL_PENDING,
+            META_APPROVAL_PENDING,
+            OPENCODE_APPROVAL_PENDING,
+            GITHUB_APPROVAL_PENDING,
+            XAI_APPROVAL_PENDING,
+          ].includes(error.message)) return null;
           throw new HttpError(400, error.message, "invalid_request");
         }
         if (error instanceof SubscriptionOAuthProviderError) {

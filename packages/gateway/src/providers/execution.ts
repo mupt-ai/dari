@@ -49,6 +49,7 @@ import {
 import type { NextSubscription } from "../platform/platform.js";
 import { providerResponseCaptureFromError, type ProviderResponseCapture } from "./response_capture.js";
 import { createStreamFinalizer } from "./stream_finalization.js";
+import { copilotEndpoint } from "./github_copilot.js";
 import { readCodexModelLimitReset, readCodexUsage } from "./codex_usage.js";
 import {
   detectSubscriptionUsageLimit,
@@ -67,7 +68,13 @@ import {
 export type ProviderChoice = {
   decision: RoutingDecision;
   execution: ProviderExecution;
+  // Which of the model's fallbacks serves, or undefined for its first
+  // candidate.
+  fallback?: number;
 };
+
+// The same model served by its next candidate; see ResolvedRouter.model_fallbacks.
+export type NextProviderChoice = (choice: ProviderChoice) => Promise<ProviderChoice | undefined>;
 
 export type PreparedStreamExecution = {
   choice: ProviderChoice;
@@ -92,6 +99,7 @@ export async function executeNonStreaming(args: {
   interaction: InteractionRequest;
   primary: ProviderChoice;
   primaryRetries: number;
+  nextChoice?: NextProviderChoice;
   reporter: RoutedRuntimeReporter;
   protocol: RoutedProtocol;
   startedCompletion?: StartedCompletion;
@@ -132,6 +140,7 @@ export async function completeNonStreaming(args: {
   interaction: InteractionRequest;
   primary: ProviderChoice;
   primaryRetries: number;
+  nextChoice?: NextProviderChoice;
   reporter: RoutedRuntimeReporter;
   protocol: RoutedProtocol;
   startedCompletion?: StartedCompletion;
@@ -251,6 +260,7 @@ async function completeWithRetries(args: {
   interaction: InteractionRequest;
   primary: ProviderChoice;
   primaryRetries: number;
+  nextChoice?: NextProviderChoice;
   reporter: RoutedRuntimeReporter;
   startedCompletion?: StartedCompletion;
   clientSignal?: AbortSignal;
@@ -271,6 +281,7 @@ async function completeWithRetries(args: {
     recordFailedAttempt: ({ choice, attempt, result }) =>
       recordSettledFailure(args.reporter, choice, attempt, result),
     onSubscription: onNextSubscription,
+    nextChoice: args.nextChoice,
   });
 }
 
@@ -493,6 +504,7 @@ export async function prepareStreamingExecution(args: {
   interaction: InteractionRequest;
   primary: ProviderChoice;
   primaryRetries: number;
+  nextChoice?: NextProviderChoice;
   reporter: RoutedRuntimeReporter;
   startedStream?: StartedStream;
   initialError?: unknown;
@@ -520,6 +532,7 @@ export async function prepareStreamingExecution(args: {
     recordFailedAttempt: ({ choice, attempt, result }) =>
       recordSettledFailure(args.reporter, choice, attempt, result),
     onSubscription: onNextSubscription,
+    nextChoice: args.nextChoice,
   });
   args.reporter.attachServingDecision(result.choice.decision);
   if (result.kind === "customer_canceled") {
@@ -748,6 +761,9 @@ async function providerFailedAttempt(
     if (execution.providerKeySource === "subscription") logUnclassifiedRefusal(execution, responseCapture);
     // The customer's own key was refused: theirs to fix, not a gateway fault.
     const rejected = execution.providerKeySource === "user" && (status === 401 || status === 403);
+    // A plan whose token is refused cannot serve; the model's next candidate
+    // may. The plan is not held: a refused token is not a usage limit.
+    const planRefused = execution.providerKeySource === "subscription" && (status === 401 || status === 403);
     return {
       kind: "provider_failed",
       message: rejected
@@ -755,6 +771,7 @@ async function providerFailedAttempt(
         : message,
       latencyMs,
       retryable: !isPromptPolicyRejection(message),
+      ...(planRefused ? { failover: true as const } : {}),
     };
   }
   const limit = detected.oauthProvider === "openai_codex" && detected.model === undefined
@@ -774,7 +791,8 @@ async function providerFailedAttempt(
       ...(execution.subscriptionLinkGrantId ? { linkGrantId: execution.subscriptionLinkGrantId } : {}),
     });
   // Nothing reached the client yet, so the same request is retried on the
-  // next plan with quota for this model, including model-specific limits.
+  // next plan of this kind with quota for this model, including
+  // model-specific limits; with none, on the model's next candidate.
   const nextSubscription = switched
     ? await nextSubscriptionFor(execution)
     : undefined;
@@ -783,7 +801,7 @@ async function providerFailedAttempt(
     message: failureWithSubscriptionUsageLimit(message, { ...limit, switched }),
     latencyMs,
     retryable: false,
-    ...(nextSubscription === undefined ? {} : { nextSubscription }),
+    ...(nextSubscription === undefined ? { failover: true as const } : { nextSubscription }),
   };
 }
 
@@ -914,6 +932,8 @@ function onNextSubscription(choice: ProviderChoice, next: NextSubscription): Pro
       apiKey: next.apiKey,
       auth: { type: "bearer", apiKey: next.apiKey },
       subscriptionCredentialId: next.credentialId,
+      // A Copilot token names its own account's API origin.
+      ...(choice.execution.provider === "github-copilot" ? { endpoint: copilotEndpoint(next.apiKey) } : {}),
     },
   };
 }

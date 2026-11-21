@@ -255,10 +255,13 @@ func newCredentialsListCmd(gf *globalFlags) *cobra.Command {
 // The CLI names personal subscriptions by the short provider aliases the agent
 // flow uses, or by a subscription's credential name when several are connected.
 var subscriptionProviders = map[string]agentSubscriptionProvider{
-	"claude-code": claudeSubscription,
-	"codex":       codexSubscription,
-	"muse-code":   museSubscription,
-	"opencode-go": opencodeGoSubscription,
+	"claude-code":       claudeSubscription,
+	"codex":             codexSubscription,
+	"github-copilot":    copilotSubscription,
+	"grok":              grokSubscription,
+	"muse-code":         museSubscription,
+	"opencode-go":       opencodeGoSubscription,
+	"vercel-token-pass": vercelTokenPassSubscription,
 }
 
 type subscriptionCredential struct {
@@ -343,8 +346,9 @@ type subscriptionUsageWindow struct {
 func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "subscription",
-		Short: "Manage your personal Claude Code, ChatGPT, and Muse Code subscriptions",
-		Long: "Connect one or more personal subscriptions per provider. Routing uses the active one " +
+		Short: "Manage your personal ChatGPT, Claude Code, GitHub Copilot, Grok, Muse Code, OpenCode Go, and Vercel Token Pass subscriptions",
+		Long: "Connect one or more personal subscriptions per provider. A model tries its maker's plan " +
+			"first, then the user's other plans that serve it. Of each kind, routing uses the active one " +
 			"until it reaches its usage limit, then holds it until its reset and switches to the next " +
 			"one in connection order.",
 	}
@@ -401,13 +405,13 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 	var reconnect string
 	cmd := &cobra.Command{
-		Use:   "connect <claude-code|codex|muse-code|opencode-go>",
+		Use:   "connect <codex|claude-code|github-copilot|grok|muse-code|opencode-go|vercel-token-pass>",
 		Short: "Connect another subscription, or reconnect one with --reconnect",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			provider, ok := subscriptionProviders[strings.ToLower(strings.TrimSpace(args[0]))]
 			if !ok {
-				return fmt.Errorf("unknown subscription %q: expected claude-code, codex, muse-code, or opencode-go", args[0])
+				return fmt.Errorf("unknown subscription %q: expected codex, claude-code, github-copilot, grok, muse-code, opencode-go, or vercel-token-pass", args[0])
 			}
 			client, err := subscriptionClient(cmd.Context(), gf, cmd.ErrOrStderr())
 			if err != nil {

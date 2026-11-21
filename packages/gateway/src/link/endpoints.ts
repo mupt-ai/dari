@@ -62,7 +62,7 @@ import { isReasoningEffort, providerForModel } from "@mupt-ai/dari-router/policy
 import { bearerToken } from "../http/auth.js";
 import { errorResponse, HttpError } from "../http/errors.js";
 import { SUBSCRIPTION_PLAN_LABELS } from "./errors.js";
-import { subscriptionClient, subscriptionModelProvider } from "../models/subscriptions.js";
+import { modelSubscriptions, subscriptionClient } from "../models/subscriptions.js";
 import type {
   GatewayPlatform,
   LinkApp,
@@ -970,8 +970,10 @@ async function grantBody(platform: GatewayPlatform, request: Request, accessToke
           utilization: window.utilization,
           resets_at: window.resetsAt,
         })),
+        // A key's provider's models; a plan's are the ones it has an offering
+        // of, whoever makes them (every OpenCode Go model is another maker's).
         models: models(served.get(client))
-          .filter((model) => providerForModel(model) === (keyFor ?? subscriptionModelProvider(kind)))
+          .filter((model) => keyFor === undefined ? modelSubscriptions(model).includes(kind) : providerForModel(model) === keyFor)
           .map(namedModel),
       };
     }),
@@ -1696,12 +1698,16 @@ function eventFor(authorize: AuthorizeRequest, step: LinkStep): PageEvent | unde
   };
 }
 
-// How a kind of plan reads on the page, and whose sign-in connects it.
-const KINDS: Record<SubscriptionKind, { name: string; plan: string; at: string }> = {
+// How a kind of plan reads on the page, and whose sign-in connects it. A
+// `pastedKey` plan connects with a key the user creates there instead.
+const KINDS: Record<SubscriptionKind, { name: string; plan: string; at: string; pastedKey?: true }> = {
   anthropic_claude_code: { name: "Claude", plan: "Pro, Max or Ultra plan", at: "Claude" },
   openai_codex: { name: "ChatGPT", plan: "Plus or Pro plan", at: "OpenAI" },
   meta_muse: { name: "Meta Muse", plan: "Muse Code plan", at: "Meta" },
   opencode_go: { name: "OpenCode Go", plan: "Go plan", at: "OpenCode" },
+  github_copilot: { name: "GitHub Copilot", plan: "Copilot plan", at: "GitHub" },
+  xai_grok: { name: "Grok", plan: "SuperGrok plan", at: "xAI" },
+  vercel_token_pass: { name: "Vercel Token Pass", plan: "Token Pass", at: "Vercel", pastedKey: true },
 };
 
 // The first page a new user sees: what connecting means, and one button.
@@ -1770,11 +1776,25 @@ function keyPage(authorize: AuthorizeRequest, provider: LinkKeyProvider, error?:
   });
 }
 
-// The provider's sign-in: a link to it, and the code to bring back or take there.
+// The provider's sign-in: a link to it, and the code to bring back or take
+// there; or, for a plan that is a key, where to create the key to paste back.
 function providerPage(authorize: AuthorizeRequest, connect: Connect, error?: string): Response {
-  const { name, at } = KINDS[connect.kind];
+  const { name, at, pastedKey } = KINDS[connect.kind];
   const open = (style: string) =>
-    `<a class="btn ${style}" href="${escapeHtml(connect.url)}" target="_blank" rel="noopener noreferrer">Open ${name}${ICONS.external}</a>`;
+    `<a class="btn ${style}" href="${escapeHtml(connect.url)}" target="_blank" rel="noopener noreferrer">Open ${pastedKey ? at : name}${ICONS.external}</a>`;
+  if (pastedKey) {
+    return pane(authorize, {
+      title: `Add Your ${name} Key`,
+      step: "connect_subscription",
+      back: "select",
+      error,
+      body: `<span class="who">${logo(connect.kind, name)}</span>
+<h1>Add Your ${name} Key</h1>
+<div class="step"><span class="n">1</span><div><p>Create a ${name} key at ${at}.</p>${open("outline")}</div></div>
+<div class="step"><span class="n">2</span><div><label for="authorization_response">Paste the key.</label><input id="authorization_response" type="password" name="authorization_response" autocomplete="off" spellcheck="false" placeholder="Paste Key" required></div></div>`,
+      footer: `<button class="btn primary" type="submit" name="decision" value="complete">Continue</button>`,
+    });
+  }
   const head = `<span class="who">${logo(connect.kind, name)}</span>
 <h1>Sign In To ${name}</h1>`;
   if (connect.userCode === null) {

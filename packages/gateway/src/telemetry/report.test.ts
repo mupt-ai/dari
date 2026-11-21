@@ -64,6 +64,7 @@ test("divergent replies to the same opening prompt keep distinct identity hashes
       chain: ["input-hash"],
       looseChain: ["loose-input-hash"],
       target: source,
+      provider: source.provider,
       conversationId: "conversation",
       leaseDepth: 1,
       providerBlockDepth: 1,

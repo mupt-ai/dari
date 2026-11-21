@@ -10,6 +10,9 @@ export type ProviderAttemptFailure =
       // The plan that replaced an exhausted one; the same request is retried
       // on it at once.
       nextSubscription?: NextSubscription;
+      // Neither this credential nor a retry on it can serve: the same request
+      // moves to the model's next candidate (another plan, or the API key).
+      failover?: true;
     }
   | {
       kind: "customer_canceled";
@@ -51,6 +54,9 @@ type RunProviderAttemptPlanArgs<TChoice, TValue, TInitial> = {
   // The choice served by another of the user's plans; without it a failure
   // naming one is not retried on it.
   onSubscription?: (choice: TChoice, next: NextSubscription) => TChoice;
+  // The same model served by its next candidate, or undefined when none is
+  // left; without it a failure asking for failover stands.
+  nextChoice?: (choice: TChoice) => Promise<TChoice | undefined>;
 };
 
 type ChoiceResult<TChoice, TValue> = ProviderAttemptPlanResult<TChoice, TValue>;
@@ -129,6 +135,15 @@ async function runChoice<TChoice, TValue, TInitial>(
       choice = args.onSubscription(choice, result.nextSubscription);
       maxAttempts += 1;
       continue;
+    }
+    if (result.kind === "provider_failed" && result.failover === true && args.nextChoice) {
+      const next = await args.nextChoice(choice);
+      if (next !== undefined) {
+        // The next candidate gets the router's full retry budget.
+        choice = next;
+        maxAttempts = attempt + args.retries + 1;
+        continue;
+      }
     }
     if (!result.retryable) break;
   }

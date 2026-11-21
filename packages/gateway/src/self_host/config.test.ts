@@ -101,8 +101,8 @@ test("a model names another provider only when that provider serves it", () => {
     { id: "openai/gpt-6.1-sol" },
   ]);
   expect(() => parseGatewayConfig({
-    routers: { default: { models: [{ id: "openai/gpt-6.1-sol", provider: "opencode-go" }] } },
-  })).toThrow("cannot be served by provider opencode-go on a self-hosted gateway; leave out `provider` to use openai.");
+    routers: { default: { models: [{ id: "google/gemini-4-neon", provider: "opencode-go" }] } },
+  })).toThrow("cannot be served by provider opencode-go on a self-hosted gateway; leave out `provider` to use google.");
   expect(() => parseGatewayConfig({
     routers: { default: { models: [{ id: "deepseek-ai/DeepSeek-V4.1-Flash-1017", provider: "xai" }] } },
   })).toThrow("use fireworks or opencode-go, or leave out `provider`");

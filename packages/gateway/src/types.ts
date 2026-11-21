@@ -52,7 +52,19 @@ export type ResolvedProviderAuth = BearerProviderAuth | AwsSigV4ProviderAuth;
 // - "meta_muse": a Meta (Muse) sign-in; the token is the Model API key the
 //   sign-in mints (Pi's Meta OAuth `access`).
 // - "opencode_go": an OpenCode Go plan; the token is the plan's API key.
-export type SubscriptionKind = "openai_codex" | "anthropic_claude_code" | "meta_muse" | "opencode_go";
+// - "github_copilot": a GitHub Copilot plan; the token is the short-lived
+//   Copilot token, which names the account's own API origin.
+// - "xai_grok": a SuperGrok or X Premium sign-in; the token is its OAuth
+//   access token.
+// - "vercel_token_pass": a Vercel Token Pass; the token is its AI Gateway key.
+export type SubscriptionKind =
+  | "openai_codex"
+  | "anthropic_claude_code"
+  | "meta_muse"
+  | "opencode_go"
+  | "github_copilot"
+  | "xai_grok"
+  | "vercel_token_pass";
 
 // A bearer credential an embedding platform supplies for one request through
 // GatewayPlatform.resolveProviderCredential, optionally with its own endpoint.
@@ -122,6 +134,15 @@ export type ResolvedRouterModelConfig = {
   zdr?: boolean;
 };
 
+// Another way to serve a model when the one before it fails within a request:
+// one of the user's plans, whose token the gateway fetches through
+// GatewayPlatform.nextSubscription, or without `subscription` the router's
+// API credential for `config.provider` (provider_keys / provider_auth).
+export type ModelFallback = {
+  config: ResolvedRouterModelConfig;
+  subscription?: SubscriptionKind | null;
+};
+
 /** Why a Dari Link grant cannot serve one provider's models now. */
 export type LinkUnavailable = {
   code: "subscription_exhausted" | "subscription_client_mismatch" | "grant_budget_exhausted";
@@ -146,8 +167,11 @@ export type ResolvedRouter = {
   // Model -> the platform-supplied credential that replaces the provider key
   // above for this request. Supplied by resolveRouter or resolveProviderCredential.
   provider_credentials?: Record<string, ProviderCredential>;
-  // Execution provider -> the user's subscription credential serving it.
-  subscription_credential_ids?: Partial<Record<Provider, string>>;
+  // Model -> what serves it, in order, when the first candidate
+  // (model_configs + provider_credentials) fails in a way another plan or the
+  // API key may not: a usage limit with no plan of the same kind left, or a
+  // plan's token refused (401/403). Absent: no in-request failover.
+  model_fallbacks?: Record<string, ModelFallback[]>;
   // A Dari Link grant's request: provider or gateway -> the granted API key
   // serving it, whose monthly spend the request counts toward.
   link_key_credential_ids?: Partial<Record<Provider, string>>;

@@ -15,21 +15,31 @@ import (
 // and vendor the company whose sign-in connects it. A device-code sign-in shows
 // a code to enter at the vendor; the others paste back the vendor's code.
 // buyURL is the vendor's plan page, where another account can subscribe, and
-// billingURL where the signed-in account changes or cancels its plan.
+// billingURL where the signed-in account changes or cancels its plan. A
+// pastedKey plan connects with a key the user creates at the vendor instead of
+// a sign-in.
 type agentSubscriptionProvider struct {
 	id, name, routerProvider, vendor string
 	deviceCode                       bool
 	buyURL, billingURL               string
+	pastedKey                        bool
 }
 
 var (
-	claudeSubscription = agentSubscriptionProvider{"anthropic_claude_code", "Claude Code", "anthropic", "Anthropic", false, "https://claude.ai/upgrade", "https://claude.ai/settings/billing"}
-	codexSubscription  = agentSubscriptionProvider{"openai_codex", "ChatGPT", "openai", "OpenAI", true, "https://chatgpt.com/#pricing", "https://chatgpt.com/#settings/Account"}
+	claudeSubscription = agentSubscriptionProvider{"anthropic_claude_code", "Claude Code", "anthropic", "Anthropic", false, "https://claude.ai/upgrade", "https://claude.ai/settings/billing", false}
+	codexSubscription  = agentSubscriptionProvider{"openai_codex", "ChatGPT", "openai", "OpenAI", true, "https://chatgpt.com/#pricing", "https://chatgpt.com/#settings/Account", false}
 	// Muse Code subscriptions serve only Muse Code.
-	museSubscription = agentSubscriptionProvider{"meta_muse", "Muse Code", "meta", "Meta", true, "https://accountscenter.meta.com/muse_code/", "https://accountscenter.meta.com/muse_code/"}
+	museSubscription = agentSubscriptionProvider{"meta_muse", "Muse Code", "meta", "Meta", true, "https://accountscenter.meta.com/muse_code/", "https://accountscenter.meta.com/muse_code/", false}
 	// OpenCode Go signs in with the OpenCode Console device flow that
 	// `opencode auth login` runs.
-	opencodeGoSubscription = agentSubscriptionProvider{"opencode_go", "OpenCode Go", "opencode-go", "OpenCode", true, "https://opencode.ai/go", "https://opencode.ai/console"}
+	opencodeGoSubscription = agentSubscriptionProvider{"opencode_go", "OpenCode Go", "opencode-go", "OpenCode", true, "https://opencode.ai/go", "https://opencode.ai/console", false}
+	// GitHub Copilot and Grok sign in with their vendors' device
+	// flows and serve any client.
+	copilotSubscription = agentSubscriptionProvider{"github_copilot", "GitHub Copilot", "github-copilot", "GitHub", true, "https://github.com/features/copilot/plans", "https://github.com/settings/copilot", false}
+	grokSubscription    = agentSubscriptionProvider{"xai_grok", "Grok", "xai", "xAI", true, "https://grok.com/plans", "https://grok.com/plans", false}
+	// Vercel Token Pass connects with a Token Pass key, created with
+	// `vercel token-pass`, and serves only Vercel's featured models.
+	vercelTokenPassSubscription = agentSubscriptionProvider{"vercel_token_pass", "Vercel Token Pass", "vercel-token-pass", "Vercel", false, "https://vercel.com/get/token-pass", "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Ftoken-pass", true}
 )
 
 // OpenCode, Pi, OpenClaw, and Hermes Agent use the organization's default

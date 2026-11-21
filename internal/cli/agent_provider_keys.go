@@ -184,7 +184,11 @@ func (source agentModelSource) native() bool {
 
 // subscriptionOnlyProviders serve models only through a personal
 // subscription: no API key or Dari credits pay for them.
-var subscriptionOnlyProviders = map[string]bool{"opencode-go": true}
+var subscriptionOnlyProviders = map[string]bool{
+	"github-copilot":    true,
+	"opencode-go":       true,
+	"vercel-token-pass": true,
+}
 
 // agentKeyContext is what deciding sources needs: the organization's saved
 // API keys and which providers serve which models.
@@ -399,7 +403,7 @@ func applyAgentProviderKeys(ctx context.Context, client *api.Client, routerID st
 	}
 	models = includeCurrentAgentModels(models, router)
 	body := agentRouterUpdateBody(router, models, currentAgentModelChoices(router))
-	subscribed := slices.DeleteFunc([]agentSubscriptionProvider{claudeSubscription, codexSubscription, museSubscription}, func(subscription agentSubscriptionProvider) bool {
+	subscribed := slices.DeleteFunc([]agentSubscriptionProvider{claudeSubscription, codexSubscription, grokSubscription, museSubscription}, func(subscription agentSubscriptionProvider) bool {
 		return !slices.Contains(router.SubscriptionProviders, subscription.routerProvider)
 	})
 	keys, err := agentProviderKeysFor(ctx, client, stderr, models, body.EnabledModels, body.ModelProviders, subscribed)

@@ -1,22 +1,36 @@
 import { createHash, randomBytes } from "node:crypto";
 
+import { COPILOT_HEADERS } from "../../providers/github_copilot.js";
+
 /**
  * OAuth protocols for personal subscriptions: Claude Code (PKCE, the user
  * pastes back the `code#state` Anthropic shows), ChatGPT/Codex (device code,
  * the gateway polls for approval), Muse Code (Meta's device code, then the
- * subscription's Model API key minted from the sign-in token), and OpenCode Go
+ * subscription's Model API key minted from the sign-in token), OpenCode Go
  * (the OpenCode Console device sign-in `opencode auth login` runs, scoped to
- * the workspace that holds the plan).
+ * the workspace that holds the plan), GitHub Copilot, and Grok
+ * (each vendor's device sign-in, as its own coding agent runs it), and Vercel
+ * Token Pass (no protocol: the plan is a Token Pass key the user pastes).
  * Every network call goes through the injected `fetch`.
  */
 
-export type SubscriptionProvider = "anthropic_claude_code" | "openai_codex" | "meta_muse" | "opencode_go";
+export type SubscriptionProvider =
+  | "anthropic_claude_code"
+  | "openai_codex"
+  | "meta_muse"
+  | "opencode_go"
+  | "github_copilot"
+  | "xai_grok"
+  | "vercel_token_pass";
 
 export const SUBSCRIPTION_PROVIDERS: readonly SubscriptionProvider[] = [
   "anthropic_claude_code",
   "openai_codex",
   "meta_muse",
   "opencode_go",
+  "github_copilot",
+  "xai_grok",
+  "vercel_token_pass",
 ];
 
 const OPENCODE_CONSOLE_URL = "https://opencode.ai/console";
@@ -108,11 +122,97 @@ const MUSE_SIGN_IN_REFRESH_PREFIX = "refresh:";
 export const META_APPROVAL_PENDING =
   "Meta approval is still pending. Enter the code at Meta, finish approval, then try again.";
 
+// Device sign-ins the gateway polls in one shape: start at `deviceCodeUrl`,
+// then ask `tokenUrl` whether the user approved.
+type DeviceSignIn = {
+  // Whose sign-in it is, as messages name it.
+  vendor: string;
+  clientId: string;
+  deviceCodeUrl: string;
+  tokenUrl: string;
+  scope?: string;
+  headers?: Record<string, string>;
+};
+
+// GitHub Copilot's sign-in, as VS Code's Copilot Chat runs it, for github.com
+// accounts. The GitHub token it grants is the refresh token: it mints the
+// short-lived Copilot token that serves requests.
+const GITHUB_COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98";
+const COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token";
+const GITHUB_USER_URL = "https://api.github.com/user";
+// Copilot tokens live about half an hour; mint the next one before then.
+const COPILOT_TOKEN_SKEW_MS = 5 * 60_000;
+
+// SuperGrok and X Premium sign in as xAI's Grok CLI does.
+const XAI_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
+
+const DEVICE_SIGN_INS = {
+  github_copilot: {
+    vendor: "GitHub",
+    clientId: GITHUB_COPILOT_CLIENT_ID,
+    deviceCodeUrl: "https://github.com/login/device/code",
+    tokenUrl: "https://github.com/login/oauth/access_token",
+    scope: "read:user",
+    headers: { "User-Agent": COPILOT_HEADERS["User-Agent"]! },
+  },
+  xai_grok: {
+    vendor: "xAI",
+    clientId: XAI_CLIENT_ID,
+    deviceCodeUrl: "https://auth.x.ai/oauth2/device/code",
+    tokenUrl: "https://auth.x.ai/oauth2/token",
+    scope: "openid profile email offline_access grok-cli:access api:access",
+  },
+} as const satisfies Record<string, DeviceSignIn>;
+
+type DeviceProvider = keyof typeof DEVICE_SIGN_INS;
+
+function isDeviceProvider(provider: SubscriptionProvider): provider is DeviceProvider {
+  return provider in DEVICE_SIGN_INS;
+}
+
+export const GITHUB_APPROVAL_PENDING = approvalPending("GitHub");
+export const XAI_APPROVAL_PENDING = approvalPending("xAI");
+
+function approvalPending(vendor: string): string {
+  return `${vendor} approval is still pending. Enter the code at ${vendor}, finish approval, then try again.`;
+}
+
+// Device-flow access tokens that state no lifetime last an hour.
+const DEFAULT_TOKEN_LIFETIME_SECONDS = 3600;
+
+// A Token Pass is an AI Gateway key restricted to Token Pass, created on
+// Vercel's Token Pass page (or with `vercel token-pass`) and pasted back.
+const VERCEL_TOKEN_PASS_URL = "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Ftoken-pass";
+// A Token Pass key carries no expiry; this only keeps refresh idle.
+const VERCEL_KEY_LIFETIME_MS = 3650 * 24 * 60 * 60_000;
+
 export async function startOAuth(
   provider: SubscriptionProvider,
   options: OAuthOptions,
 ): Promise<OAuthAuthorization> {
   const expiresAt = new Date((options.now ?? new Date()).getTime() + FLOW_TIMEOUT_MS);
+  if (provider === "vercel_token_pass") {
+    return { authorizationUrl: VERCEL_TOKEN_PASS_URL, expiresAt, userCode: null, flow: {} };
+  }
+  if (isDeviceProvider(provider)) {
+    const signIn: DeviceSignIn = DEVICE_SIGN_INS[provider];
+    const device = await postForm(
+      options.fetch,
+      signIn.deviceCodeUrl,
+      { client_id: signIn.clientId, ...(signIn.scope === undefined ? {} : { scope: signIn.scope }) },
+      `${signIn.vendor} device code request`,
+      signIn.headers,
+    );
+    const complete = device.verification_uri_complete;
+    return {
+      authorizationUrl: typeof complete === "string" && complete.startsWith("https://")
+        ? complete
+        : requiredString(device, "verification_uri"),
+      expiresAt,
+      userCode: requiredString(device, "user_code"),
+      flow: { device_code: requiredString(device, "device_code") },
+    };
+  }
   if (provider === "opencode_go") {
     const device = await postJson(
       options.fetch,
@@ -193,6 +293,24 @@ export async function completeOAuth(
   options: OAuthOptions,
 ): Promise<OAuthTokens> {
   const now = options.now ?? new Date();
+  if (provider === "vercel_token_pass") return vercelTokenPassTokens(authorizationResponse, now);
+  if (isDeviceProvider(provider)) {
+    const token = await deviceApproval(provider, requiredString(flow, "device_code"), options.fetch);
+    if (provider === "github_copilot") {
+      const githubToken = requiredString(token, "access_token");
+      const tokens = await copilotTokens(githubToken, options.fetch, now).catch((error: unknown) => {
+        // GitHub mints no Copilot token for an account without a plan.
+        if (error instanceof SubscriptionOAuthProviderError && [401, 403, 404].includes(error.status ?? 0)) {
+          throw new SubscriptionOAuthInputError(
+            "This GitHub account has no active Copilot plan. Subscribe at https://github.com/features/copilot/plans, then connect again.",
+          );
+        }
+        throw error;
+      });
+      return { ...tokens, accountEmail: await githubAccount(options.fetch, githubToken) };
+    }
+    return deviceTokens(provider, token, now, null);
+  }
   if (provider === "opencode_go") {
     let token: Record<string, unknown>;
     try {
@@ -315,6 +433,19 @@ export async function refreshOAuth(
   options: OAuthOptions,
 ): Promise<OAuthTokens> {
   const now = options.now ?? new Date();
+  if (credential.provider === "vercel_token_pass") return vercelTokenPassTokens(credential.refreshToken, now);
+  if (credential.provider === "github_copilot") return await copilotTokens(credential.refreshToken, options.fetch, now);
+  if (isDeviceProvider(credential.provider)) {
+    const signIn: DeviceSignIn = DEVICE_SIGN_INS[credential.provider];
+    const token = await postForm(
+      options.fetch,
+      signIn.tokenUrl,
+      { grant_type: "refresh_token", client_id: signIn.clientId, refresh_token: credential.refreshToken },
+      `${signIn.vendor} sign-in refresh`,
+      signIn.headers,
+    );
+    return deviceTokens(credential.provider, token, now, credential.refreshToken);
+  }
   if (credential.provider === "opencode_go") {
     const token = await postJson(
       options.fetch,
@@ -533,14 +664,16 @@ function postForm(
   url: string,
   payload: Record<string, string>,
   operation: string,
+  headers: Record<string, string> = {},
 ): Promise<Record<string, unknown>> {
-  return requestJson(fetch, url, new URLSearchParams(payload).toString(), "application/x-www-form-urlencoded", operation);
+  return requestJson(fetch, url, new URLSearchParams(payload).toString(), "application/x-www-form-urlencoded", operation, headers);
 }
 
+// A null body is a GET.
 async function requestJson(
   fetch: OAuthFetch,
   url: string,
-  body: string,
+  body: string | null,
   contentType: string,
   operation: string,
   headers: Record<string, string> = {},
@@ -548,9 +681,14 @@ async function requestJson(
   let response: Response;
   try {
     response = await fetch(url, {
-      method: "POST",
-      headers: { Accept: "application/json", "Content-Type": contentType, "User-Agent": "Dari/1.0", ...headers },
-      body,
+      method: body === null ? "GET" : "POST",
+      headers: {
+        Accept: "application/json",
+        ...(body === null ? {} : { "Content-Type": contentType }),
+        "User-Agent": "Dari/1.0",
+        ...headers,
+      },
+      ...(body === null ? {} : { body }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch {
@@ -622,4 +760,122 @@ async function opencodeEmail(fetch: OAuthFetch, accessToken: string): Promise<st
   } catch {
     return null;
   }
+}
+
+// Ask a device sign-in whether the user approved its code. GitHub answers an
+// unfinished sign-in with HTTP 200 and an `error`; the others with HTTP 400.
+async function deviceApproval(
+  provider: DeviceProvider,
+  deviceCode: string,
+  fetch: OAuthFetch,
+): Promise<Record<string, unknown>> {
+  const signIn: DeviceSignIn = DEVICE_SIGN_INS[provider];
+  let token: Record<string, unknown>;
+  let errorCode: string | undefined;
+  try {
+    token = await postForm(
+      fetch,
+      signIn.tokenUrl,
+      {
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+        device_code: deviceCode,
+        client_id: signIn.clientId,
+      },
+      `${signIn.vendor} device approval check`,
+      signIn.headers,
+    );
+    errorCode = typeof token.error === "string" ? token.error : undefined;
+  } catch (error) {
+    if (!(error instanceof SubscriptionOAuthProviderError) || error.errorCode === undefined) throw error;
+    token = {};
+    errorCode = error.errorCode;
+  }
+  if (errorCode === undefined) return token;
+  if (errorCode === "authorization_pending" || errorCode === "slow_down") {
+    throw new SubscriptionOAuthInputError(approvalPending(signIn.vendor));
+  }
+  if (errorCode === "access_denied" || errorCode === "authorization_denied") {
+    throw new SubscriptionOAuthInputError(`The sign-in was declined on ${signIn.vendor}. Start again to retry.`);
+  }
+  if (errorCode === "expired_token") {
+    throw new SubscriptionOAuthInputError(`The ${signIn.vendor} sign-in code expired. Start again.`);
+  }
+  throw new SubscriptionOAuthProviderError(`${signIn.vendor} device approval check failed.`, undefined, errorCode);
+}
+
+// Grok tokens. A refresh that rotates no refresh token keeps the
+// stored one; Grok's ID token names the account.
+function deviceTokens(
+  provider: "xai_grok",
+  payload: Record<string, unknown>,
+  now: Date,
+  fallbackRefreshToken: string | null,
+): OAuthTokens {
+  const idToken = typeof payload.id_token === "string" ? payload.id_token : null;
+  const email = idToken === null ? undefined : jwtPayload(idToken)?.email;
+  const lifetime = payload.expires_in === undefined ? DEFAULT_TOKEN_LIFETIME_SECONDS : positiveInt(payload.expires_in);
+  return {
+    provider,
+    accessToken: requiredString(payload, "access_token"),
+    refreshToken: refreshTokenFrom(payload, fallbackRefreshToken),
+    expiresAt: new Date(now.getTime() + lifetime * 1000),
+    accountId: null,
+    accountEmail: typeof email === "string" && email ? email : null,
+  };
+}
+
+// Mints the Copilot token that serves requests from the GitHub token.
+async function copilotTokens(githubToken: string, fetch: OAuthFetch, now: Date): Promise<OAuthTokens> {
+  const minted = await requestJson(
+    fetch,
+    COPILOT_TOKEN_URL,
+    null,
+    "",
+    "GitHub Copilot token request",
+    { ...COPILOT_HEADERS, Authorization: `Bearer ${githubToken}` },
+  );
+  const expiresAt = minted.expires_at;
+  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) {
+    throw new SubscriptionOAuthProviderError(INCOMPLETE);
+  }
+  return {
+    provider: "github_copilot",
+    accessToken: requiredString(minted, "token"),
+    refreshToken: githubToken,
+    expiresAt: new Date(Math.max(now.getTime(), expiresAt * 1000 - COPILOT_TOKEN_SKEW_MS)),
+    accountId: null,
+    accountEmail: null,
+  };
+}
+
+// The signed-in GitHub account's email, else its login; best effort.
+async function githubAccount(fetch: OAuthFetch, githubToken: string): Promise<string | null> {
+  try {
+    const user = await requestJson(fetch, GITHUB_USER_URL, null, "", "GitHub account lookup", {
+      Authorization: `Bearer ${githubToken}`,
+    });
+    for (const field of ["email", "login"]) {
+      const value = user[field];
+      if (typeof value === "string" && value) return value;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// The pasted key is both tokens; refreshing hands the same key back.
+function vercelTokenPassTokens(key: string, now: Date): OAuthTokens {
+  const apiKey = key.trim();
+  if (!apiKey || /\s/.test(apiKey)) {
+    throw new SubscriptionOAuthInputError("Paste the Token Pass key you created at Vercel.");
+  }
+  return {
+    provider: "vercel_token_pass",
+    accessToken: apiKey,
+    refreshToken: apiKey,
+    expiresAt: new Date(now.getTime() + VERCEL_KEY_LIFETIME_MS),
+    accountId: null,
+    accountEmail: null,
+  };
 }

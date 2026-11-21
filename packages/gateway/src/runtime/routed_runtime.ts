@@ -16,6 +16,7 @@ import {
   executeStreaming,
   prepareStreamingExecution,
   type CompletedNonStreamingExecution,
+  type NextProviderChoice,
   type ProviderChoice,
 } from "../providers/execution.js";
 import {
@@ -29,12 +30,14 @@ import {
 } from "../providers/provider_call.js";
 import type { SelectorBackend } from "../strategies/routing.js";
 import { routeDecision, type RoutedDecision } from "../strategies/route_decision.js";
-import { executionProviderForModel } from "../models/execution_provider.js";
+import { credentialsServedBy, executionProviderForModel } from "../models/execution_provider.js";
+import { gatewayPlatform } from "../platform/platform.js";
+import { captureOperationalError } from "../observability/errors.js";
 import { trackBackgroundTelemetry } from "../telemetry/background.js";
 import { estimateBenchmarkReplay } from "../telemetry/benchmark_replay.js";
 import { buildCompletedPrefixHit } from "../telemetry/prefix_state.js";
 import { scrubSecrets } from "../telemetry/scrub.js";
-import type { ResolvedRouter } from "../types.js";
+import type { ModelFallback, ProviderCredential, ResolvedRouter } from "../types.js";
 import type { PreparedRoutedCompletion } from "./prepare_routed_completion.js";
 import { auxiliaryDecision } from "./claude_code/auxiliary_routing.js";
 import { explicitModelDecision, strictModelDecision } from "./explicit_model.js";
@@ -70,6 +73,7 @@ type SpeculativeExecution = {
 type RuntimeExecutionPlan = {
   primary: ProviderChoice;
   primaryRetries: number;
+  nextChoice: NextProviderChoice;
   reportBarrier?: Promise<unknown>;
   startedCompletion?: StartedCompletion;
   startedStream?: StartedStream;
@@ -137,6 +141,7 @@ export async function runPreparedRoutedCompletion(args: {
       interaction: prepared.interaction,
       primary: plan.primary,
       primaryRetries: plan.primaryRetries,
+      nextChoice: plan.nextChoice,
       reporter: prepared.reporter,
       protocol: prepared.protocol,
       startedCompletion: plan.startedCompletion,
@@ -149,6 +154,7 @@ export async function runPreparedRoutedCompletion(args: {
     interaction: prepared.interaction,
     primary: plan.primary,
     primaryRetries: plan.primaryRetries,
+    nextChoice: plan.nextChoice,
     reporter: prepared.reporter,
     startedStream: plan.startedStream,
     initialError: plan.initialStreamError,
@@ -189,6 +195,7 @@ export async function runPreparedRoutedInteraction(args: {
     interaction: args.prepared.interaction,
     primary: plan.primary,
     primaryRetries: plan.primaryRetries,
+    nextChoice: plan.nextChoice,
     reporter: args.prepared.reporter,
     protocol: args.prepared.protocol,
     startedCompletion: plan.startedCompletion,
@@ -399,6 +406,7 @@ async function prepareRuntimeExecution(args: {
     primaryRetries: configuredPrimaryRetries(
       prepared.credentials.primary_retries,
     ),
+    nextChoice: (choice) => nextProviderChoice(prepared, choice),
     reportBarrier: selectionPromise,
     startedCompletion:
       speculative.transport === "completion" ? speculative.started : undefined,
@@ -420,6 +428,7 @@ function selectedExecutionPlan(
     primaryRetries: configuredPrimaryRetries(
       prepared.credentials.primary_retries,
     ),
+    nextChoice: (choice) => nextProviderChoice(prepared, choice),
   };
 }
 
@@ -606,13 +615,79 @@ function providerChoice(
   };
 }
 
+/**
+ * The same decision served by the model's next fallback after `choice`: a plan
+ * the platform still has a token for, or the router's API credential while
+ * the organization has credits. A fallback that cannot be prepared is
+ * skipped. Undefined when none is left.
+ */
+async function nextProviderChoice(
+  prepared: PreparedRoutedCompletion,
+  choice: ProviderChoice,
+): Promise<ProviderChoice | undefined> {
+  const { credentials } = prepared;
+  const model = choice.decision.selectedModel;
+  const fallbacks = credentials.model_fallbacks?.[model] ?? [];
+  for (let index = (choice.fallback ?? -1) + 1; index < fallbacks.length; index += 1) {
+    const fallback = fallbacks[index]!;
+    if (!fallback.subscription && credentials.credit_exhausted === true) continue;
+    const plan = fallback.subscription
+      ? await fallbackPlan(credentials, fallback, model, prepared.routing.conversationId)
+      : undefined;
+    if (fallback.subscription && plan === undefined) continue;
+    try {
+      return {
+        decision: choice.decision,
+        fallback: index,
+        execution: providerExecution(prepared, choice.decision, credentialsServedBy(credentials, model, fallback.config, plan)),
+      };
+    } catch (error) {
+      console.error(
+        "model fallback setup failed",
+        scrubSecrets(error instanceof Error ? error.message : String(error)),
+      );
+    }
+  }
+  return undefined;
+}
+
+// The user's plan of the fallback's kind that serves this model now, if any.
+async function fallbackPlan(
+  credentials: ResolvedRouter,
+  fallback: ModelFallback,
+  model: string,
+  conversationId: string,
+): Promise<ProviderCredential | undefined> {
+  const platform = gatewayPlatform();
+  const userId = credentials.attributed_user_id;
+  // A strict router serves only plans the platform supplied up front.
+  if (platform.nextSubscription === undefined || !userId || credentials.strict === true) return undefined;
+  try {
+    const next = await platform.nextSubscription({
+      userId,
+      provider: fallback.config.provider,
+      model,
+      conversationId,
+      ...(credentials.link_grant_id ? { linkGrantId: credentials.link_grant_id } : {}),
+    });
+    return next === undefined
+      ? undefined
+      : { apiKey: next.apiKey, subscription: fallback.subscription!, credentialId: next.credentialId };
+  } catch (error) {
+    console.error("fallback subscription lookup failed", error);
+    captureOperationalError(error, { code: "next_subscription_lookup_failed" });
+    return undefined;
+  }
+}
+
 function providerExecution(
   prepared: PreparedRoutedCompletion,
   decision: RoutingDecision,
+  credentials: ResolvedRouter = prepared.credentials,
 ): ProviderExecution {
   return prepareProviderExecution({
     decision,
-    credentials: prepared.credentials,
+    credentials,
     billable: prepared.billable,
     routerId: prepared.routerId,
     pricing: prepared.routing.pricing,
@@ -674,6 +749,7 @@ function runtimeResult(
         target,
         conversationId: prepared.routing.conversationId,
         leaseDepth: prepared.routing.leaseDepth,
+        provider: result.choice.execution.provider,
         providerBlockDepth:
           prepared.routing.providerBlockDepthFor(decision.selectedModel),
         fingerprints: prepared.routing.prefix.fingerprints,

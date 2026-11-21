@@ -96,6 +96,8 @@ func TestRouterUpdateSubscriptionFlagsKeepOrClear(t *testing.T) {
 		{name: "omitted keeps both", args: []string{"--name", "Renamed"}},
 		{name: "replaces providers", args: []string{"--subscription", "anthropic"}, providers: []any{"anthropic"}},
 		{name: "takes a Muse Code subscription", args: []string{"--subscription", "Meta"}, providers: []any{"meta"}},
+		// Plans serve other providers' models too; the server validates.
+		{name: "takes any provider", args: []string{"--subscription", "Fireworks"}, providers: []any{"fireworks"}},
 		{name: "empty clears", args: []string{"--subscription", "", "--api-fallback", ""}, providers: []any{}, fallbacks: []any{}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -115,17 +117,6 @@ func TestRouterUpdateSubscriptionFlagsKeepOrClear(t *testing.T) {
 				t.Fatalf("subscription_api_fallback_models = %#v, want %#v", got, tc.fallbacks)
 			}
 		})
-	}
-}
-
-func TestRouterSubscriptionFlagRejectsProvidersWithoutSubscriptions(t *testing.T) {
-	useTestAPIKey(t)
-	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{"router", "create", "Bad", "--model", "xai/grok-4.7", "--managed-key", "xai", "--subscription", "xai"})
-	cmd.SetErr(io.Discard)
-	err := captureStdout(t, func() error { return cmd.Execute() })
-	if err == nil || !strings.Contains(err.Error(), "openai, anthropic, or meta") {
-		t.Fatalf("err = %v, want a subscription provider error", err)
 	}
 }
 
@@ -168,7 +159,7 @@ func TestRouterManifestRejectsInvalidSubscriptionFields(t *testing.T) {
 		Name:                  "Bad",
 		EnabledModels:         []string{"openai/gpt-5.6-sol"},
 		ProviderKeySources:    map[string]string{"openai": "managed"},
-		SubscriptionProviders: []string{"xai"},
+		SubscriptionProviders: []string{" "},
 	}
 	if _, err := manifest.createRequest("router.yml", nil); err == nil || !strings.Contains(err.Error(), "subscription_providers[0]") {
 		t.Fatalf("err = %v, want subscription_providers error", err)

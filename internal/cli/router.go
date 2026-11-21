@@ -149,8 +149,8 @@ type routerCreateRequest struct {
 	RolePrompts           *routerRoles        `json:"role_prompts,omitempty"`
 	ModelThinkingLevels   map[string][]string `json:"model_thinking_levels,omitempty"`
 	FastModels            []string            `json:"fast_models,omitempty"`
-	// Providers served by the attributed user's subscription, and the models
-	// that keep running on the provider's API credential while it is unavailable.
+	// Providers whose models try the attributed user's plans first, and the
+	// models that keep running on the provider's API credential when no plan can.
 	SubscriptionProviders         []string `json:"subscription_providers,omitempty"`
 	SubscriptionAPIFallbackModels []string `json:"subscription_api_fallback_models,omitempty"`
 	// Models the subscription serves; the providers' other models run on their
@@ -249,23 +249,20 @@ func (rf *routerConfigFlags) register(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&rf.evalScoreImputation, name("eval-score-imputation"), true, "Estimate missing eval scores for a model and thinking level from related measured scores (on by default)")
 	cmd.Flags().BoolVar(&rf.sessionPinning, name("session-pinning"), false, "Route once when a session starts and keep that model for the whole session; each subagent is routed once when it starts (off by default)")
 	cmd.Flags().BoolVar(&rf.nativeCompaction, name("native-compaction"), false, "Let Codex compact context server-side with the provider's native compaction; requests carrying compaction state are routed only to models that support it (off by default)")
-	cmd.Flags().StringSliceVar(&rf.subscriptionProviders, name("subscription"), nil, "Serve this provider's models from the attributed user's personal subscription: openai, anthropic, or meta (repeatable or comma-separated). The provider's --provider-credential or --managed-key choice becomes its API fallback credential. On update this replaces the list; an empty value clears it")
+	cmd.Flags().StringSliceVar(&rf.subscriptionProviders, name("subscription"), nil, "Serve this provider's models from the attributed user's personal subscriptions first: every plan that offers a model, the maker's plan first (repeatable or comma-separated). The provider's --provider-credential or --managed-key choice becomes its API fallback credential. On update this replaces the list; an empty value clears it")
 	cmd.Flags().StringSliceVar(&rf.subscriptionModels, name("subscription-model"), nil, "Serve only this model of a --subscription provider from the subscription; the provider's other models run on its API credential (repeatable or comma-separated). Without it the subscription serves all of them. On update this replaces the list")
-	cmd.Flags().StringSliceVar(&rf.apiFallbackModels, name("api-fallback"), nil, "Keep this subscription model running on the provider's API credential while the subscription is unavailable; models without it pause until the subscription is back (repeatable or comma-separated). On update this replaces the list; an empty value clears it")
+	cmd.Flags().StringSliceVar(&rf.apiFallbackModels, name("api-fallback"), nil, "Keep this subscription model running on the provider's API credential when none of the user's plans can serve it; models without it pause until a plan is back (repeatable or comma-separated). On update this replaces the list; an empty value clears it")
 }
 
 // subscriptionSettings returns the subscription lists, nil when their flag
 // was not passed so update keeps the router's current list.
-func (rf *routerConfigFlags) subscriptionSettings(cmd *cobra.Command) (providers, apiFallbackModels, subscriptionModels *[]string, err error) {
+func (rf *routerConfigFlags) subscriptionSettings(cmd *cobra.Command) (providers, apiFallbackModels, subscriptionModels *[]string) {
 	if cmd.Flags().Changed("subscription") {
 		cleaned := []string{}
 		for _, provider := range rf.subscriptionProviders {
 			provider = strings.ToLower(strings.TrimSpace(provider))
 			if provider == "" {
 				continue
-			}
-			if !isSubscriptionRouterProvider(provider) {
-				return nil, nil, nil, fmt.Errorf("--subscription %s: subscriptions serve openai, anthropic, or meta", provider)
 			}
 			cleaned = append(cleaned, provider)
 		}
@@ -277,7 +274,7 @@ func (rf *routerConfigFlags) subscriptionSettings(cmd *cobra.Command) (providers
 	if cmd.Flags().Changed("subscription-model") {
 		subscriptionModels = cleanModelFlag(rf.subscriptionModels)
 	}
-	return providers, apiFallbackModels, subscriptionModels, nil
+	return providers, apiFallbackModels, subscriptionModels
 }
 
 func cleanModelFlag(models []string) *[]string {
@@ -421,10 +418,7 @@ func newRouterCreateCmd(gf *globalFlags) *cobra.Command {
 			if cmd.Flags().Changed("eval-score-imputation") {
 				body.EvalScoreImputation = &rf.evalScoreImputation
 			}
-			subscriptionProviders, apiFallbackModels, subscriptionModels, err := rf.subscriptionSettings(cmd)
-			if err != nil {
-				return err
-			}
+			subscriptionProviders, apiFallbackModels, subscriptionModels := rf.subscriptionSettings(cmd)
 			if subscriptionModels != nil {
 				body.SubscriptionModels = *subscriptionModels
 			}
@@ -517,9 +511,7 @@ func newRouterUpdateCmd(gf *globalFlags) *cobra.Command {
 			if cmd.Flags().Changed("native-compaction") {
 				body.NativeCompaction = &rf.nativeCompaction
 			}
-			if body.SubscriptionProviders, body.SubscriptionAPIFallbackModels, body.SubscriptionModels, err = rf.subscriptionSettings(cmd); err != nil {
-				return err
-			}
+			body.SubscriptionProviders, body.SubscriptionAPIFallbackModels, body.SubscriptionModels = rf.subscriptionSettings(cmd)
 			if cmd.Flags().Changed("name") {
 				body.Name = strings.TrimSpace(name)
 			}
@@ -932,7 +924,7 @@ func cleanProviderKeySources(path string, rawSources map[string]string) (map[str
 		}
 		source = strings.ToLower(source)
 		// Routers report "subscription" for providers only a personal
-		// subscription serves (OpenCode Go), so exported manifests carry it.
+		// subscription serves (such as OpenCode Go), so exported manifests carry it.
 		if source != "managed" && source != "user" && source != "subscription" {
 			return nil, fmt.Errorf("%s: provider_key_sources.%s must be managed, user, or subscription", path, provider)
 		}
@@ -1192,8 +1184,8 @@ func normalizeManifestSubscriptionProviders(path string, raw []string) ([]string
 	providers := make([]string, 0, len(raw))
 	for index, rawProvider := range raw {
 		provider := strings.ToLower(strings.TrimSpace(rawProvider))
-		if !isSubscriptionRouterProvider(provider) {
-			return nil, fmt.Errorf("%s: subscription_providers[%d] must be openai, anthropic, or meta", path, index)
+		if provider == "" {
+			return nil, fmt.Errorf("%s: subscription_providers[%d] must not be empty", path, index)
 		}
 		if !slices.Contains(providers, provider) {
 			providers = append(providers, provider)
@@ -1301,15 +1293,6 @@ func normalizeManifestRoleModels(path string, roles routerRoles, models []string
 		return nil, nil
 	}
 	return &routerRoles{Main: main, Subagent: subagent}, nil
-}
-
-// isSubscriptionRouterProvider reports whether a personal subscription can
-// serve the router provider's models.
-func isSubscriptionRouterProvider(provider string) bool {
-	return slices.ContainsFunc(
-		[]agentSubscriptionProvider{codexSubscription, claudeSubscription, museSubscription},
-		func(subscription agentSubscriptionProvider) bool { return subscription.routerProvider == provider },
-	)
 }
 
 const manifestRolePromptMaxLength = 4000

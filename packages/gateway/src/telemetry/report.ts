@@ -468,6 +468,7 @@ export class RequestReporter {
               chain: selectedChain,
               looseChain: a.looseChain,
               target: selectedTarget,
+              provider: selectedProvider ?? selectedTarget.provider,
               conversationId: a.conversationId,
               leaseDepth: a.leaseDepth,
               providerBlockDepth:
@@ -518,9 +519,7 @@ export class RequestReporter {
             thinking: outcome.providerExecution?.thinkingLevel ?? reasoningBucket,
             costUsd: costSource === null || !isRecord(usage?.cost) ? null : finiteNumber(usage.cost.total),
             credentialId: keySource === "subscription"
-              ? outcome.providerExecution?.subscriptionCredentialId ?? (selectedProvider
-                ? a.credentials.subscription_credential_ids?.[selectedProvider] ?? null
-                : null)
+              ? outcome.providerExecution?.subscriptionCredentialId ?? null
               : selectedProvider ? a.credentials.link_key_credential_ids?.[selectedProvider] ?? null : null,
           }
         : undefined;

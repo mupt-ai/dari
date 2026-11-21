@@ -813,7 +813,11 @@ func connectAgentPersonalSubscription(
 	}
 
 	writeAgentOAuthInstructions(provider, stderr, started.AuthorizationURL, opened)
-	fmt.Fprintf(stderr, "After approving, paste the authorization code %s shows: ", provider.vendor)
+	if provider.pastedKey {
+		fmt.Fprintf(stderr, "Paste your %s key: ", provider.name)
+	} else {
+		fmt.Fprintf(stderr, "After approving, paste the authorization code %s shows: ", provider.vendor)
+	}
 	authorizationResponse, err := readAgentLine(stdin)
 	if err != nil {
 		return fmt.Errorf("read %s authorization code: %w", provider.name, err)

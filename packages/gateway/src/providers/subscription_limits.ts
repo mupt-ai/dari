@@ -1,10 +1,10 @@
 import { isRecord } from "@mupt-ai/dari-router/policy-engine";
 
 import { providerFailureMessage } from "../runtime/provider_stream_outcome.js";
-import type { ProviderKeySource } from "../types.js";
+import type { ProviderKeySource, SubscriptionKind } from "../types.js";
 import type { CapturedProviderResponse } from "./response_capture.js";
 
-export type SubscriptionOAuthProvider = "anthropic_claude_code" | "openai_codex" | "meta_muse" | "opencode_go";
+export type SubscriptionOAuthProvider = SubscriptionKind;
 
 export type SubscriptionUsageLimit = {
   oauthProvider: SubscriptionOAuthProvider;
@@ -168,6 +168,9 @@ const SUBSCRIPTION_LABEL: Record<SubscriptionOAuthProvider, string> = {
   openai_codex: "ChatGPT",
   meta_muse: "Muse Code",
   opencode_go: "OpenCode Go",
+  github_copilot: "GitHub Copilot",
+  xai_grok: "Grok",
+  vercel_token_pass: "Vercel Token Pass",
 };
 
 // Providers whose plan page the accounts page links to for buying another.
@@ -182,15 +185,19 @@ export function subscriptionOAuthProviderFor(
   if (provider === "openai" || provider === "openai-codex") return "openai_codex";
   if (provider === "meta") return "meta_muse";
   if (provider === "opencode-go") return "opencode_go";
+  if (provider === "github-copilot") return "github_copilot";
+  if (provider === "xai") return "xai_grok";
+  if (provider === "vercel-token-pass") return "vercel_token_pass";
   return null;
 }
 
 /**
  * Recognize a personal subscription that has run out of quota. Claude Code
  * answers 429 with the unified rate-limit headers; the ChatGPT backend answers
- * 429 with a structured `error.code` and `resets_at`. Meta documents no
- * usage-limit signature for Muse Code plans, so any 429 on one holds it until
- * the reset Meta gives, if any. OpenCode Go names its refusal
+ * 429 with a structured `error.code` and `resets_at`. Meta, GitHub Copilot,
+ * xAI, Kimi, and Vercel Token Pass document no usage-limit signature for their
+ * plans, so any 429 on one holds it until the reset it gives, if any. OpenCode
+ * Go names its refusal
  * `GoUsageLimitError`. The Codex WebSocket
  * transport bypasses fetch, so its usage-limit error only survives as message
  * text and is matched there without a reset time.
@@ -210,9 +217,11 @@ export function detectSubscriptionUsageLimit(args: {
   if (oauthProvider === "anthropic_claude_code") {
     return anthropicUsageLimit(args.captured, args.model, now);
   }
-  if (oauthProvider === "meta_muse") return museUsageLimit(args.captured, now);
   if (oauthProvider === "opencode_go") return openCodeGoUsageLimit(args.captured, now);
-  return codexUsageLimit(args.captured, providerFailureMessage(args.failure), args.model, now);
+  if (oauthProvider === "openai_codex") {
+    return codexUsageLimit(args.captured, providerFailureMessage(args.failure), args.model, now);
+  }
+  return planRateLimit(oauthProvider, args.captured, now);
 }
 
 // Claude Code plans also cap some model families on their own
@@ -294,15 +303,16 @@ function codexModelLimitExhausted(headers: Headers): boolean {
   return other && !plan;
 }
 
-function museUsageLimit(
+function planRateLimit(
+  oauthProvider: SubscriptionOAuthProvider,
   captured: CapturedProviderResponse | undefined,
   now: Date,
 ): SubscriptionUsageLimit | null {
   if (captured === undefined || captured.status !== 429) return null;
   return {
-    oauthProvider: "meta_muse",
+    oauthProvider,
     resetsAt: laterReset(codexErrorBody(captured.bodyText)?.resets_at, captured.headers, now),
-    reason: "Muse Code usage limit reached.",
+    reason: `${SUBSCRIPTION_LABEL[oauthProvider]} usage limit reached.`,
   };
 }
 

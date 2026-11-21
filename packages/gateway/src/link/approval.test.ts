@@ -159,6 +159,45 @@ test("a new user connects plans by signing in to their providers, then allows th
   expect(await browser.page()).toContain("Uses Dari To Connect");
 });
 
+// GitHub answers a sign-in still awaiting approval with HTTP 200, and a Token
+// Pass is a key the user creates at Vercel: both connect from the page.
+test("a user connects GitHub Copilot by its device code and Vercel Token Pass by a pasted key", async () => {
+  const browser = gateway([
+    jsonResponse({ device_code: "gh-dev", user_code: "WXYZ-0001", verification_uri: "https://github.com/login/device", expires_in: 900 }),
+    jsonResponse({ error: "authorization_pending" }),
+    jsonResponse({ access_token: "gho_github" }),
+    jsonResponse({ token: "tid=1;proxy-ep=proxy.individual.githubcopilot.com", expires_at: Math.floor(Date.now() / 1000) + 1800 }),
+    jsonResponse({ login: "octocat" }),
+  ]);
+  await browser.page();
+  const select = await (await browser.submit({ decision: "select" })).text();
+  expect(select).toContain('name="connect" value="github_copilot"');
+  expect(select).toContain('name="connect" value="vercel_token_pass"');
+
+  expect((await browser.submit({ connect: "github_copilot" })).status).toBe(303);
+  // The page asks GitHub on each load until the user approves.
+  const waiting = await browser.page();
+  expect(waiting).toContain("WXYZ-0001");
+  expect(waiting).toContain("Waiting for your approval");
+  expect(await browser.page()).toContain("octocat");
+
+  expect((await browser.submit({ connect: "vercel_token_pass" })).status).toBe(303);
+  const vercel = await browser.page();
+  expect(vercel).toContain("Add Your Vercel Token Pass Key");
+  expect(vercel).toContain('href="https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Ftoken-pass"');
+  expect(await (await browser.submit({ decision: "complete", authorization_response: "not a key" })).text())
+    .toContain("Paste the Token Pass key you created at Vercel.");
+  expect((await browser.submit({ decision: "complete", authorization_response: "vck_pass" })).status).toBe(303);
+  const plans = await browser.page();
+  expect([...plans.matchAll(/name="credential_id" value="[^"]+" checked/g)]).toHaveLength(2);
+  expect(browser.subscriptions.withIds(new Set(
+    [...plans.matchAll(/name="credential_id" value="([^"]+)"/g)].map((match) => match[1]!),
+  )).map((plan) => [plan.provider, plan.accessToken])).toEqual([
+    ["github_copilot", "tid=1;proxy-ep=proxy.individual.githubcopilot.com"],
+    ["vercel_token_pass", "vck_pass"],
+  ]);
+});
+
 // Another site's form arrives without the user's cookie; it must not replace
 // their identity, or plant a key of its own in a new one.
 test("the page takes no submission another site sends", async () => {

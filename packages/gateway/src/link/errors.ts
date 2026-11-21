@@ -49,6 +49,9 @@ export const SUBSCRIPTION_PLAN_LABELS: Record<SubscriptionKind, string> = {
   openai_codex: "ChatGPT Plus/Pro",
   meta_muse: "Meta Muse",
   opencode_go: "OpenCode Go",
+  github_copilot: "GitHub Copilot",
+  xai_grok: "Grok",
+  vercel_token_pass: "Vercel Token Pass",
 };
 
 const ONLY_CLIENT: Partial<Record<SubscriptionKind, string>> = {

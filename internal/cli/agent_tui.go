@@ -1118,10 +1118,14 @@ func wrapURL(url string, per int) []string {
 func agentOAuthLines(provider agentSubscriptionProvider, authorizationURL string, opened bool, value string, width int) []string {
 	lines := []string{agentPromptLine("Connect " + provider.name), agentOpenedLine(provider, opened)}
 	lines = append(lines, agentURLLines(authorizationURL, width)...)
+	prompt, placeholder := "Paste the code "+provider.vendor+" shows:", "code#state"
+	if provider.pastedKey {
+		prompt, placeholder = "Paste your "+provider.name+" key:", "key"
+	}
 	lines = append(lines,
 		"",
-		"  "+ansiGray+"Paste the code "+provider.vendor+" shows:"+ansiReset,
-		agentCursor(true)+inputDisplay(value, width, "code#state"),
+		"  "+ansiGray+prompt+ansiReset,
+		agentCursor(true)+inputDisplay(value, width, placeholder),
 	)
 	return withHint(lines, agentHintLine("enter submit", "esc back"))
 }

@@ -33,6 +33,9 @@ export function buildCompletedPrefixHit(args: {
   chain: string[];
   looseChain: readonly string[];
   target: ProviderIdentity;
+  // The provider that served the turn, whose cache now holds its prefix; a
+  // fallback may serve a model on another provider than its target's.
+  provider: string;
   conversationId: string;
   leaseDepth: number;
   providerBlockDepth: number;
@@ -57,7 +60,7 @@ export function buildCompletedPrefixHit(args: {
     loose_hash: looseOutputHash(args.looseChain, args.output, args.request.sourceProtocol),
     conversation_id: args.conversationId,
     model: args.model,
-    provider: args.target.provider,
+    provider: args.provider,
     next_model: args.nextModel,
     next_reasoning_effort: args.nextReasoningEffort,
     message_depth: args.chain.length + outputExtension.length,

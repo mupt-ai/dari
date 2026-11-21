@@ -99,9 +99,12 @@ describe("resolveSelfHostedRouter", () => {
     const plan = resolver.subscriptions.connect(tokens({ expiresAt: FUTURE }), null)!;
 
     const claudeCode = await resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code" }));
-    expect(claudeCode.provider_keys.anthropic).toBe("sk-ant-oat01-access");
-    expect(claudeCode.provider_key_sources?.anthropic).toBe("subscription");
-    expect(claudeCode.subscription_credential_ids?.anthropic).toBe(plan.id);
+    expect(claudeCode.provider_credentials?.["anthropic/claude-sonnet-4-5"]).toEqual({
+      apiKey: "sk-ant-oat01-access",
+      subscription: "anthropic_claude_code",
+      credentialId: plan.id,
+    });
+    expect(claudeCode.provider_keys.anthropic).toBeUndefined();
 
     const otherClient = await resolveSelfHostedRouter(resolver, request());
     expect(otherClient.enabled_models).toEqual(["openai/gpt-5.5"]);
@@ -118,10 +121,15 @@ describe("resolveSelfHostedRouter", () => {
     )!;
 
     const museCode = await resolveSelfHostedRouter(resolver, request({ clientHarness: "muse_code" }));
-    expect(museCode.provider_keys).toEqual({ meta: "meta-minted-key" });
-    expect(museCode.provider_key_sources).toEqual({ meta: "subscription" });
-    expect(museCode.subscription_credential_ids).toEqual({ meta: plan.id });
+    expect(museCode.provider_credentials).toEqual({
+      "meta/muse-spark-1.3": { apiKey: "meta-minted-key", subscription: "meta_muse", credentialId: plan.id },
+    });
     expect(museCode.model_configs?.["meta/muse-spark-1.3"]).toBeUndefined();
+    // Meta's API key serves the request when the plan cannot.
+    expect(museCode.provider_keys).toEqual({ meta: "meta-api-key" });
+    expect(museCode.model_fallbacks?.["meta/muse-spark-1.3"]).toEqual([
+      { config: expect.objectContaining({ provider: "meta", native_model_id: "muse-spark-1.3" }) },
+    ]);
 
     const otherClient = await resolveSelfHostedRouter(resolver, request());
     expect(otherClient.provider_keys).toEqual({ meta: "meta-api-key" });
@@ -130,6 +138,7 @@ describe("resolveSelfHostedRouter", () => {
     resolver.subscriptions.markUnavailable(plan.id, FUTURE, "usage_limit");
     const held = await resolveSelfHostedRouter(resolver, request({ clientHarness: "muse_code" }));
     expect(held.provider_keys).toEqual({ meta: "meta-api-key" });
+    expect(held.provider_credentials).toEqual({});
   });
 
   test("an exhausted Muse Code plan with no API key names the plan", async () => {
@@ -149,9 +158,15 @@ describe("resolveSelfHostedRouter", () => {
       null,
     )!;
     const resolved = await resolveSelfHostedRouter(resolver, request());
-    expect(resolved.provider_keys).toMatchObject({ openai: accessToken, "openai-codex": accessToken });
-    expect(resolved.provider_key_sources).toMatchObject({ openai: "subscription", "openai-codex": "subscription" });
-    expect(resolved.subscription_credential_ids).toMatchObject({ openai: plan.id, "openai-codex": plan.id });
+    expect(resolved.provider_credentials?.["openai/gpt-5.5"]).toEqual({
+      apiKey: accessToken,
+      subscription: "openai_codex",
+      credentialId: plan.id,
+    });
+    expect(resolved.provider_keys).toEqual({ anthropic: "sk-ant", openai: "sk-openai" });
+    expect(resolved.model_fallbacks?.["openai/gpt-5.5"]).toEqual([
+      { config: expect.objectContaining({ provider: "openai", native_model_id: "gpt-5.5" }) },
+    ]);
     expect(resolved.model_configs?.["openai/gpt-5.5"]).toMatchObject({
       provider: "openai-codex",
       native_model_id: "gpt-5.5",
@@ -188,7 +203,7 @@ describe("resolveSelfHostedRouter", () => {
     resolver.subscriptions.holdModel(plan.id, "anthropic/claude-fable-5", FUTURE, "seven day fable");
     const resolved = await resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code" }));
     expect(resolved.enabled_models).toEqual(["anthropic/claude-sonnet-5-5"]);
-    expect(resolved.provider_key_sources).toEqual({ anthropic: "subscription" });
+    expect(Object.keys(resolved.provider_credentials ?? {})).toEqual(["anthropic/claude-sonnet-5-5"]);
 
     resolver.subscriptions.holdModel(plan.id, "anthropic/claude-sonnet-5-5", FUTURE, "seven day sonnet");
     const exhausted = await rejection(resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code" })));
@@ -241,9 +256,9 @@ describe("resolveSelfHostedRouter", () => {
     const resolved = await resolveSelfHostedRouter(resolver, request());
     expect(resolved).toMatchObject({
       enabled_models: ["deepseek-ai/DeepSeek-V4.1-Flash-1017"],
-      provider_keys: { "opencode-go": "go-plan-key" },
-      provider_key_sources: { "opencode-go": "subscription" },
-      subscription_credential_ids: { "opencode-go": plan.id },
+      provider_credentials: {
+        "deepseek-ai/DeepSeek-V4.1-Flash-1017": { apiKey: "go-plan-key", subscription: "opencode_go", credentialId: plan.id },
+      },
       model_thinking_levels: { "deepseek-ai/DeepSeek-V4.1-Flash-1017": ["high"] },
     });
     expect(resolved.model_configs?.["deepseek-ai/DeepSeek-V4.1-Flash-1017"]).toMatchObject({
@@ -254,6 +269,85 @@ describe("resolveSelfHostedRouter", () => {
     });
     // Priced as the OpenCode Go model, for estimates; the plan bills no tokens.
     expect(resolved.model_prices?.["deepseek-ai/DeepSeek-V4.1-Flash-1017"]).toBeDefined();
+  });
+
+  test("a model bound to Vercel Token Pass runs as Vercel's featured model on the Token Pass key", async () => {
+    const resolver = deps({
+      config: { routers: { default: { models: [{ id: "zai-org/GLM-5.3", provider: "vercel-token-pass" }] } } },
+    });
+    resolver.subscriptions.connect(
+      tokens({ provider: "vercel_token_pass", accessToken: "vck_pass", refreshToken: "vck_pass", expiresAt: FUTURE }),
+      null,
+    );
+    const resolved = await resolveSelfHostedRouter(resolver, request());
+    expect(resolved).toMatchObject({
+      enabled_models: ["zai-org/GLM-5.3"],
+      provider_credentials: { "zai-org/GLM-5.3": { apiKey: "vck_pass", subscription: "vercel_token_pass" } },
+    });
+    expect(resolved.model_configs?.["zai-org/GLM-5.3"]).toMatchObject({
+      provider: "vercel-token-pass",
+      native_model_id: "zai/glm-5.3",
+      api: "anthropic-messages",
+      base_url: "https://ai-gateway.vercel.sh",
+    });
+    // Priced as Vercel AI Gateway lists the model, for estimates.
+    expect(resolved.model_prices?.["zai-org/GLM-5.3"]).toBeDefined();
+  });
+
+  test("xAI models are served on a Grok plan, and on the xAI key without one", async () => {
+    const resolver = deps({
+      apiKeys: { xai: "xai-key" },
+      config: { routers: { default: { models: ["xai/grok-4.7"] } } },
+    });
+    expect((await resolveSelfHostedRouter(resolver, request())).provider_key_sources).toEqual({ xai: "user" });
+    resolver.subscriptions.connect(tokens({ provider: "xai_grok", accessToken: "grok-access", expiresAt: FUTURE }), null);
+    expect(await resolveSelfHostedRouter(resolver, request())).toMatchObject({
+      provider_credentials: { "xai/grok-4.7": { apiKey: "grok-access", subscription: "xai_grok" } },
+      provider_keys: { xai: "xai-key" },
+      model_fallbacks: { "xai/grok-4.7": [{ config: expect.objectContaining({ provider: "xai" }) }] },
+    });
+  });
+
+  // Maker plans first, then other plans that serve the model, then the API
+  // key; a plan limited to another client is skipped.
+  test("a model is served by its plans in order, then by the API key", async () => {
+    const resolver = deps({
+      apiKeys: { anthropic: "sk-ant" },
+      config: { routers: { default: { models: ["anthropic/claude-opus-5-5"] } } },
+    });
+    const claudePlan = resolver.subscriptions.connect(tokens({ expiresAt: FUTURE }), null)!;
+    const copilotPlan = resolver.subscriptions.connect(
+      tokens({ provider: "github_copilot", accessToken: "tid=1;proxy-ep=proxy.individual.githubcopilot.com", expiresAt: FUTURE }),
+      null,
+    )!;
+    const copilotConfig = {
+      provider: "github-copilot",
+      native_model_id: "claude-opus-5.5",
+      api: "anthropic-messages",
+      base_url: "https://api.individual.githubcopilot.com",
+    };
+
+    const claudeCode = await resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code" }));
+    expect(claudeCode.provider_credentials?.["anthropic/claude-opus-5-5"]).toMatchObject({
+      subscription: "anthropic_claude_code",
+      credentialId: claudePlan.id,
+    });
+    expect(claudeCode.model_configs?.["anthropic/claude-opus-5-5"]).toBeUndefined();
+    expect(claudeCode.model_fallbacks?.["anthropic/claude-opus-5-5"]).toEqual([
+      { config: expect.objectContaining(copilotConfig), subscription: "github_copilot" },
+      { config: expect.objectContaining({ provider: "anthropic", native_model_id: "claude-opus-5-5" }) },
+    ]);
+    expect(claudeCode.provider_keys).toEqual({ anthropic: "sk-ant" });
+
+    const otherClient = await resolveSelfHostedRouter(resolver, request());
+    expect(otherClient.provider_credentials?.["anthropic/claude-opus-5-5"]).toMatchObject({
+      subscription: "github_copilot",
+      credentialId: copilotPlan.id,
+    });
+    expect(otherClient.model_configs?.["anthropic/claude-opus-5-5"]).toMatchObject(copilotConfig);
+    expect(otherClient.model_fallbacks?.["anthropic/claude-opus-5-5"]).toEqual([
+      { config: expect.objectContaining({ provider: "anthropic" }) },
+    ]);
   });
 
   test("a saved router spec is served in place of the config file's router", async () => {
@@ -283,6 +377,12 @@ describe("providersWithoutCredentials", () => {
     expect(await providersWithoutCredentials(resolverDeps, resolverDeps.config.routers.default!)).toEqual([
       "anthropic",
     ]);
+  });
+
+  test("counts a plan that serves the provider's model though another provider", async () => {
+    const resolverDeps = deps({ config: { routers: { default: { models: ["anthropic/claude-opus-5-5"] } } } });
+    resolverDeps.subscriptions.connect(tokens({ provider: "github_copilot", accessToken: "tid=1", expiresAt: FUTURE }), null);
+    expect(await providersWithoutCredentials(resolverDeps, resolverDeps.config.routers.default!)).toEqual([]);
   });
 });
 
@@ -430,10 +530,60 @@ test("a provisional resolve neither marks a plan used nor refreshes it", async (
   const plan = resolver.subscriptions.connect(tokens({ expiresAt: new Date(Date.now() + 60_000) }), null)!;
 
   const provisional = await resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code", provisional: true }));
-  expect(provisional.provider_keys.anthropic).toBe("sk-ant-oat01-access");
+  expect(provisional.provider_credentials?.["anthropic/claude-sonnet-4-5"]?.apiKey).toBe("sk-ant-oat01-access");
   expect(resolver.subscriptions.get(plan.id)?.lastUsedAt).toBeNull();
 
   // The serving resolve does both, and here the refresh fails.
   await expect(resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code" }))).rejects.toThrow();
   expect(resolver.subscriptions.get(plan.id)?.lastUsedAt).not.toBeNull();
+});
+
+// OpenCode Go has no models of its own: each one it runs is another maker's.
+// A grant of the plan serves those on the plan, then on a granted key of a
+// provider that runs them.
+test("a grant with an OpenCode Go plan is served the models the plan runs", async () => {
+  const resolver = deps();
+  const app = addTestApp(resolver.links, "App", ["http://127.0.0.1:1/callback"], false);
+  const plan = resolver.subscriptions.connect(
+    tokens({ provider: "opencode_go", accessToken: "go-plan-key", expiresAt: FUTURE }),
+    null,
+    new Date(),
+    "lu_1",
+  )!;
+  const fireworks = resolver.links.addKey("lu_1", "fireworks", "sk-fw-test");
+  const challenge = pkceChallenge("v".repeat(43));
+  const resolve = async (credentialIds: string[]) => {
+    const code = approveTestGrant(resolver.links, {
+      subject: "lu_1",
+      clientId: app.clientId,
+      redirectUri: "http://127.0.0.1:1/callback",
+      codeChallenge: challenge,
+      credentialIds,
+    });
+    const granted = await linkGrants(resolver.links).exchangeCode({ clientId: app.clientId, code, redirectUri: "http://127.0.0.1:1/callback", codeChallenge: challenge });
+    return await resolveSelfHostedRouter(resolver, request({ apiKey: granted.accessToken }));
+  };
+
+  const alone = await resolve([plan.id]);
+  expect(new Set(alone.link_models)).toEqual(new Set([
+    "moonshotai/Kimi-K3",
+    "moonshotai/Kimi-K3.1-Pro",
+    "zai-org/GLM-5.3",
+    "zai-org/GLM-5.3-Flash",
+    "zai-org/GLM-5.2",
+    "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+  ]));
+  // Nothing of another provider's: the router's own Claude and GPT models have no plan here.
+  expect(new Set(Object.values(alone.model_configs ?? {}).map((config) => config.provider))).toEqual(new Set(["opencode-go"]));
+  expect(alone.provider_credentials?.["moonshotai/Kimi-K3"]).toEqual({ apiKey: "go-plan-key", subscription: "opencode_go", credentialId: plan.id });
+  expect(alone.provider_keys).toEqual({});
+  expect(alone.model_fallbacks).toEqual({});
+
+  // With a Fireworks key granted too, the plan serves first and the key takes over in the request.
+  const keyed = await resolve([plan.id, fireworks.id]);
+  expect(keyed.model_configs?.["moonshotai/Kimi-K3"]?.provider).toBe("opencode-go");
+  expect(keyed.provider_credentials?.["moonshotai/Kimi-K3"]?.subscription).toBe("opencode_go");
+  expect(keyed.model_fallbacks?.["moonshotai/Kimi-K3"]).toMatchObject([{ config: { provider: "fireworks" } }]);
+  expect(keyed.model_fallbacks?.["moonshotai/Kimi-K3"]?.[0]?.subscription).toBeUndefined();
+  expect(keyed.provider_keys).toEqual({ fireworks: "sk-fw-test" });
 });

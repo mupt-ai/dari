@@ -58,9 +58,11 @@ test("a request refused at a plan's usage limit is served by the next plan", asy
 // A plan can cap one model on its own (a weekly Opus or Fable limit). Only that
 // model is held on the exhausted plan; another plan serves it immediately
 // and on subsequent requests, while other models keep using the first plan.
+// With every plan held for it, the operator's API key serves it.
 test("a model limit fails over to another plan without holding the other models", async () => {
   let secondExhausted = false;
-  const gateway = await startSubscriptionGateway((token, model) => (token === "sk-ant-oat01-a" || secondExhausted) && model === "claude-fable-5"
+  const gateway = await startSubscriptionGateway((token, model) =>
+    (token === "sk-ant-oat01-a" || (secondExhausted && token === "sk-ant-oat01-b")) && model === "claude-fable-5"
     ? Response.json(
       { type: "error", error: { type: "rate_limit_error", message: "usage limit" } },
       {
@@ -96,12 +98,13 @@ test("a model limit fails over to another plan without holding the other models"
   expect(gateway.served).toEqual(["sk-ant-oat01-a", "sk-ant-oat01-b", "sk-ant-oat01-b", "sk-ant-oat01-a"]);
 
   // Exhausting the second plan's Fable quota must hold that credential, not
-  // its provider-wide default, and must stop rather than loop through holds.
+  // its provider-wide default, and must stop rather than loop through holds:
+  // the same request moves on to the API key.
   secondExhausted = true;
   const exhausted = await gateway.claudeCode(session, "Fable again", "dari/model/anthropic/claude-fable-5");
-  expect(exhausted.status).toBe(503);
+  expect(exhausted.status).toBe(200);
   await exhausted.text();
-  expect(gateway.served.at(-1)).toBe("sk-ant-oat01-b");
+  expect(gateway.served.slice(-2)).toEqual(["sk-ant-oat01-b", "stub-operator-key"]);
   expect(gateway.plan(b!)).toMatchObject({
     unavailableUntil: null,
     modelHolds: [expect.objectContaining({ model: "anthropic/claude-fable-5" })],

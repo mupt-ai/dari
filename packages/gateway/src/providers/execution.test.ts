@@ -108,3 +108,31 @@ test("prepareProviderExecution carries the router's ZDR setting onto the model c
   expect(prepare(mappedRouter({ zdr: true })).config?.zdr).toBe(true);
   expect(prepare(mappedRouter({ zdr: false })).config?.zdr).toBe(false);
 });
+
+test("a Copilot plan is served at the API origin its token names, with Copilot's editor headers", () => {
+  const copilot = (token: string) => prepare(mappedRouter({
+    provider_keys: { "github-copilot": token },
+    provider_key_sources: { "github-copilot": "subscription" },
+    model_configs: {
+      "xai/grok-4.5": {
+        provider: "github-copilot",
+        native_model_id: "grok-4.5",
+        api: "openai-responses",
+        base_url: "https://api.individual.githubcopilot.com",
+        cost: { input: 0, output: 0 },
+      },
+    },
+  })).endpoint;
+
+  expect(copilot("tid=abc;exp=1790000000;proxy-ep=proxy.business.githubcopilot.com;sku=copilot_business")).toEqual({
+    baseUrl: "https://api.business.githubcopilot.com",
+    headers: {
+      "User-Agent": "GitHubCopilotChat/0.35.0",
+      "Editor-Version": "vscode/1.107.0",
+      "Editor-Plugin-Version": "copilot-chat/0.35.0",
+      "Copilot-Integration-Id": "vscode-chat",
+    },
+  });
+  // A token that names no origin keeps the configured one.
+  expect(copilot("tid=abc;exp=1790000000")?.baseUrl).toBeUndefined();
+});

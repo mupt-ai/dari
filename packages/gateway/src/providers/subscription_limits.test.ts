@@ -189,6 +189,28 @@ describe("detectSubscriptionUsageLimit", () => {
     expect(subscriptionUsageLimitFromFailure(failureWithSubscriptionUsageLimit({}, bare!))).toEqual(bare);
   });
 
+  test("holds a Copilot, Grok, or Token Pass plan on a 429, but not an API key", () => {
+    for (const [provider, oauthProvider, label] of [
+      ["github-copilot", "github_copilot", "GitHub Copilot"],
+      ["xai", "xai_grok", "Grok"],
+      ["vercel-token-pass", "vercel_token_pass", "Vercel Token Pass"],
+    ] as const) {
+      const limit = (keySource: "subscription" | "user") => detectLimit({
+        provider,
+        keySource,
+        captured: captured(429, { "retry-after": "120" }, "{}"),
+        failure: FAILURE,
+        now: NOW,
+      });
+      expect(limit("subscription")).toEqual({
+        oauthProvider,
+        resetsAt: new Date(NOW.getTime() + 120_000),
+        reason: `${label} usage limit reached.`,
+      });
+      expect(limit("user")).toBeNull();
+    }
+  });
+
   test("a Meta API key or a non-429 failure is not a plan limit", () => {
     for (const [keySource, status] of [["user", 429], ["subscription", 500]] as const) {
       expect(detectLimit({

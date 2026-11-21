@@ -473,7 +473,9 @@ function resolveModelMetadata(
 // Claude deployments through the Anthropic registry, whose model metadata
 // (input modalities, adaptive-thinking compat, thinking level maps) is the
 // same on Foundry; the resolved config still owns api, base URL, and cost.
+// A Vercel Token Pass key serves Vercel AI Gateway's own models.
 function registryProvider(provider: string, modelId: string): string {
+  if (provider === "vercel-token-pass") return "vercel-ai-gateway";
   if (provider !== "azure") return provider;
   return providerForModel(modelId) === "anthropic" ? "anthropic" : "azure-openai-responses";
 }

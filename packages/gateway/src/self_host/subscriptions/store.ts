@@ -87,6 +87,9 @@ const BASE_NAMES: Record<SubscriptionProvider, string> = {
   openai_codex: "OPENAI_CODEX_OAUTH_TOKEN",
   meta_muse: "META_MUSE_OAUTH_TOKEN",
   opencode_go: "OPENCODE_GO_OAUTH_TOKEN",
+  github_copilot: "GITHUB_COPILOT_OAUTH_TOKEN",
+  xai_grok: "XAI_GROK_OAUTH_TOKEN",
+  vercel_token_pass: "VERCEL_TOKEN_PASS_API_KEY",
 };
 
 type CredentialRow = {

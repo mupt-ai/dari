@@ -431,3 +431,10 @@ func TestAgentChoiceLinesShowASpinnerForTheBusyOption(t *testing.T) {
 		t.Fatalf("lines:\n%s", got)
 	}
 }
+
+func TestVercelTokenPassAsksForItsKey(t *testing.T) {
+	lines := strings.Join(agentOAuthLines(vercelTokenPassSubscription, "https://vercel.com/docs/ai-gateway", false, "", 80), "\n")
+	if !strings.Contains(lines, "Paste your Vercel Token Pass key:") || strings.Contains(lines, "code#state") {
+		t.Fatalf("Vercel Token Pass prompt = %q, want a key prompt", lines)
+	}
+}

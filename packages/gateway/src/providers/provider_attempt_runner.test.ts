@@ -179,6 +179,39 @@ test("retries on the next plan when an exhausted one names it", async () => {
   expect(result).toEqual({ kind: "succeeded", choice: { plan: "b" }, attempt: 2, latencyMs: 3, value: "served" });
 });
 
+// A credential that cannot serve moves the same request to the model's next
+// candidate, which gets the router's full retry budget; with none left, the
+// failure stands.
+test("fails over to the next candidate with a fresh retry budget", async () => {
+  const dispatched: string[] = [];
+  const result = await runProviderAttemptPlan<string, string, never>({
+    primary: "plan",
+    retries: 1,
+    isCustomerCanceled: () => false,
+    canceledFailure: () => ({ errorMessage: "canceled" }),
+    async runAttempt({ choice }) {
+      dispatched.push(choice);
+      if (choice === "plan") return { ...failed("refused", 1), retryable: false, failover: true };
+      return dispatched.length < 3 ? failed("flaky", 1) : { kind: "succeeded", value: "served", latencyMs: 1 };
+    },
+    recordFailedAttempt() {},
+    nextChoice: async (choice) => choice === "plan" ? "api" : undefined,
+  });
+  expect(dispatched).toEqual(["plan", "api", "api"]);
+  expect(result).toMatchObject({ kind: "succeeded", choice: "api", attempt: 3 });
+
+  const stands = await runProviderAttemptPlan<string, string, never>({
+    primary: "api",
+    retries: 0,
+    isCustomerCanceled: () => false,
+    canceledFailure: () => ({ errorMessage: "canceled" }),
+    runAttempt: async () => ({ ...failed("refused", 1), retryable: false, failover: true }),
+    recordFailedAttempt() {},
+    nextChoice: async () => undefined,
+  });
+  expect(stands).toMatchObject({ kind: "provider_failed", choice: "api", attempt: 1 });
+});
+
 function failed(message: string, latencyMs: number): ProviderAttemptFailure {
   return {
     kind: "provider_failed",

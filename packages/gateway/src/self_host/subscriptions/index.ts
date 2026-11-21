@@ -1,10 +1,11 @@
 /**
- * Personal subscriptions for a self-hosted, single-tenant gateway: Claude Code
- * (Max/Pro) and ChatGPT (Codex) plans connected over OAuth and used in place
- * of API keys.
+ * Personal subscriptions for a self-hosted, single-tenant gateway: Claude Code,
+ * ChatGPT, Muse Code, OpenCode Go, GitHub Copilot, and Grok plans
+ * connected over OAuth, and Vercel Token Pass keys, used in place of API keys.
  *
  * - `oauth.ts`: the providers' OAuth protocols (Claude Code PKCE with a
- *   pasted `code#state`, ChatGPT device code) and token refresh.
+ *   pasted `code#state`, the others' device codes, a pasted Token Pass key)
+ *   and token refresh.
  * - `store.ts`: SQLite storage. Tokens are plaintext in the gateway's own
  *   database file; protect that file like a secret.
  * - `access.ts`: `freshAccessToken` refreshes a token expiring within five
@@ -27,8 +28,10 @@ export { freshAccessToken } from "./access.js";
 export { handleSubscriptionRequest, type SubscriptionHttpDeps } from "./http.js";
 export {
   CODEX_APPROVAL_PENDING,
+  GITHUB_APPROVAL_PENDING,
   META_APPROVAL_PENDING,
   OPENCODE_APPROVAL_PENDING,
+  XAI_APPROVAL_PENDING,
   SUBSCRIPTION_PROVIDERS,
   SubscriptionOAuthInputError,
   SubscriptionOAuthProviderError,

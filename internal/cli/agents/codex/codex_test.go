@@ -136,3 +136,59 @@ func TestConfigureAlwaysDeclaresTheRoutersRemoteCompaction(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveCatalogURL(t *testing.T) {
+	body := `{"codex_direct":true,"models":[{"slug":"dari/routing"},{"slug":"dari/model/a/b"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Asked as Codex asks, so the gateway answers with what Codex will get.
+		if r.URL.Path != "/rtr/v1/models" || r.URL.Query().Get("client_version") == "" || r.Header.Get("Authorization") != "Bearer k" {
+			t.Errorf("unexpected request %s", r.URL)
+		}
+		_, _ = w.Write([]byte(body))
+	}))
+	defer server.Close()
+	// httptest serves on 127.0.0.1, which Codex accepts over HTTP.
+	got, err := LiveCatalogURL(context.Background(), "k", server.URL+"/rtr", "dari/model/a/b")
+	if err != nil || got != server.URL+"/rtr/v1/models" {
+		t.Fatalf("LiveCatalogURL = %q, %v", got, err)
+	}
+	// The list must hold the model Codex starts on.
+	if got, _ := LiveCatalogURL(context.Background(), "k", server.URL+"/rtr", "dari/model/x/y"); got != "" {
+		t.Fatalf("missing default model: %q", got)
+	}
+	// An older gateway does not mark its list: Codex could not parse it.
+	body = `{"models":[{"slug":"dari/routing","web_search_tool_type":null}]}`
+	if got, _ := LiveCatalogURL(context.Background(), "k", server.URL+"/rtr", "dari/routing"); got != "" {
+		t.Fatalf("unmarked list: %q", got)
+	}
+}
+
+func TestLiveCatalogURLReportsAnUnreachableRouter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+	if got, err := LiveCatalogURL(context.Background(), "k", server.URL, "dari/routing"); got != "" || err == nil {
+		t.Fatalf("LiveCatalogURL = %q, %v; want an error", got, err)
+	}
+}
+
+// Codex will not start with a model_catalog_url it refuses, so setup only
+// names one Codex accepts: HTTPS, or HTTP to this machine.
+func TestCodexAcceptsCatalogURL(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"https://routing.dari.dev/rtr_1/v1/models": true,
+		"http://127.0.0.1:7340/v1/models":          true,
+		"http://localhost:7340/v1/models":          true,
+		"http://[::1]:7340/v1/models":              true,
+		"http://192.168.1.20:7340/v1/models":       false,
+		"http://gateway.lan/v1/models":             false,
+		"https://user:pw@routing.dari.dev/v1":      false,
+		"https://routing.dari.dev/v1/models#x":     false,
+		"https:///v1/models":                       false,
+	} {
+		if got := codexAcceptsCatalogURL(raw); got != want {
+			t.Errorf("codexAcceptsCatalogURL(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}

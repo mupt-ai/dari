@@ -6,6 +6,7 @@ import { openAIResponsesResponse } from "../protocol/output/openai_responses.js"
 import { openAIResponsesSseStream } from "../protocol/output/openai_responses_stream.js";
 import { openAIResponsesToInteraction } from "../protocol/input/openai_responses.js";
 import { claimedClientHarness } from "./client_harness.js";
+import { codexModelsEtag } from "./codex_models.js";
 import { parseJsonRequest } from "./json.js";
 import { museCodeClientId } from "./muse_code.js";
 import { handleRoutedCompletion } from "../runtime/routed_completion.js";
@@ -53,6 +54,11 @@ export async function handleResponses(
     }
     const harnessConversationIdentity = codexIdentity
       ?? (museClientId === undefined ? undefined : museCodeConversationIdentity(request.headers));
+    const clientHarness = museClientId !== undefined ? "muse_code"
+      // Codex describes every request in its turn metadata.
+      : codexContext !== undefined ? "codex"
+      : piContext !== undefined ? "pi"
+      : claimedClientHarness(request.headers);
     return await handleRoutedCompletion({
       request,
       routerId,
@@ -62,12 +68,12 @@ export async function handleResponses(
       streamBody: openAIResponsesSseStream,
       errorResponse,
       selectorBackend,
-      clientHarness: museClientId !== undefined ? "muse_code"
-        // Codex describes every request in its turn metadata.
-        : codexContext !== undefined ? "codex"
-        : piContext !== undefined ? "pi"
-        : claimedClientHarness(request.headers),
+      clientHarness,
       harnessConversationIdentity,
+      // A running Codex re-reads its /model list when this changes.
+      ...(clientHarness === "codex"
+        ? { responseHeaders: (router) => ({ "X-Models-Etag": codexModelsEtag(router) }) }
+        : {}),
     });
   } catch (error) {
     const response = errorResponse(error);

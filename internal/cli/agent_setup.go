@@ -121,11 +121,16 @@ func runAgentSetup(ctx context.Context, launch agentLaunch, stdin io.Reader, std
 	if err != nil {
 		return err
 	}
+	// Only a setup that wrote a copy before leaves a background server on it.
+	hadCopy := codexReadsCopiedCatalog(launch.name)
 	if err := writeAgentSetup(ctx, launch.name, launch.setupCLI, launch.setupDesktop, key, baseURL, models); err != nil {
 		return err
 	}
 	target, applies := app.target(launch.setupCLI, launch.setupDesktop)
 	agentStep(stderr, fmt.Sprintf("Dari is set up in %s, starting on %s; %s", target, startModel(launch.name, models), applies))
+	if hadCopy && codexReadsLiveCatalog(launch.name) {
+		agentStep(stderr, codexBackgroundRestartNote)
+	}
 	agentStep(stderr, fmt.Sprintf("Run `dari setup %s` to change models, then `%s` again; `dari setup %s --remove` undoes it", launch.name, launch.setupCommand(), launch.name))
 	return nil
 }
@@ -202,7 +207,13 @@ func saveAgentConfig(ctx context.Context, name, key, baseURL string, models agen
 		if err != nil {
 			return err
 		}
-		return codex.Setup(home, baseURL, key, models.Default(), catalog, disableWebSearch, models.RemoteCompaction)
+		// A router that serves Codex its own list is named instead of copied,
+		// so Codex follows its models; an older one gets the copy, as before.
+		catalogURL, err := codex.LiveCatalogURL(ctx, key, baseURL, models.Default())
+		if err != nil {
+			catalogURL = ""
+		}
+		return codex.Setup(home, baseURL, key, models.Default(), catalog, catalogURL, disableWebSearch, models.RemoteCompaction)
 	case "pi":
 		dir, err := pi.AgentDir()
 		if err != nil {
@@ -467,4 +478,76 @@ func existingAgentRouting(ctx context.Context, name string, stdin io.Reader, std
 	baseURL := agentRoutingBaseURL(router.ID)
 	models, err := routerModels(ctx, baseURL, access.key, "")
 	return access.key, baseURL, models, err
+}
+
+// codexBackgroundRestartNote is for a Codex whose setup moved from a copy of
+// the model list to the router's own: a background server started before
+// keeps the copy until it restarts, and follows the router from then on.
+const codexBackgroundRestartNote = "Codex now reads its /model list from the router and keeps it current; " +
+	"restart its background server once so open windows switch too: `codex app-server daemon restart` " +
+	"(this interrupts running Codex turns)"
+
+// codexReadsLiveCatalog reports whether agent is Codex set up to read its
+// model list from the router.
+func codexReadsLiveCatalog(agent string) bool {
+	if agent != "codex" {
+		return false
+	}
+	home, err := codex.Home()
+	return err == nil && codex.ReadsLiveCatalog(home)
+}
+
+// codexReadsCopiedCatalog reports whether agent is Codex set up with a copy
+// of the router's model list.
+func codexReadsCopiedCatalog(agent string) bool {
+	if agent != "codex" {
+		return false
+	}
+	home, err := codex.Home()
+	return err == nil && codex.IsSetUp(home) && !codex.ReadsLiveCatalog(home)
+}
+
+// runCodexRefresh brings Codex's /model list up to the models its router
+// serves now, on the router Codex is set up with: no picker, no other
+// router, and the user's model pick is kept while the router still has it.
+func runCodexRefresh(ctx context.Context, stderr io.Writer) error {
+	home, err := codex.Home()
+	if err != nil {
+		return err
+	}
+	baseURL, key, ok := codex.SetupRouting(home)
+	if !ok {
+		agentStep(stderr, "Dari is not set up in Codex: `dari codex` reads the router's models each time it starts; `dari setup codex --cli` sets up plain `codex`")
+		return nil
+	}
+	models, err := routerModels(ctx, baseURL, key, "codex")
+	if errors.Is(err, errRouterKeyRefused) {
+		return errors.New("the router did not accept the key Codex is set up with; run `dari setup codex --cli` to set it up again")
+	}
+	if err != nil {
+		return fmt.Errorf("could not read the models of the router Codex is set up with (%s): %w", baseURL, err)
+	}
+	models.Saved = codex.SavedModel(home)
+	wasLive := codex.ReadsLiveCatalog(home)
+	if err := saveAgentConfig(ctx, "codex", key, baseURL, models); err != nil {
+		return err
+	}
+	if err := codex.ForgetModelList(home); err != nil {
+		return err
+	}
+	switch live := codex.ReadsLiveCatalog(home); {
+	case live && wasLive:
+		agentStep(stderr, fmt.Sprintf("Codex's /model list is up to date (%s); open /model again to see it", strings.Join(models.Menu(), ", ")))
+	case live:
+		agentStep(stderr, fmt.Sprintf("Codex's /model list is up to date (%s)", strings.Join(models.Menu(), ", ")))
+		agentStep(stderr, codexBackgroundRestartNote)
+	default:
+		agentStep(stderr, fmt.Sprintf("Codex's /model list is up to date (%s); new Codex windows show it, "+
+			"and windows already open show it after `codex app-server daemon restart` (this interrupts running Codex turns)",
+			strings.Join(models.Menu(), ", ")))
+	}
+	if saved := models.Saved; saved != "" && !slices.Contains(models.Menu(), saved) {
+		agentStep(stderr, fmt.Sprintf("The router no longer serves %s, your last /model pick; Codex starts on %s instead", saved, models.Default()))
+	}
+	return nil
 }

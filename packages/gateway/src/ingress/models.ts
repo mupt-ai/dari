@@ -17,7 +17,7 @@ import { modelMetadataLookup } from "../providers/pi.js";
 import { resolveRouter } from "../strategies/routing.js";
 import { anthropicModelsResponse } from "./anthropic_models.js";
 import { namedClientHarness } from "./client_harness.js";
-import { codexModelsResponse } from "./codex_models.js";
+import { codexModelsEtag, codexModelsResponse } from "./codex_models.js";
 import { CANONICAL_ROUTER_MODEL, explicitModelSlug, LINK_CHILD_TOKEN_PREFIX } from "../protocol/input/router_model.js";
 
 export async function handleModels(request: Request, routerId: string): Promise<Response> {
@@ -33,7 +33,12 @@ export async function handleModels(request: Request, routerId: string): Promise<
     // when the response body (Anthropic shape) does not depend on it.
     // A model list is for the agent the Dari CLI names: it changes only what
     // is listed, and each request is still recognized by its own headers.
-    const clientHarness = namedClientHarness(request.headers);
+    const query = new URL(request.url).searchParams;
+    // Codex itself reads this URL as its provider's `model_catalog_url`, and
+    // refreshes from it while it runs. It cannot send the CLI's header; it
+    // names its own version in the query, as only Codex does.
+    const codexDirect = !anthropicClient && query.has("client_version");
+    const clientHarness = namedClientHarness(request.headers) ?? (codexDirect ? "codex" : undefined);
     let router;
     try {
       router = await resolveRouter({ routerId, apiKey, ...(clientHarness ? { clientHarness } : {}) });
@@ -45,7 +50,6 @@ export async function handleModels(request: Request, routerId: string): Promise<
       }
       throw error;
     }
-    const query = new URL(request.url).searchParams;
     if (query.get("detail") === "1") {
       const providers = query.get("provider")?.split(",").map((id) => id.trim()).filter(Boolean);
       const data = await listModelCatalog({
@@ -70,9 +74,10 @@ export async function handleModels(request: Request, routerId: string): Promise<
     const metadataLookup = modelMetadataLookup(router.model_configs);
     const imageInputFor = (model: string) => modelSupportsImageInput(metadataLookup(model));
     const nativeCompactionFor = (model: string) => modelSupportsNativeCompaction(metadataLookup(model));
-    return Response.json(codexModelsResponse(router, imageInputFor, nativeCompactionFor), {
+    return Response.json(codexModelsResponse(router, imageInputFor, nativeCompactionFor, codexDirect), {
       headers: {
         "Cache-Control": "no-store",
+        "X-Models-Etag": codexModelsEtag(router),
       },
     });
   } catch (error) {

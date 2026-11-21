@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { ResolvedRouter } from "../types.js";
 import { CANONICAL_ROUTER_MODEL, explicitModelSlug } from "../protocol/input/router_model.js";
 import { effectiveContextWindow } from "../models/context_limits.js";
@@ -85,44 +87,86 @@ function codexCatalogEntry(args: CodexCatalogEntry): Record<string, unknown> {
   };
 }
 
+/* What Codex needs to parse an entry it fetched itself: it rejects the whole
+   catalog over a null web-search type, leaving /model empty, so the entry
+   names one, and the two nullable fields it may not accept as null are left
+   out. The `dari` launchers make the same changes to the catalog they hand
+   Codex; they read the nulls first to decide whether to turn web search off. */
+function codexReadable(entry: Record<string, unknown>): Record<string, unknown> {
+  const { tool_mode, multi_agent_version, ...rest } = entry;
+  return {
+    ...rest,
+    web_search_tool_type: entry.web_search_tool_type ?? "text",
+    ...(tool_mode === null ? {} : { tool_mode }),
+    ...(multi_agent_version === null ? {} : { multi_agent_version }),
+  };
+}
+
 /* `dari/routing` comes first while the router may autoroute (the Codex
    launcher patches it); each enabled model follows as `dari/model/<id>` so
    Codex's /model menu can switch to it. The `dari` launchers build every
    agent's model menu from this list. `remote_compaction` tells the
-   launcher which Codex provider compaction protocol the router accepts. */
+   launcher which Codex provider compaction protocol the router accepts.
+   `direct` is a catalog for Codex's own fetch (its `model_catalog_url`),
+   which nothing patches on the way: `codex_direct` tells `dari setup codex`
+   that this gateway serves one, so it can point Codex at the URL instead of
+   a snapshot that goes stale when the router's models change. */
 export function codexModelsResponse(
   router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed" | "native_compaction">,
   imageInputFor: (model: string) => boolean,
   nativeCompactionFor: (model: string) => boolean = () => false,
+  direct = false,
 ): Record<string, unknown> {
   const remoteCompaction = router.native_compaction === true && router.enabled_models.some(nativeCompactionFor);
+  const models = codexCatalogEntries(router, imageInputFor);
   return {
     remote_compaction: remoteCompaction ? "v2" : "unsupported",
-    models: [
-      ...(router.autorouting_enabled === false || router.routing_listed === false ? [] : [codexCatalogEntry({
-        slug: CANONICAL_ROUTER_MODEL,
-        displayName: "Dari Routing",
-        description: "Routes Codex HTTP Responses requests through the configured Dari model router.",
-        priority: 0,
-        contextWindow: codexRouterContextWindow(router),
-        hostedWebSearch: codexRouterSupportsHostedWebSearch(router),
-        imageInput: router.enabled_models.some(imageInputFor),
-      })]),
-      ...router.enabled_models.map((model, index) =>
-        codexCatalogEntry({
-          slug: explicitModelSlug(model),
-          displayName: model,
-          description: `Serves ${model} directly, without routing.`,
-          priority: index + 1,
-          contextWindow: codexRouterContextWindow({ ...router, enabled_models: [model] }),
-          hostedWebSearch: codexRouterSupportsHostedWebSearch({ ...router, enabled_models: [model] }),
-          imageInput: imageInputFor(model),
-          reasoningLevels: router.model_configs?.[model]?.supported_thinking_levels
-            ?.map((effort) => effort === "off" ? "none" : effort),
-          defaultReasoningLevel: router.model_configs?.[model]?.default_thinking_level === "off"
-            ? "none" : router.model_configs?.[model]?.default_thinking_level,
-        })
-      ),
-    ],
+    ...(direct ? { codex_direct: true } : {}),
+    models: direct ? models.map(codexReadable) : models,
   };
+}
+
+/* A version of the list Codex's /model menu shows: it changes when a model
+   is added or removed, or dari/routing comes or goes. Sent as
+   `X-Models-Etag` on the catalog and on Codex's responses, it makes a running
+   Codex re-read the catalog after the first turn that sees a new value,
+   instead of on its next timed refresh. Codex reads it only from a successful
+   response; a refused stale pick carries the menu hint instead. */
+export function codexModelsEtag(
+  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed">,
+): string {
+  const slugs = codexCatalogEntries(router, () => false).map((entry) => entry.slug);
+  return createHash("sha256").update(slugs.join("\n")).digest("hex").slice(0, 16);
+}
+
+function codexCatalogEntries(
+  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed">,
+  imageInputFor: (model: string) => boolean,
+): Record<string, unknown>[] {
+  return [
+    ...(router.autorouting_enabled === false || router.routing_listed === false ? [] : [codexCatalogEntry({
+      slug: CANONICAL_ROUTER_MODEL,
+      displayName: "Dari Routing",
+      description: "Routes Codex HTTP Responses requests through the configured Dari model router.",
+      priority: 0,
+      contextWindow: codexRouterContextWindow(router),
+      hostedWebSearch: codexRouterSupportsHostedWebSearch(router),
+      imageInput: router.enabled_models.some(imageInputFor),
+    })]),
+    ...router.enabled_models.map((model, index) =>
+      codexCatalogEntry({
+        slug: explicitModelSlug(model),
+        displayName: model,
+        description: `Serves ${model} directly, without routing.`,
+        priority: index + 1,
+        contextWindow: codexRouterContextWindow({ ...router, enabled_models: [model] }),
+        hostedWebSearch: codexRouterSupportsHostedWebSearch({ ...router, enabled_models: [model] }),
+        imageInput: imageInputFor(model),
+        reasoningLevels: router.model_configs?.[model]?.supported_thinking_levels
+          ?.map((effort) => effort === "off" ? "none" : effort),
+        defaultReasoningLevel: router.model_configs?.[model]?.default_thinking_level === "off"
+          ? "none" : router.model_configs?.[model]?.default_thinking_level,
+      })
+    ),
+  ];
 }

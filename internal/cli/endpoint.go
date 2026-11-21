@@ -12,9 +12,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// personalEndpointTerms is shown wherever a personal endpoint is created.
-const personalEndpointTerms = "For your own use in apps that let you bring your own key. " +
-	"Don't use it to serve your product's users or anyone else; that breaks your plan's terms."
+// personalEndpointTerms is what the user agrees to before creating a personal
+// endpoint, word for word as the app's Create Endpoint dialog shows it.
+const personalEndpointTerms = "Only for me, in apps that take my key. Not for serving others."
 
 // Personal endpoints are Dari Link grants the user makes for themselves; the
 // routing service serves them, apart from any router.
@@ -130,16 +130,22 @@ func newEndpointPlansCmd(gf *globalFlags) *cobra.Command {
 }
 
 func newEndpointCreateCmd(gf *globalFlags) *cobra.Command {
-	var credentialFlags []string
+	var (
+		credentialFlags []string
+		agree           bool
+	)
 	cmd := &cobra.Command{
 		Use:   "create <name>",
 		Short: "Create an endpoint and issue it a key",
-		Long:  "Create an endpoint other apps call with your own key.\n\n" + personalEndpointTerms,
+		Long:  "Create an endpoint other apps call with your own key. You agree first:\n\n  " + personalEndpointTerms,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ids, limits, err := parseEndpointCredentials(credentialFlags)
 			if err != nil {
 				return err
+			}
+			if !agree && !confirm(personalEndpointTerms+" Agree? [y/N] ") {
+				return fmt.Errorf("agree to the terms to create an endpoint: %s (or pass --agree)", personalEndpointTerms)
 			}
 			var resp struct {
 				Key string `json:"key"`
@@ -157,6 +163,7 @@ func newEndpointCreateCmd(gf *globalFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArrayVar(&credentialFlags, "credential", nil, credentialFlagUsage)
+	cmd.Flags().BoolVar(&agree, "agree", false, "Agree to the terms without the prompt: "+personalEndpointTerms)
 	_ = cmd.MarkFlagRequired("credential")
 	return cmd
 }
@@ -278,12 +285,10 @@ func nonNilLimits(limits []personalEndpointCredential) []personalEndpointCredent
 	return limits
 }
 
-// printEndpointAccess prints what an app needs: the base URLs every endpoint
-// shares, and this endpoint's key, which says which endpoint it is.
+// printEndpointAccess prints what the app's endpoint card shows: the base URLs
+// every endpoint shares, and this endpoint's key, shown once.
 func printEndpointAccess(out io.Writer, routingURL, key string) {
 	fmt.Fprintf(out, "OpenAI Base URL:     %s/v1\n", routingURL)
 	fmt.Fprintf(out, "Anthropic Base URL:  %s\n", routingURL)
-	fmt.Fprintf(out, "API Key:             %s\n", key)
-	fmt.Fprintln(out, "Models:              dari/routing, or any model the plans serve (`dari/model/<id>`)")
-	fmt.Fprintf(out, "\n%s\n", personalEndpointTerms)
+	fmt.Fprintf(out, "API Key:             %s  (Shown Once)\n", key)
 }

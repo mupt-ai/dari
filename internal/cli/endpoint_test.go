@@ -60,7 +60,7 @@ func TestEndpointCreateSendsPlansWithLimitsAndPrintsAccess(t *testing.T) {
 	bodies := map[string]map[string]any{}
 	srv := endpointTestServer(t, bodies)
 
-	out := runEndpointCmd(t, srv, "create", "Cursor", "--credential", "cred_codex=$50", "--credential", "cred_key")
+	out := runEndpointCmd(t, srv, "create", "Cursor", "--agree", "--credential", "cred_codex=$50", "--credential", "cred_key")
 
 	want := map[string]any{
 		"name":           "Cursor",
@@ -73,8 +73,7 @@ func TestEndpointCreateSendsPlansWithLimitsAndPrintsAccess(t *testing.T) {
 	for _, line := range []string{
 		"OpenAI Base URL:     " + srv.URL + "/v1\n",
 		"Anthropic Base URL:  " + srv.URL + "\n",
-		"API Key:             dlk_key_personal",
-		personalEndpointTerms,
+		"API Key:             dlk_key_personal  (Shown Once)\n",
 	} {
 		if !strings.Contains(out, line) {
 			t.Fatalf("output missing %q:\n%s", line, out)
@@ -126,5 +125,24 @@ func TestEndpointListShowsOnlyEndpoints(t *testing.T) {
 func TestEndpointCredentialLimitMustBeDollars(t *testing.T) {
 	if _, _, err := parseEndpointCredentials([]string{"cred_codex=lots"}); err == nil {
 		t.Fatal("want an error for a non-dollar limit")
+	}
+}
+
+func TestEndpointCreateNeedsAgreementToTheTerms(t *testing.T) {
+	bodies := map[string]map[string]any{}
+	srv := endpointTestServer(t, bodies)
+	useTestAPIKey(t)
+	cmd := newRootCmd("dev")
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--api-url", srv.URL, "endpoint", "create", "Cursor", "--credential", "cred_key"})
+
+	err := captureStdout(t, func() error { return cmd.Execute() })
+
+	if err == nil || !strings.Contains(err.Error(), personalEndpointTerms) {
+		t.Fatalf("err = %v, want the terms to agree to", err)
+	}
+	if _, sent := bodies["POST /v1/link/endpoints"]; sent {
+		t.Fatal("created an endpoint without agreement")
 	}
 }

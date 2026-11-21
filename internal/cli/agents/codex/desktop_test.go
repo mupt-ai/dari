@@ -16,7 +16,7 @@ func TestSetupReplacesTopLevelModelAndRemoveRestoresConfig(t *testing.T) {
 	}
 
 	for range 2 {
-		if err := Setup(home, "https://routing.dari.dev/rtr_1", "dari_key", "dari/routing", []byte(`{"models":[]}`), true, false); err != nil {
+		if err := Setup(home, "https://routing.dari.dev/rtr_1", "dari_key", "dari/routing", []byte(`{"models":[]}`), "", true, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -71,18 +71,18 @@ func TestSetupRefusesDariProviderHeadersWithCommentsOrQuotes(t *testing.T) {
 		"[ model_providers.\"dari\" ]",
 		"[model_providers.dari.auth]",
 	} {
-		_, err := setupConfig(header+"\nname = \"x\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false, false)
+		_, err := setupConfig(header+"\nname = \"x\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", "", false, false)
 		if err == nil || !strings.Contains(err.Error(), "already defines") {
 			t.Errorf("setupConfig(%q) error = %v, want refusal", header, err)
 		}
 	}
-	if _, err := setupConfig("[model_providers.other]\nname = \"x\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false, false); err != nil {
+	if _, err := setupConfig("[model_providers.other]\nname = \"x\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", "", false, false); err != nil {
 		t.Errorf("unrelated provider table refused: %v", err)
 	}
 }
 
 func TestSetupDisablesTopLevelProfileAndRestoresIt(t *testing.T) {
-	config, err := setupConfig("profile = \"work\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false, false)
+	config, err := setupConfig("profile = \"work\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", "", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestSetupDisablesTopLevelProfileAndRestoresIt(t *testing.T) {
 }
 
 func TestSetupKeepsWebSearchUnlessItDisablesIt(t *testing.T) {
-	config, err := setupConfig("web_search = \"cached\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false, false)
+	config, err := setupConfig("web_search = \"cached\"\n", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", "", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestSetupKeepsWebSearchUnlessItDisablesIt(t *testing.T) {
 
 func TestRemoveSetupDeletesConfigItCreated(t *testing.T) {
 	home := t.TempDir()
-	if err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), false, false); err != nil {
+	if err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), "", false, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := RemoveSetup(home); err != nil {
@@ -122,7 +122,7 @@ func TestRemoveSetupDeletesConfigItCreated(t *testing.T) {
 // markers.
 func TestRemoveSetupNeverLeavesTheCatalogNamed(t *testing.T) {
 	home := t.TempDir()
-	if err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), false, false); err != nil {
+	if err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), "", false, false); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(home, "config.toml")
@@ -155,7 +155,7 @@ func TestSetupRefusesUserDefinedDariProvider(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), false, false)
+	err := Setup(home, "https://routing.dari.dev", "dari_key", "dari/routing", []byte(`{}`), "", false, false)
 	if err == nil || !strings.Contains(err.Error(), "[model_providers.dari]") {
 		t.Fatalf("Setup() error = %v", err)
 	}
@@ -165,7 +165,7 @@ func TestSetupRefusesUserDefinedDariProvider(t *testing.T) {
 // the tables it adds inside the trailing block; a later setup or removal
 // keeps them.
 func TestSetupKeepsWhatCodexAddedInsideItsBlocks(t *testing.T) {
-	config, err := setupConfig("", "https://routing.dari.dev", "dak_1", "dari/routing", "/tmp/catalog.json", false, false)
+	config, err := setupConfig("", "https://routing.dari.dev", "dak_1", "dari/routing", "/tmp/catalog.json", "", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestSetupKeepsWhatCodexAddedInsideItsBlocks(t *testing.T) {
 	if got := SavedModel(home); got != "dari/model/a/b" {
 		t.Fatalf("SavedModel = %q", got)
 	}
-	again, err := setupConfig(config, "http://127.0.0.1:7340", "dgw", SavedModel(home), "/tmp/catalog.json", false, false)
+	again, err := setupConfig(config, "http://127.0.0.1:7340", "dgw", SavedModel(home), "/tmp/catalog.json", "", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,12 +195,98 @@ func TestSetupKeepsWhatCodexAddedInsideItsBlocks(t *testing.T) {
 func TestSetupDeclaresRemoteCompactionOnlyWhenTheRouterAcceptsIt(t *testing.T) {
 	const line = `capabilities = { remote_compaction = "v2" }`
 	for _, remote := range []bool{false, true} {
-		config, err := setupConfig("", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", false, remote)
+		config, err := setupConfig("", "https://routing.dari.dev", "dari_key", "dari/routing", "/catalog.json", "", false, remote)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(config, line) != remote {
 			t.Fatalf("remoteCompaction=%v config:\n%s", remote, config)
 		}
+	}
+}
+
+// With the router's own list, Codex reads the model menu from the URL and
+// keeps it current; the copy setup used to write is removed, and the config
+// never names it (Codex will not start while it names a missing file).
+func TestSetupNamesTheRoutersLiveListInsteadOfACopy(t *testing.T) {
+	home := t.TempDir()
+	path := filepath.Join(home, "config.toml")
+	const url = "https://routing.dari.dev/rtr_1/v1/models"
+	// An earlier setup wrote a copy.
+	if err := Setup(home, "https://routing.dari.dev/rtr_1", "dari_key", "dari/routing", []byte(`{"models":[]}`), "", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if ReadsLiveCatalog(home) {
+		t.Fatal("a copy is not the live list")
+	}
+	if err := Setup(home, "https://routing.dari.dev/rtr_1", "dari_key", "dari/routing", nil, url, false, false); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config := string(body)
+	if strings.Contains(config, "model_catalog_json") {
+		t.Fatalf("config still names the copy:\n%s", config)
+	}
+	if !strings.Contains(config, "[model_providers.dari]\n") || !strings.Contains(config, "model_catalog_url = \""+url+"\"\n") {
+		t.Fatalf("config does not name the live list:\n%s", config)
+	}
+	if _, err := os.Stat(filepath.Join(home, catalogFile)); !os.IsNotExist(err) {
+		t.Fatalf("copy still exists: %v", err)
+	}
+	if !ReadsLiveCatalog(home) {
+		t.Fatal("ReadsLiveCatalog = false")
+	}
+	if base, key, ok := SetupRouting(home); !ok || base != "https://routing.dari.dev/rtr_1" || key != "dari_key" {
+		t.Fatalf("SetupRouting = %q, %q, %v", base, key, ok)
+	}
+
+	// Back to a router that cannot serve one: the copy returns.
+	if err := Setup(home, "https://routing.dari.dev/rtr_1", "dari_key", "dari/routing", []byte(`{"models":[]}`), "", false, false); err != nil {
+		t.Fatal(err)
+	}
+	if ReadsLiveCatalog(home) {
+		t.Fatal("still reads the live list after a copy was set up")
+	}
+	if _, err := os.Stat(filepath.Join(home, catalogFile)); err != nil {
+		t.Fatalf("copy missing: %v", err)
+	}
+
+	// Removal leaves no trace either way.
+	if err := Setup(home, "https://routing.dari.dev/rtr_1", "dari_key", "dari/routing", nil, url, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if removed, err := RemoveSetup(home); err != nil || !removed {
+		t.Fatalf("RemoveSetup() = %v, %v", removed, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		body, _ := os.ReadFile(path)
+		t.Fatalf("config left after removal:\n%s", body)
+	}
+	if _, _, ok := SetupRouting(home); ok {
+		t.Fatal("SetupRouting after removal")
+	}
+}
+
+func TestForgetModelListRemovesOnlyCodexsSavedList(t *testing.T) {
+	home := t.TempDir()
+	if err := ForgetModelList(home); err != nil {
+		t.Fatalf("no saved list: %v", err)
+	}
+	for _, name := range []string{"models_cache.json", "config.toml"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := ForgetModelList(home); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "models_cache.json")); !os.IsNotExist(err) {
+		t.Fatalf("saved list still exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "config.toml")); err != nil {
+		t.Fatalf("config removed: %v", err)
 	}
 }

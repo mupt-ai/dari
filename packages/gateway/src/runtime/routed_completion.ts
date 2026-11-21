@@ -4,10 +4,11 @@ import { isBackgroundRequest, type InteractionRequest } from "../interaction/typ
 import { explicitModelId } from "../protocol/input/router_model.js";
 import { captureRequestError } from "../observability/errors.js";
 import type { SelectorBackend } from "../strategies/routing.js";
-import type { ClientHarness } from "../types.js";
+import type { ClientHarness, ResolvedRouter } from "../types.js";
 import { assertAutoroutingAllowed, assertCreditAvailableBeforeRouting, routerSelectsModels } from "../telemetry/usage.js";
 import type { HarnessConversationIdentity } from "./harness_identity/index.js";
 import { CustomerDisconnectedError } from "./customer_disconnect.js";
+import { withModelMenuHint } from "./model_menu_hint.js";
 import { prepareRoutedCompletion } from "./prepare_routed_completion.js";
 import type { RoutedProtocol } from "./routed_protocol.js";
 import { runPreparedRoutedCompletion } from "./routed_runtime.js";
@@ -23,6 +24,8 @@ export async function handleRoutedCompletion(args: {
   selectorBackend: SelectorBackend;
   clientHarness?: ClientHarness;
   harnessConversationIdentity?: HarnessConversationIdentity;
+  // Headers the client reads from a successful response, from its router.
+  responseHeaders?: (router: ResolvedRouter) => Record<string, string>;
 }): Promise<Response> {
   const requestId = randomUUID();
   const clientRequestId = normalizedClientRequestId(args.request.headers.get("x-request-id"));
@@ -42,7 +45,7 @@ export async function handleRoutedCompletion(args: {
     harnessConversationIdentity: args.harnessConversationIdentity,
   }).catch((error: unknown) => ({ error }));
   if ("error" in prepared) {
-    const response = args.errorResponse(prepared.error);
+    const response = args.errorResponse(withModelMenuHint(prepared.error, args.clientHarness));
     captureRequestError(prepared.error, {
       request: args.request,
       routerId: args.routerId,
@@ -68,11 +71,14 @@ export async function handleRoutedCompletion(args: {
       selectorBackend: args.selectorBackend,
       clientSignal: args.request.signal,
     });
+    for (const [name, value] of Object.entries(args.responseHeaders?.(prepared.credentials) ?? {})) {
+      response.headers.set(name, value);
+    }
     return responseWithRequestId(response, requestId);
   } catch (error) {
     const terminal = prepared.reporter.freezeFailure(error);
     terminal.report();
-    let response = args.errorResponse(error);
+    let response = args.errorResponse(withModelMenuHint(error, args.clientHarness));
     // Provider retries may already have consumed tokens before the HTTP error.
     // Return the same model-only cost as successful OpenAI-compatible responses.
     if (args.payload.sourceProtocol === "openai_chat") {

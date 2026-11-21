@@ -67,27 +67,106 @@ func Home() (string, error) {
 	return filepath.Join(home, ".codex"), nil
 }
 
-// Setup makes Dari the default provider in home's config.toml, with the
-// catalog from Catalog as the model menu. The key is written inline because
-// the Codex app does not inherit shell environment variables.
-func Setup(home, baseURL, key, model string, catalog []byte, disableWebSearch, remoteCompaction bool) error {
+// Setup makes Dari the default provider in home's config.toml. With a
+// catalogURL (from LiveCatalogURL) Codex reads the model menu from the router
+// itself and keeps it current; otherwise it reads catalog, a copy from
+// Catalog, which stays as written. The key is written inline because the
+// Codex app does not inherit shell environment variables.
+func Setup(home, baseURL, key, model string, catalog []byte, catalogURL string, disableWebSearch, remoteCompaction bool) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return fmt.Errorf("create Codex config directory: %w", err)
 	}
 	catalogPath := filepath.Join(home, catalogFile)
-	if err := os.WriteFile(catalogPath, catalog, 0o600); err != nil {
-		return fmt.Errorf("write Codex model catalog: %w", err)
+	if catalogURL == "" {
+		if err := os.WriteFile(catalogPath, catalog, 0o600); err != nil {
+			return fmt.Errorf("write Codex model catalog: %w", err)
+		}
 	}
 	path := filepath.Join(home, "config.toml")
 	existing, err := readConfig(path)
 	if err != nil {
 		return err
 	}
-	config, err := setupConfig(existing, baseURL, key, model, catalogPath, disableWebSearch, remoteCompaction)
+	config, err := setupConfig(existing, baseURL, key, model, catalogPath, catalogURL, disableWebSearch, remoteCompaction)
 	if err != nil {
 		return err
 	}
-	return writeConfig(path, config)
+	if err := writeConfig(path, config); err != nil {
+		return err
+	}
+	if catalogURL != "" {
+		// Only once the config no longer names it: Codex will not start while
+		// model_catalog_json names a missing file.
+		if err := os.Remove(catalogPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove Codex model catalog: %w", err)
+		}
+	}
+	return nil
+}
+
+// ReadsLiveCatalog reports whether home's Dari setup has Codex read its model
+// menu from the router, rather than from a copy setup wrote.
+func ReadsLiveCatalog(home string) bool {
+	config, err := readConfig(filepath.Join(home, "config.toml"))
+	if err != nil {
+		return false
+	}
+	inProvider := false
+	for _, line := range strings.Split(config, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inProvider = tableName(trimmed) == "model_providers.dari"
+			continue
+		}
+		if inProvider && replacesKey(trimmed, []string{"model_catalog_url"}) {
+			return true
+		}
+	}
+	return false
+}
+
+// SetupRouting is the router and key home's Dari setup routes Codex through:
+// the router without its /v1, and ok false when Dari is not set up there.
+func SetupRouting(home string) (baseURL, key string, ok bool) {
+	config, err := readConfig(filepath.Join(home, "config.toml"))
+	if err != nil || !strings.Contains(config, setupBegin) {
+		return "", "", false
+	}
+	inProvider := false
+	for _, line := range strings.Split(config, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") {
+			inProvider = tableName(trimmed) == "model_providers.dari"
+			continue
+		}
+		name, value, found := strings.Cut(trimmed, "=")
+		if !inProvider || !found {
+			continue
+		}
+		unquoted, err := strconv.Unquote(strings.TrimSpace(value))
+		if err != nil {
+			continue
+		}
+		switch strings.TrimSpace(name) {
+		case "base_url":
+			baseURL = strings.TrimSuffix(unquoted, "/v1")
+		case "experimental_bearer_token":
+			key = unquoted
+		}
+	}
+	return baseURL, key, baseURL != "" && key != ""
+}
+
+// ForgetModelList drops the model list Codex saved from the router, so the
+// next /model it opens, in any running Codex, reads the router again instead
+// of waiting for its next timed refresh. Codex keeps one such list, for the
+// provider in use, and fetches it again when it is missing.
+func ForgetModelList(home string) error {
+	err := os.Remove(filepath.Join(home, "models_cache.json"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove Codex model list: %w", err)
+	}
+	return nil
 }
 
 // RemoveSetup undoes Setup and reports whether there was anything to remove.
@@ -134,7 +213,7 @@ func withoutCatalog(config, catalogPath string) string {
 	return strings.Join(kept, "\n")
 }
 
-func setupConfig(existing, baseURL, key, model, catalogPath string, disableWebSearch, remoteCompaction bool) (string, error) {
+func setupConfig(existing, baseURL, key, model, catalogPath, catalogURL string, disableWebSearch, remoteCompaction bool) (string, error) {
 	replaced := replacedKeys
 	if disableWebSearch {
 		replaced = append(slices.Clone(replacedKeys), "web_search")
@@ -157,9 +236,12 @@ func setupConfig(existing, baseURL, key, model, catalogPath string, disableWebSe
 		setupBegin,
 		"model = " + strconv.Quote(model),
 		`model_provider = "dari"`,
-		"model_catalog_json = " + strconv.Quote(catalogPath),
-		`model_reasoning_summary = "none"`,
 	}
+	// model_catalog_json would win over the provider's model_catalog_url.
+	if catalogURL == "" {
+		top = append(top, "model_catalog_json = "+strconv.Quote(catalogPath))
+	}
+	top = append(top, `model_reasoning_summary = "none"`)
 	if disableWebSearch {
 		top = append(top, `web_search = "disabled"`)
 	}
@@ -171,6 +253,9 @@ func setupConfig(existing, baseURL, key, model, catalogPath string, disableWebSe
 		"base_url = " + strconv.Quote(baseURL+"/v1"),
 		"experimental_bearer_token = " + strconv.Quote(key),
 		`wire_api = "responses"`,
+	}
+	if catalogURL != "" {
+		provider = append(provider, "model_catalog_url = "+strconv.Quote(catalogURL))
 	}
 	if remoteCompaction {
 		provider = append(provider, `capabilities = { remote_compaction = "v2" }`)

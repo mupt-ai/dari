@@ -9,8 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mupt-ai/dari/internal/cli/agents"
@@ -139,4 +142,67 @@ func Catalog(ctx context.Context, key, baseURL string, models agents.Models) ([]
 		return nil, false, fmt.Errorf("encode Codex model catalog: %w", err)
 	}
 	return body, disableWebSearch, nil
+}
+
+// LiveCatalogURL is the router's model list, for Codex to read itself, or ""
+// when the router cannot serve Codex one (an older gateway) or Codex would
+// refuse the URL. Codex re-reads the URL while it runs, on a timer and when a
+// response says the list changed, so a setup that names it follows the
+// router's models instead of the copy it wrote. Without one, setup writes that
+// copy, as before.
+func LiveCatalogURL(ctx context.Context, key, baseURL, defaultModel string) (string, error) {
+	catalogURL := baseURL + "/v1/models"
+	if !codexAcceptsCatalogURL(catalogURL) {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	// Ask as Codex does: it names its version in the query.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, catalogURL+"?client_version=dari-setup", nil)
+	if err != nil {
+		return "", fmt.Errorf("create Codex catalog request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	client := &http.Client{CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch Codex model catalog: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch Codex model catalog: HTTP %d", resp.StatusCode)
+	}
+	var catalog struct {
+		Direct bool `json:"codex_direct"`
+		Models []struct {
+			Slug string `json:"slug"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&catalog); err != nil || !catalog.Direct {
+		return "", nil
+	}
+	for _, model := range catalog.Models {
+		if model.Slug == defaultModel {
+			return catalogURL, nil
+		}
+	}
+	return "", nil
+}
+
+// codexAcceptsCatalogURL follows Codex's rule for a model_catalog_url: HTTPS,
+// or HTTP to this machine, with no user info or fragment. Codex will not
+// start with one it refuses.
+func codexAcceptsCatalogURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.User != nil || u.Fragment != "" {
+		return false
+	}
+	if u.Scheme == "https" {
+		return true
+	}
+	host := u.Hostname()
+	if ip := net.ParseIP(host); ip != nil {
+		return u.Scheme == "http" && ip.IsLoopback()
+	}
+	return u.Scheme == "http" && strings.EqualFold(host, "localhost")
 }

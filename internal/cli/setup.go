@@ -33,7 +33,7 @@ func init() {
 }
 
 func newSetupCmd() *cobra.Command {
-	var cli, desktop, remove, makeDefault bool
+	var cli, desktop, remove, makeDefault, refresh bool
 	var router string
 	var pay []string
 	cmd := &cobra.Command{
@@ -50,12 +50,23 @@ func newSetupCmd() *cobra.Command {
 			"router the agent's default, so nothing is asked:\n" +
 			"  dari setup claude --router deepseek --pay claude-opus-5-5=subscription --pay flash=credits --default\n\n" +
 			"--cli makes the agent run directly (plain `claude`) use Dari; --desktop does the same for its\n" +
-			"desktop app; --remove undoes both.",
+			"desktop app; --remove undoes both.\n\n" +
+			"`dari setup codex --refresh` brings Codex's /model list up to the router's models now, on the\n" +
+			"router it is set up with, without asking anything.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
 			if _, ok := agentLaunchers[name]; !ok {
 				return fmt.Errorf("unknown agent %q; use one of %s", name, strings.Join(slices.Sorted(maps.Keys(agentLaunchers)), ", "))
+			}
+			if refresh {
+				if name != "codex" {
+					return fmt.Errorf("--refresh is for codex; run `dari setup %s` to update %s's models", name, name)
+				}
+				if cli || desktop || remove || makeDefault || router != "" || len(pay) > 0 {
+					return errors.New("--refresh takes no other flags")
+				}
+				return runCodexRefresh(cmd.Context(), cmd.ErrOrStderr())
 			}
 			launch := agentLaunch{name: name, setupCLI: cli, setupDesktop: desktop, removeSetup: remove, reconfigure: router == ""}
 			if router != "" {
@@ -90,6 +101,7 @@ func newSetupCmd() *cobra.Command {
 	cmd.Flags().StringVar(&router, "router", "", "A template, router spec file, or router ID to use")
 	cmd.Flags().StringArrayVar(&pay, "pay", nil, "How a model is paid for, as <model>=<subscription|key|credits> (repeatable)")
 	cmd.Flags().BoolVar(&makeDefault, "default", false, "Make --router the agent's default")
+	cmd.Flags().BoolVar(&refresh, "refresh", false, "Codex: bring the /model list up to the router's models now")
 	return cmd
 }
 

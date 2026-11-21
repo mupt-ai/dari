@@ -307,7 +307,7 @@ function limitsFrom(value: unknown) {
   if (limits === null) {
     throw new HttpError(
       400,
-      "limits must be a list of {credential_id, monthly_usd} with distinct credential_ids and monthly_usd a dollar amount of 0 or more; [] removes them.",
+      "limits must be a list of {credential_id, max_percent} for plans and {credential_id, monthly_usd} for API keys, with distinct credential_ids, max_percent above 0 and at most 100, and monthly_usd a dollar amount of 0 or more; [] removes them.",
       "invalid_request_error",
       "limits",
     );
@@ -1376,15 +1376,22 @@ function connectionCard(connection: LinkConnection, csrf: string): string {
   // A plan's account tells it apart only when the app shares two of the same name.
   const shown = (plan: LinkSubscription) =>
     names.filter((name) => name === planName(plan)).length > 1 ? `${planName(plan)} (${planLabel(plan)})` : planName(plan);
-  // One row per shared plan or key: what the app spent on it this month and
-  // the most it may spend.
+  // One row per shared plan or key: a plan's use of its quota and the most of
+  // it the app may use; a key's spend this month and the most it may spend.
   const row = (plan: LinkSubscription) => {
     const spend = connection.spend.find((entry) => entry.credentialId === plan.id);
-    const id = `usd_${escapeHtml(plan.id)}_${escapeHtml(connection.id)}`;
-    return `<div class="limit">${logo(plan.apiKeyProvider ?? plan.provider, planName(plan))}<label class="grow" for="${id}"><strong>${escapeHtml(shown(plan))}</strong><small>${dollars(spend?.spentUsd ?? 0)} this month${spend?.reached ? ", at the limit" : ""}</small></label>
-<input id="${id}" type="text" inputmode="decimal" name="usd_${escapeHtml(plan.id)}" value="${spend?.monthlyUsd ?? ""}" placeholder="$ / Month" aria-label="${escapeHtml(shown(plan))} Monthly Limit ($)" autocomplete="off"></div>`;
+    // A plan still limited in dollars, as before shares, keeps its dollars.
+    const key = plan.apiKeyProvider !== undefined || (spend?.monthlyUsd ?? null) !== null;
+    const field = `${key ? "usd" : "pct"}_${escapeHtml(plan.id)}`;
+    const id = `${field}_${escapeHtml(connection.id)}`;
+    const used = key
+      ? `${dollars(spend?.spentUsd ?? 0)} this month`
+      : spend?.usedPercent == null ? "Usage not reported yet" : `Plan ${Math.round(spend.usedPercent)}% used`;
+    const value = key ? spend?.monthlyUsd : spend?.maxPercent;
+    return `<div class="limit">${logo(plan.apiKeyProvider ?? plan.provider, planName(plan))}<label class="grow" for="${id}"><strong>${escapeHtml(shown(plan))}</strong><small>${used}${spend?.reached ? ", at the limit" : ""}</small></label>
+<input id="${id}" type="text" inputmode="decimal" name="${field}" value="${value ?? ""}" placeholder="${key ? "$ / Month" : "% Of Plan"}" aria-label="${escapeHtml(shown(plan))} ${key ? "Monthly Limit ($)" : "Most Of Plan (%)"}" autocomplete="off"></div>`;
   };
-  const limited = connection.spend.some((entry) => entry.monthlyUsd !== null);
+  const limited = connection.spend.some((entry) => entry.monthlyUsd !== null || entry.maxPercent !== null);
   return `<form class="card" id="${escapeHtml(connection.id)}" method="post" action="${CONNECTIONS_PATH}">${csrf}
 <input type="hidden" name="grant_id" value="${escapeHtml(connection.id)}">
 <strong>${escapeHtml(connection.appName)}${connection.endpoint ? " (Endpoint)" : ""}</strong>
@@ -1416,11 +1423,15 @@ async function connectionsSubmit(approval: LinkApprovalPage, request: Request, f
   }
   if (decision === "limits") {
     const limits = validLimits([...form.entries()].flatMap(([field, raw]) => {
-      const value = raw.replace(/[\s,$]/g, "");
-      if (!field.startsWith("usd_") || value === "") return [];
-      return [{ credential_id: field.slice(4), monthly_usd: /^\d+(\.\d+)?$/.test(value) ? Number(value) : Number.NaN }];
+      const value = raw.replace(/[\s,$%]/g, "");
+      const kind = field.slice(0, 4);
+      if ((kind !== "usd_" && kind !== "pct_") || value === "") return [];
+      const amount = /^\d+(\.\d+)?$/.test(value) ? Number(value) : Number.NaN;
+      return [{ credential_id: field.slice(4), [kind === "usd_" ? "monthly_usd" : "max_percent"]: amount }];
     }));
-    if (limits === null) return await connectionsPage(approval, request, "Each monthly limit is a dollar amount; leave it empty for none.");
+    if (limits === null) {
+      return await connectionsPage(approval, request, "Each plan limit is a percent above 0 and at most 100, and each key limit a dollar amount; leave it empty for none.");
+    }
     await approval.setLimits(session.subject, grantId, limits);
     return back;
   }

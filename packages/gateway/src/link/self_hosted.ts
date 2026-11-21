@@ -176,7 +176,7 @@ function linkKey(key: LinkApiKey): LinkSubscription {
   };
 }
 
-function linkSubscription(credential: SubscriptionCredential): LinkSubscription {
+export function linkSubscription(credential: SubscriptionCredential): LinkSubscription {
   const now = new Date();
   return {
     id: credential.id,
@@ -187,11 +187,21 @@ function linkSubscription(credential: SubscriptionCredential): LinkSubscription 
     unavailableUntil: credential.unavailableUntil !== null && credential.unavailableUntil > now
       ? credential.unavailableUntil.toISOString()
       : null,
-    usage: (currentUsage(credential, now)?.windows ?? []).map((window) => ({
-      ...(window.modelFamily === undefined ? {} : { modelFamily: window.modelFamily }),
-      minutes: window.minutes,
-      utilization: window.utilization,
-      resetsAt: window.resetsAt.toISOString(),
-    })),
+    usage: linkUsageWindows(currentUsage(credential, now), now),
   };
+}
+
+// Usage reported without per-window detail has only its binding window; it
+// still counts against a plan's share limit, so it is one window here.
+function linkUsageWindows(usage: ReturnType<typeof currentUsage>, now: Date): LinkSubscription["usage"] {
+  if (usage === null || usage === undefined) return [];
+  const windows = usage.windows.length > 0
+    ? usage.windows
+    : [{ minutes: Math.max(1, Math.ceil((usage.resetsAt.getTime() - now.getTime()) / 60_000)), utilization: usage.utilization, resetsAt: usage.resetsAt }];
+  return windows.map((window) => ({
+    ...("modelFamily" in window && window.modelFamily !== undefined ? { modelFamily: window.modelFamily } : {}),
+    minutes: window.minutes,
+    utilization: window.utilization,
+    resetsAt: window.resetsAt.toISOString(),
+  }));
 }

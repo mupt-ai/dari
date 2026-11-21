@@ -272,15 +272,16 @@ test("the connections page sets a grant's spend limits, disconnects it, and remo
   expect(page).toContain('aria-label="Shares Claude"');
   expect(page).toContain(`id="${grant!.id}"`);
 
-  // A limit is dollars a month on a shared plan; a forged form changes nothing.
+  // A plan's limit is a share of its quota; a forged form changes nothing.
   expect(page).toContain("Set Limit");
+  expect(page).toContain("% Of Plan");
   expect(page).not.toContain("Most Tokens");
-  expect(await (await browser.manage({ csrf, grant_id: grant!.id, decision: "limits", [`usd_${id}`]: "lots" })).text())
-    .toContain("dollar amount");
-  await browser.manage({ csrf: "forged", grant_id: grant!.id, decision: "limits", [`usd_${id}`]: "10" });
+  expect(await (await browser.manage({ csrf, grant_id: grant!.id, decision: "limits", [`pct_${id}`]: "lots" })).text())
+    .toContain("percent above 0");
+  await browser.manage({ csrf: "forged", grant_id: grant!.id, decision: "limits", [`pct_${id}`]: "10" });
   expect(browser.links.grant(grant!.id)!.limits).toEqual([]);
-  expect((await browser.manage({ csrf, grant_id: grant!.id, decision: "limits", [`usd_${id}`]: "$10" })).status).toBe(303);
-  expect(browser.links.grant(grant!.id)!.limits).toEqual([{ credentialId: id, monthlyUsd: 10 }]);
+  expect((await browser.manage({ csrf, grant_id: grant!.id, decision: "limits", [`pct_${id}`]: "10%" })).status).toBe(303);
+  expect(browser.links.grant(grant!.id)!.limits).toEqual([{ credentialId: id, maxPercent: 10 }]);
   expect(await browser.connections()).toContain('value="10"');
 
   await browser.manage({ csrf, grant_id: grant!.id, decision: "disconnect" });

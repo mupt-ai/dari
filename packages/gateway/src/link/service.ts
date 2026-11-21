@@ -32,7 +32,6 @@ import {
   type BudgetUse,
   budgetStandings,
   grantSpend,
-  nextMonthStart,
   overBudgetUntil,
   usesSince,
 } from "./budget.js";
@@ -172,13 +171,16 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
     budget: LinkBudgetStanding[];
     spend: LinkSpend[];
   }> => {
-    const uses = await store.budgetUses(grant.id, usesSince(grant.budget, now));
+    const [uses, plans] = await Promise.all([
+      store.budgetUses(grant.id, usesSince(grant.budget, now)),
+      grant.limits.length === 0 ? [] : users.plansWithIds(grant.credentialIds),
+    ]);
     return {
       budget: budgetStandings(grant.budget, uses, now).map((standing) => ({
         ...standing,
         resetsAt: standing.resetsAt?.toISOString() ?? null,
       })),
-      spend: grantSpend(grant.credentialIds, grant.limits, uses, now),
+      spend: grantSpend(grant.credentialIds, grant.limits, uses, plans, now),
     };
   };
 
@@ -194,13 +196,12 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
 
   // Plans and keys the user can grant, and limits only on them.
   const ownedCredentials = async (subject: string, credentialIds: readonly string[], limits: readonly LinkLimit[] = []) => {
-    const owned = new Set((await users.plans(subject)).map((plan) => plan.id));
+    const plans = await users.plans(subject);
+    const owned = new Set(plans.map((plan) => plan.id));
     if (credentialIds.length === 0 || !credentialIds.every((id) => owned.has(id))) {
       throw new HttpError(400, "Choose one or more of your connected plans or API keys.", "invalid_request");
     }
-    if (!limits.every((limit) => credentialIds.includes(limit.credentialId))) {
-      throw new HttpError(400, "Set limits only on the plans and keys the grant shares.", "invalid_request");
-    }
+    requireLimitsFit(limits, credentialIds, plans);
     return [...new Set(credentialIds)].sort();
   };
 
@@ -398,9 +399,7 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
       const subject = await users.manager(apiKey);
       const grant = await ownGrant(subject, grantId);
       if (grant === null) return false;
-      if (!limits.every((limit) => grant.credentialIds.includes(limit.credentialId))) {
-        throw new HttpError(400, "Set limits only on the plans and keys the grant shares.", "invalid_request");
-      }
+      requireLimitsFit(limits, grant.credentialIds, await users.plansWithIds(grant.credentialIds));
       return await store.updateGrant(grantId, { limits });
     },
     async setBudget({ apiKey, grantId, budget }) {
@@ -434,6 +433,23 @@ export function newLinkApp(request: { name: string; redirectUris: string[]; conf
   return { record, ...(secret === null ? {} : { clientSecret: secret.secret }) };
 }
 
+/**
+ * Limits only on the grant's plans and keys, and a share of quota only on a
+ * plan. A plan may still carry dollars a month, as limits did before shares;
+ * the apps offer a share for a plan that has none.
+ */
+function requireLimitsFit(limits: readonly LinkLimit[], credentialIds: readonly string[], plans: readonly LinkSubscription[]): void {
+  if (!limits.every((limit) => credentialIds.includes(limit.credentialId))) {
+    throw new HttpError(400, "Set limits only on the plans and keys the grant shares.", "invalid_request");
+  }
+  for (const limit of limits) {
+    const key = plans.find((plan) => plan.id === limit.credentialId)?.apiKeyProvider !== undefined;
+    if (key && limit.monthlyUsd === undefined) {
+      throw new HttpError(400, "Limit an API key with monthly_usd; max_percent is for plans.", "invalid_request");
+    }
+  }
+}
+
 /** A confidential app's client secret, and the hash that is kept of it. */
 export function newLinkClientSecret(): { secret: string; hash: string } {
   const secret = linkSecret(LINK_CLIENT_SECRET_PREFIX);
@@ -442,11 +458,16 @@ export function newLinkClientSecret(): { secret: string; hash: string } {
 
 /**
  * The grant a link token serves a request for: null when the key is no link
- * token. Its plans and keys at their monthly spend limit are left out. Throws
- * the 401 a dead token gets, and the 424 a grant at its budget, or with every
- * plan and key at its limit, gets until it serves again.
+ * token. Its plans and keys at their limit are left out. Throws the 401 a dead
+ * token gets, and the 424 a grant at its budget, or with every plan and key at
+ * its limit, gets until it serves again.
  */
-export async function linkTokenGrant(store: LinkStore, token: string, now = new Date()): Promise<ActiveLinkGrant | null> {
+export async function linkTokenGrant(
+  store: LinkStore,
+  users: Pick<LinkUsers, "plansWithIds">,
+  token: string,
+  now = new Date(),
+): Promise<ActiveLinkGrant | null> {
   const auth = await linkGrants(store).authenticate(token, now);
   if (auth === null) return null;
   if (auth.status === "expired") throw linkTokenExpired();
@@ -456,12 +477,16 @@ export async function linkTokenGrant(store: LinkStore, token: string, now = new 
   const uses = await store.budgetUses(grant.id, usesSince(grant.budget, now));
   const back = overBudgetUntil(budgetStandings(grant.budget, uses, now));
   if (back !== undefined) throw linkUnavailableError(budgetExhausted(back));
-  const reached = new Set(
-    grantSpend(grant.credentialIds, grant.limits, uses, now).filter((entry) => entry.reached).map((entry) => entry.credentialId),
-  );
-  if (reached.size === 0) return grant;
-  const credentialIds = new Set([...grant.credentialIds].filter((id) => !reached.has(id)));
-  if (credentialIds.size === 0) throw linkUnavailableError(limitsReached(nextMonthStart(now)));
+  if (grant.limits.length === 0) return grant;
+  const plans = grant.limits.some((limit) => limit.maxPercent !== undefined)
+    ? await users.plansWithIds(grant.limits.map((limit) => limit.credentialId))
+    : [];
+  const reached = grantSpend(grant.credentialIds, grant.limits, uses, plans, now).filter((entry) => entry.reached);
+  if (reached.length === 0) return grant;
+  const credentialIds = new Set([...grant.credentialIds].filter((id) => !reached.some((entry) => entry.credentialId === id)));
+  if (credentialIds.size === 0) {
+    throw linkUnavailableError(limitsReached(new Date(Math.min(...reached.map((entry) => Date.parse(entry.resetsAt!))))));
+  }
   return { ...grant, credentialIds };
 }
 

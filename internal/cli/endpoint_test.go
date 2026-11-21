@@ -13,8 +13,8 @@ import (
 const endpointGrantsJSON = `{"grants":[` +
 	`{"id":"lgr_app","app_name":"Notes","endpoint":false,"credential_ids":["cred_codex"],"limits":[]},` +
 	`{"id":"lgr_me","app_name":"Cursor","endpoint":true,"credential_ids":["cred_codex","cred_key"],` +
-	`"limits":[{"credential_id":"cred_codex","monthly_usd":50}],` +
-	`"spend":[{"credential_id":"cred_codex","spent_usd":3.5,"monthly_usd":50,"reached":false}]}]}`
+	`"limits":[{"credential_id":"cred_codex","max_percent":70}],` +
+	`"spend":[{"credential_id":"cred_codex","spent_usd":3.5,"max_percent":70,"used_percent":40,"reached":false}]}]}`
 
 // The routing service's Link routes, recording each request's body.
 func endpointTestServer(t *testing.T, bodies map[string]map[string]any) *httptest.Server {
@@ -60,12 +60,15 @@ func TestEndpointCreateSendsPlansWithLimitsAndPrintsAccess(t *testing.T) {
 	bodies := map[string]map[string]any{}
 	srv := endpointTestServer(t, bodies)
 
-	out := runEndpointCmd(t, srv, "create", "Cursor", "--agree", "--credential", "cred_codex=$50", "--credential", "cred_key")
+	out := runEndpointCmd(t, srv, "create", "Cursor", "--agree", "--credential", "cred_codex=70%", "--credential", "cred_key=$50")
 
 	want := map[string]any{
 		"name":           "Cursor",
 		"credential_ids": []any{"cred_codex", "cred_key"},
-		"limits":         []any{map[string]any{"credential_id": "cred_codex", "monthly_usd": 50.0}},
+		"limits": []any{
+			map[string]any{"credential_id": "cred_codex", "max_percent": 70.0},
+			map[string]any{"credential_id": "cred_key", "monthly_usd": 50.0},
+		},
 	}
 	if got := bodies["POST /v1/link/endpoints"]; !reflect.DeepEqual(got, want) {
 		t.Fatalf("body = %#v, want %#v", got, want)

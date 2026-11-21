@@ -19,20 +19,20 @@ const personalEndpointTerms = "Only for me, in apps that take my key. Not for se
 // Personal endpoints are Dari Link grants the user makes for themselves; the
 // routing service serves them, apart from any router.
 
+// A plan's limit is the share of its quota past which the endpoint stops using
+// it; an API key's, what the endpoint may spend on it a month.
 type personalEndpointCredential struct {
 	CredentialID    string   `json:"credential_id"`
+	MaxPercent      *float64 `json:"max_percent,omitempty"`
 	MonthlyLimitUSD *float64 `json:"monthly_usd,omitempty"`
 }
 
 type personalEndpoint struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"app_name"`
-	Endpoint      bool     `json:"endpoint"`
-	CredentialIDs []string `json:"credential_ids"`
-	Limits        []struct {
-		CredentialID string  `json:"credential_id"`
-		MonthlyUSD   float64 `json:"monthly_usd"`
-	} `json:"limits"`
+	ID            string                       `json:"id"`
+	Name          string                       `json:"app_name"`
+	Endpoint      bool                         `json:"endpoint"`
+	CredentialIDs []string                     `json:"credential_ids"`
+	Limits        []personalEndpointCredential `json:"limits"`
 }
 
 func init() {
@@ -40,7 +40,7 @@ func init() {
 		cmd := &cobra.Command{
 			Use:     "endpoint",
 			Short:   "Use your subscriptions and API keys in other apps",
-			Long:    "Personal endpoints serve you alone, on the plans and API keys you choose, each up to an optional monthly spend.\n\n" + personalEndpointTerms,
+			Long:    "Personal endpoints serve you alone, on the plans and API keys you choose, each up to an optional limit: a plan up to a share of its quota, counting all its use, and an API key up to a monthly spend.\n\n" + personalEndpointTerms,
 			GroupID: hostedGroup,
 		}
 		cmd.AddCommand(
@@ -69,27 +69,36 @@ func linkRequest(cmd *cobra.Command, gf *globalFlags, method, path string, body,
 	return client.Do(cmd.Context(), method, path, body, out)
 }
 
-// parseEndpointCredentials reads `<credential_id>[=<monthly limit in USD>]`.
+// parseEndpointCredentials reads `<credential_id>[=<limit>]`: a percent such as
+// `70%` for a plan, a dollar amount such as `$50` for an API key.
 func parseEndpointCredentials(values []string) (ids []string, limits []personalEndpointCredential, err error) {
 	for _, value := range values {
 		id, limit, hasLimit := strings.Cut(strings.TrimSpace(value), "=")
 		if id == "" {
-			return nil, nil, fmt.Errorf("--credential takes <credential_id>[=<monthly limit in USD>], got %q", value)
+			return nil, nil, fmt.Errorf("--credential takes <credential_id>[=<plan percent>%%|$<key monthly USD>], got %q", value)
 		}
 		ids = append(ids, id)
 		if !hasLimit {
 			continue
 		}
+		if percent, ok := strings.CutSuffix(limit, "%"); ok {
+			share, err := strconv.ParseFloat(percent, 64)
+			if err != nil || share <= 0 || share > 100 {
+				return nil, nil, fmt.Errorf("plan limit for %s must be a percent above 0 and at most 100, got %q", id, limit)
+			}
+			limits = append(limits, personalEndpointCredential{CredentialID: id, MaxPercent: &share})
+			continue
+		}
 		usd, err := strconv.ParseFloat(strings.TrimPrefix(limit, "$"), 64)
 		if err != nil || usd < 0 {
-			return nil, nil, fmt.Errorf("monthly limit for %s must be a dollar amount, got %q", id, limit)
+			return nil, nil, fmt.Errorf("key limit for %s must be a dollar amount, got %q", id, limit)
 		}
 		limits = append(limits, personalEndpointCredential{CredentialID: id, MonthlyLimitUSD: &usd})
 	}
 	return ids, limits, nil
 }
 
-const credentialFlagUsage = "Plan or API key to use, as <credential_id>[=<monthly limit in USD>]; repeat for each (ids from `dari endpoint plans`)"
+const credentialFlagUsage = "Plan or API key to use, as <credential_id>[=<limit>]: a plan's most share of its quota such as =70%, a key's monthly spend such as =$50; repeat for each (ids from `dari endpoint plans`)"
 
 func newEndpointListCmd(gf *globalFlags) *cobra.Command {
 	return &cobra.Command{

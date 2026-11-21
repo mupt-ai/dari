@@ -10,13 +10,15 @@
    A window at its cap is back once enough of its oldest requests roll off to
    bring it under the cap again: `resetsAt` is when that happens.
 
-   A grant may also limit what it spends on each of its plans and API keys in
-   a calendar month (UTC): an API key's spend is what its provider charged,
-   and a plan's is what its requests would have cost at API prices. A plan or
-   key at its limit leaves the grant until the month ends; the grant serves on
-   the rest. */
+   A grant may also limit each of its plans and API keys. A plan's limit is a
+   share of its own quota: while any plan-wide window the provider last
+   reported is at `maxPercent` used (by anyone, so the rest stays the user's),
+   the plan leaves the grant until that window resets. A plan with no reported
+   usage is never at its limit. An API key's limit is what the grant may spend
+   on it in a calendar month (UTC), as its provider charged; at the limit it
+   leaves the grant until the month ends. The grant serves on the rest. */
 
-import type { LinkBudget, LinkLimit, LinkSpend, LinkUsageTotals } from "../platform/platform.js";
+import type { LinkBudget, LinkLimit, LinkSpend, LinkSubscription, LinkUsageTotals } from "../platform/platform.js";
 
 /** The windows a budget can cap: five hours and one week. */
 export const LINK_BUDGET_WINDOW_MINUTES = [300, 10080] as const;
@@ -83,11 +85,12 @@ export function usesSince(budget: readonly LinkBudget[], now: Date): number {
   return Math.min(now.getTime() - budgetLookbackMs(budget), monthStart(now).getTime());
 }
 
-/** Each granted plan or key's spend this month, with its limit when it has one. */
+/** Each granted plan or key's spend this month and standing against its limit. */
 export function grantSpend(
   credentialIds: Iterable<string>,
   limits: readonly LinkLimit[],
   uses: readonly BudgetUse[],
+  plans: readonly LinkSubscription[],
   now: Date,
 ): LinkSpend[] {
   const since = monthStart(now).getTime();
@@ -98,32 +101,61 @@ export function grantSpend(
   }
   return [...credentialIds].map((credentialId) => {
     const spentUsd = spent.get(credentialId) ?? 0;
-    const monthlyUsd = limits.find((limit) => limit.credentialId === credentialId)?.monthlyUsd ?? null;
-    return { credentialId, spentUsd, monthlyUsd, reached: monthlyUsd !== null && spentUsd >= monthlyUsd };
+    const limit = limits.find((entry) => entry.credentialId === credentialId);
+    const windows = (plans.find((plan) => plan.id === credentialId)?.usage ?? [])
+      .filter((window) => window.modelFamily === undefined && Date.parse(window.resetsAt) > now.getTime());
+    const usedPercent = windows.length === 0 ? null : Math.max(...windows.map((window) => window.utilization * 100));
+    let resetsAt: Date | null = null;
+    if (limit?.maxPercent !== undefined) {
+      const full = windows.filter((window) => window.utilization * 100 >= limit.maxPercent!);
+      if (full.length > 0) resetsAt = new Date(Math.max(...full.map((window) => Date.parse(window.resetsAt))));
+    } else if (limit?.monthlyUsd !== undefined && spentUsd >= limit.monthlyUsd) {
+      resetsAt = nextMonthStart(now);
+    }
+    return {
+      credentialId,
+      spentUsd,
+      monthlyUsd: limit?.monthlyUsd ?? null,
+      maxPercent: limit?.maxPercent ?? null,
+      usedPercent,
+      reached: resetsAt !== null,
+      resetsAt: resetsAt?.toISOString() ?? null,
+    };
   });
 }
 
-/** Limits from a request: `[{credential_id, monthly_usd}]`, each a distinct plan or key and a dollar amount of 0 or more. */
+/**
+ * Limits from a request: `[{credential_id, max_percent}]` for a plan or
+ * `[{credential_id, monthly_usd}]` for an API key (the other field absent or
+ * null), each a distinct plan or key;
+ * `max_percent` is above 0 and at most 100, `monthly_usd` 0 or more.
+ */
 export function validLimits(value: unknown): LinkLimit[] | null {
   if (!Array.isArray(value)) return null;
   const limits: LinkLimit[] = [];
   for (const entry of value) {
     if (typeof entry !== "object" || entry === null) return null;
-    const { credential_id: credentialId, monthly_usd: monthlyUsd } = entry as Record<string, unknown>;
-    if (
-      typeof credentialId !== "string" || credentialId.length === 0
-      || typeof monthlyUsd !== "number" || !Number.isFinite(monthlyUsd) || monthlyUsd < 0
-      || limits.some((other) => other.credentialId === credentialId)
-    ) {
+    const { credential_id: credentialId, monthly_usd: monthlyUsd, max_percent: maxPercent } = entry as Record<string, unknown>;
+    if (typeof credentialId !== "string" || credentialId.length === 0) return null;
+    if (limits.some((other) => other.credentialId === credentialId)) return null;
+    if (monthlyUsd == null
+      && typeof maxPercent === "number" && Number.isFinite(maxPercent) && maxPercent > 0 && maxPercent <= 100) {
+      limits.push({ credentialId, maxPercent });
+    } else if (maxPercent == null
+      && typeof monthlyUsd === "number" && Number.isFinite(monthlyUsd) && monthlyUsd >= 0) {
+      limits.push({ credentialId, monthlyUsd });
+    } else {
       return null;
     }
-    limits.push({ credentialId, monthlyUsd });
   }
   return limits;
 }
 
 export function limitsBody(limits: readonly LinkLimit[]) {
-  return limits.map((limit) => ({ credential_id: limit.credentialId, monthly_usd: limit.monthlyUsd }));
+  return limits.map((limit) => ({
+    credential_id: limit.credentialId,
+    ...(limit.maxPercent === undefined ? { monthly_usd: limit.monthlyUsd } : { max_percent: limit.maxPercent }),
+  }));
 }
 
 export function spendBody(spend: readonly LinkSpend[]) {
@@ -131,7 +163,10 @@ export function spendBody(spend: readonly LinkSpend[]) {
     credential_id: entry.credentialId,
     spent_usd: entry.spentUsd,
     monthly_usd: entry.monthlyUsd,
+    max_percent: entry.maxPercent,
+    used_percent: entry.usedPercent,
     reached: entry.reached,
+    resets_at: entry.resetsAt,
   }));
 }
 

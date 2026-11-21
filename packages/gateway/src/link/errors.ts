@@ -100,7 +100,7 @@ export function budgetExhausted(resetsAt: Date): LinkUnavailable {
 export function limitsReached(resetsAt: Date): LinkUnavailable {
   return {
     code: "grant_budget_exhausted",
-    message: `Every plan and API key of this Dari Link grant is at the monthly spend limit the user set. It is back at ${resetsAt.toISOString()}.`,
+    message: `Every plan and API key of this Dari Link grant is at the limit the user set. The first is back at ${resetsAt.toISOString()}.`,
     resets_at: resetsAt.toISOString(),
   };
 }

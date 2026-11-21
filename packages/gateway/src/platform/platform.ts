@@ -315,19 +315,26 @@ export type LinkConnect = {
 export type LinkBudget = { windowMinutes: number; maxTokens: number };
 
 /**
- * The most a grant may spend on one of its plans or API keys in a calendar
- * month (UTC), in US dollars. A plan's spend is what its requests would have
- * cost at API prices. See link/budget.ts.
+ * A grant's limit on one of its plans or API keys; exactly one field is set.
+ * A plan leaves the grant while any of its plan-wide quota windows is at
+ * `maxPercent` used, whoever used it, until that window resets: the rest is
+ * the user's. An API key leaves it once the grant's spend on it this calendar
+ * month (UTC) reaches `monthlyUsd`. See link/budget.ts.
  */
-export type LinkLimit = { credentialId: string; monthlyUsd: number };
+export type LinkLimit = { credentialId: string; maxPercent?: number; monthlyUsd?: number };
 
-/** A granted plan or key's spend this month, and its limit when it has one. */
+/** A granted plan or key's spend and standing, and its limit when it has one. */
 export type LinkSpend = {
   credentialId: string;
+  // What the grant spent on it this month: for a plan, at API prices.
   spentUsd: number;
   monthlyUsd: number | null;
-  // At its limit: the grant leaves it out until the month ends.
+  maxPercent: number | null;
+  // A plan's most-used plan-wide window, in percent; null when unknown.
+  usedPercent: number | null;
+  // At its limit: the grant leaves it out until `resetsAt`.
   reached: boolean;
+  resetsAt: string | null;
 };
 
 /** A budget window as it stands for a grant. */

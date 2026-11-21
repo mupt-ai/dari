@@ -37,6 +37,7 @@ import {
 } from "./config.js";
 import type { ActiveLinkGrant } from "../link/grants.js";
 import type { SqliteLinkStore } from "../link/sqlite_store.js";
+import { linkSubscription } from "../link/self_hosted.js";
 import { linkTokenGrant } from "../link/service.js";
 import type { RouterModelStore } from "./router_models.js";
 import { servedRouter, type RouterSpecStore } from "./router_specs.js";
@@ -101,7 +102,7 @@ export async function resolveSelfHostedRouter(
   request: ResolveRouterRequest,
 ): Promise<ResolvedRouter> {
   const keyIndex = gatewayKeyIndex(deps.gatewayKeys, request.apiKey);
-  const grant = keyIndex === null ? await linkTokenGrant(deps.links, request.apiKey) : null;
+  const grant = keyIndex === null ? await linkTokenGrant(deps.links, { plansWithIds: async (ids) => deps.subscriptions.withIds(new Set(ids)).map(linkSubscription) }, request.apiKey) : null;
   if (keyIndex === null && grant === null) {
     throw new HttpError(401, "Missing or invalid gateway key.", "authentication_error");
   }

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -272,7 +274,7 @@ func TestCodexRefreshKeepsALiveSetupWhenTheCheckFails(t *testing.T) {
 func setCodexVersion(t *testing.T, version string) {
 	t.Helper()
 	saved := codexVersion
-	codexVersion = func(context.Context) string { return version }
+	codexVersion = func(context.Context) (string, error) { return version, nil }
 	t.Cleanup(func() { codexVersion = saved })
 }
 
@@ -305,5 +307,44 @@ func TestCodexSetupKeepsACopyForACodexTooOldForTheLiveList(t *testing.T) {
 	}
 	if config := readFile(t, filepath.Join(home, "config.toml")); !strings.Contains(config, "model_catalog_url") {
 		t.Fatalf("no Codex on PATH should get the live list:\n%s", config)
+	}
+}
+
+// A `codex --version` that fails says nothing about the Codex: setup keeps
+// the list the config already reads, live or copied.
+func TestCodexSetupKeepsItsListWhenTheVersionCannotBeRead(t *testing.T) {
+	home := codexTestHome(t)
+	router := &fakeCodexRouter{models: []string{"dari/routing", "dari/model/a/one"}, direct: true, key: "k"}
+	server := httptest.NewServer(router)
+	defer server.Close()
+	models, _ := routerModels(context.Background(), server.URL, "k", "codex")
+	path := filepath.Join(home, "config.toml")
+	broken := func(context.Context) (string, error) { return "", errors.New("timed out") }
+
+	// Live before: stays live.
+	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+		t.Fatal(err)
+	}
+	saved := codexVersion
+	codexVersion = broken
+	t.Cleanup(func() { codexVersion = saved })
+	if err := runCodexRefresh(context.Background(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if config := readFile(t, path); !strings.Contains(config, "model_catalog_url") {
+		t.Fatalf("a failed version check dropped the live list:\n%s", config)
+	}
+
+	// A copy before: stays a copy.
+	setCodexVersion(t, "codex-cli 0.153.4")
+	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+		t.Fatal(err)
+	}
+	codexVersion = broken
+	if err := runCodexRefresh(context.Background(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if config := readFile(t, path); !strings.Contains(config, "model_catalog_json") {
+		t.Fatalf("a failed version check moved a copy to the live list:\n%s", config)
 	}
 }

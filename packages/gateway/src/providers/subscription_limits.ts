@@ -132,6 +132,24 @@ export function museSubscriptionUsage(snapshot: unknown, now: Date): Subscriptio
 // the billing cycle.
 const OPENCODE_GO_USAGE_WINDOWS = [["rolling", FIVE_HOURS], ["weekly", ONE_WEEK], ["monthly", 30 * 24 * 60]] as const;
 
+// Each Token Pass billing period grants $150 of credit; Vercel reports only
+// what remains, so usage is measured against the full grant.
+const TOKEN_PASS_CREDIT_USD = 150;
+
+/**
+ * The Token Pass usage AI Gateway reports at `GET /v1/credits`:
+ * `{token_pass: {remaining, resets_at} | null}`, remaining in USD as a string,
+ * or null while Vercel cannot read the balance.
+ */
+export function tokenPassUsageFromCredits(credits: unknown, now: Date): SubscriptionUsage | null {
+  const pass = isRecord(credits) && isRecord(credits.token_pass) ? credits.token_pass : null;
+  if (pass === null || typeof pass.remaining !== "string" || typeof pass.resets_at !== "string") return null;
+  return subscriptionUsageFromWindows(
+    [{ minutes: 30 * 24 * 60, used: 1 - Number(pass.remaining) / TOKEN_PASS_CREDIT_USD, resetsAt: new Date(pass.resets_at) }],
+    now,
+  );
+}
+
 /**
  * The usage OpenCode Go reports at `GET /zen/go/v1/usage`, which OpenCode's
  * own `/usage` reads: `{usage: {rolling|weekly|monthly: {status: "ok" |

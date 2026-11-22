@@ -317,6 +317,20 @@ describe("plan usage reads", () => {
     expect(g.calls).toHaveLength(2);
   });
 
+  test("refresh_usage reads Token Pass from its remaining credit", async () => {
+    const g = routedGateway({
+      "https://ai-gateway.vercel.sh/v1/credits": jsonResponse({
+        balance: "10",
+        token_pass: { remaining: "112.50", resets_at: "2026-11-01T00:00:00.000Z" },
+      }),
+    });
+    g.store.connect(tokens({ provider: "vercel_token_pass", accessToken: "vck_pass", refreshToken: "vck_pass" }), null, now);
+
+    const usage = await g.list(now);
+    expect(usage.vercel_token_pass.windows.map((w: any) => [w.minutes, w.utilization])).toEqual([[43200, 0.25]]);
+    expect(g.calls[0]!.init.headers).toMatchObject({ Authorization: "Bearer vck_pass" });
+  });
+
   test("a failed read keeps the listing", async () => {
     const g = routedGateway({ "https://opencode.ai/zen/go/v1/usage": () => Response.json({}, { status: 403 }) });
     connectPlans(g.store);

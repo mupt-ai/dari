@@ -328,6 +328,9 @@ export type LinkSpend = {
   credentialId: string;
   // What the grant spent on it this month: for a plan, at API prices.
   spentUsd: number;
+  // The grant's requests it served this month, and their tokens.
+  requests: number;
+  tokens: number;
   monthlyUsd: number | null;
   maxPercent: number | null;
   // A plan's most-used plan-wide window, in percent; null when unknown.

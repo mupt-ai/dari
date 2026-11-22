@@ -94,13 +94,17 @@ export function grantSpend(
   now: Date,
 ): LinkSpend[] {
   const since = monthStart(now).getTime();
-  const spent = new Map<string, number>();
+  const spent = new Map<string, { usd: number; requests: number; tokens: number }>();
   for (const use of uses) {
     if (use.credentialId === null || use.at.getTime() < since) continue;
-    spent.set(use.credentialId, (spent.get(use.credentialId) ?? 0) + use.costUsd);
+    const total = spent.get(use.credentialId) ?? { usd: 0, requests: 0, tokens: 0 };
+    total.usd += use.costUsd;
+    total.requests += 1;
+    total.tokens += use.inputTokens + use.outputTokens + use.cacheReadTokens + use.cacheWriteTokens;
+    spent.set(use.credentialId, total);
   }
   return [...credentialIds].map((credentialId) => {
-    const spentUsd = spent.get(credentialId) ?? 0;
+    const { usd: spentUsd, requests, tokens } = spent.get(credentialId) ?? { usd: 0, requests: 0, tokens: 0 };
     const limit = limits.find((entry) => entry.credentialId === credentialId);
     const windows = (plans.find((plan) => plan.id === credentialId)?.usage ?? [])
       .filter((window) => window.modelFamily === undefined && Date.parse(window.resetsAt) > now.getTime());
@@ -115,6 +119,8 @@ export function grantSpend(
     return {
       credentialId,
       spentUsd,
+      requests,
+      tokens,
       monthlyUsd: limit?.monthlyUsd ?? null,
       maxPercent: limit?.maxPercent ?? null,
       usedPercent,
@@ -162,6 +168,8 @@ export function spendBody(spend: readonly LinkSpend[]) {
   return spend.map((entry) => ({
     credential_id: entry.credentialId,
     spent_usd: entry.spentUsd,
+    requests: entry.requests,
+    tokens: entry.tokens,
     monthly_usd: entry.monthlyUsd,
     max_percent: entry.maxPercent,
     used_percent: entry.usedPercent,

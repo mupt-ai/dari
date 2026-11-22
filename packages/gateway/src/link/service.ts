@@ -173,7 +173,7 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
   }> => {
     const [uses, plans] = await Promise.all([
       store.budgetUses(grant.id, usesSince(grant.budget, now)),
-      grant.limits.length === 0 ? [] : users.plansWithIds(grant.credentialIds),
+      users.plansWithIds(grant.credentialIds),
     ]);
     return {
       budget: budgetStandings(grant.budget, uses, now).map((standing) => ({

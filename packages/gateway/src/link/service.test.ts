@@ -173,3 +173,11 @@ test("a plan at its share of quota leaves the grant until that window resets", a
   // Back once every window at the limit has reset.
   expect(standing).toMatchObject({ maxPercent: 70, usedPercent: 72, reached: true, resetsAt: week });
 });
+
+test("an endpoint with no limits still shows its plan's usage", async () => {
+  const { codex, link } = platform();
+  const { grant } = await link.createEndpoint({ apiKey: KEY, name: "Cursor", credentialIds: ["sub_codex"], limits: [] });
+  codex.usage = [{ minutes: 300, utilization: 0.4, resetsAt: new Date(Date.now() + 3_600_000).toISOString() }];
+  const [standing] = (await link.grants(KEY)).find((entry) => entry.id === grant.id)!.spend;
+  expect(standing).toMatchObject({ maxPercent: null, usedPercent: 40, reached: false });
+});

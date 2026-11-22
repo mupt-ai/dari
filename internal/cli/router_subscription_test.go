@@ -5,10 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -117,56 +114,5 @@ func TestRouterUpdateSubscriptionFlagsKeepOrClear(t *testing.T) {
 				t.Fatalf("subscription_api_fallback_models = %#v, want %#v", got, tc.fallbacks)
 			}
 		})
-	}
-}
-
-func TestRouterCreateFromManifestSendsSubscriptionFields(t *testing.T) {
-	manifestPath := filepath.Join(t.TempDir(), "router.yml")
-	if err := os.WriteFile(manifestPath, []byte(`name: Subscription Router
-enabled_models:
-  - openai/gpt-5.6-sol
-  - anthropic/claude-fable-5
-provider_key_sources:
-  openai: managed
-  anthropic: managed
-subscription_providers:
-  - Anthropic
-  - openai
-subscription_api_fallback_models:
-  - anthropic/claude-fable-5
-`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	var body map[string]any
-	srv := routerSubscriptionTestServer(t, &body)
-	useTestAPIKey(t)
-
-	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{"--api-url", srv.URL, "router", "create", manifestPath})
-	if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
-		t.Fatalf("dari router create: %v", err)
-	}
-	if got, want := body["subscription_providers"], []any{"anthropic", "openai"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("subscription_providers = %#v, want %#v", got, want)
-	}
-	if got, want := body["subscription_api_fallback_models"], []any{"anthropic/claude-fable-5"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("subscription_api_fallback_models = %#v, want %#v", got, want)
-	}
-}
-
-func TestRouterManifestRejectsInvalidSubscriptionFields(t *testing.T) {
-	manifest := routerCreateManifest{
-		Name:                  "Bad",
-		EnabledModels:         []string{"openai/gpt-5.6-sol"},
-		ProviderKeySources:    map[string]string{"openai": "managed"},
-		SubscriptionProviders: []string{" "},
-	}
-	if _, err := manifest.createRequest("router.yml", nil); err == nil || !strings.Contains(err.Error(), "subscription_providers[0]") {
-		t.Fatalf("err = %v, want subscription_providers error", err)
-	}
-	manifest.SubscriptionProviders = []string{"openai"}
-	manifest.SubscriptionAPIFallbackModels = []string{"anthropic/claude-fable-5"}
-	if _, err := manifest.createRequest("router.yml", nil); err == nil || !strings.Contains(err.Error(), "subscription_api_fallback_models[0]") {
-		t.Fatalf("err = %v, want subscription_api_fallback_models error", err)
 	}
 }

@@ -1,0 +1,20 @@
+name: Example Custom Rules Router
+models:
+  - id: openai/gpt-6.2-sol
+    thinking: [low, medium, high]
+  - id: deepseek-ai/DeepSeek-V4.1-Flash-1017
+    thinking: ["off"]
+    provider: fireworks
+roles:
+  subagent:
+    model: deepseek-ai/DeepSeek-V4.1-Flash-1017
+routing:
+  rules:
+    - when: planning, architecture, or difficult debugging
+      use: openai/gpt-6.2-sol
+      thinking_level: high
+    - when: short questions and straightforward implementation
+      use: deepseek-ai/DeepSeek-V4.1-Flash-1017
+      thinking_level: "off"
+payment:
+  allow: [credits]

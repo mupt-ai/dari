@@ -208,11 +208,7 @@ func connectGatewayMissing(ctx context.Context, gw *gatewayConfig, baseURL strin
 				return strings.ToLower(strings.ReplaceAll(key.name, " ", "-")) == step.provider
 			})]
 			_, keyErr := runAgentSecretInputTUI(stdin, stderr, key.name+" API Key", nil, func(value string) error {
-				if gw.settings.ProviderKeys == nil {
-					gw.settings.ProviderKeys = map[string]string{}
-				}
-				gw.settings.ProviderKeys[key.env] = value
-				return saveLocalGateway(ctx, gw, stderr)
+				return setLocalProviderKey(ctx, gw, stderr, key.env, value)
 			})
 			if errors.Is(keyErr, errAgentQuit) {
 				return agents.Models{}, keyErr

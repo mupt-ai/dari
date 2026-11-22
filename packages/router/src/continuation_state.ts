@@ -51,10 +51,6 @@ export function isAnthropicEffort(value: unknown): value is AnthropicEffort {
   return ANTHROPIC_EFFORTS.includes(value as AnthropicEffort);
 }
 
-/** @deprecated Alias kept for the framework-prefixed vocabulary; use {@link ProviderIdentity}. */
-export type RouterProviderIdentity = ProviderIdentity;
-/** @deprecated Alias kept for the framework-prefixed vocabulary; use {@link ProviderContinuationState}. */
-export type RouterContinuationState = ProviderContinuationState;
 
 const PREFIX = "dari-pcs-v1.";
 const FAMILY_PREFIX = "dari-pcs-";

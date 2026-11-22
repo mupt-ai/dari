@@ -100,7 +100,7 @@ These use the hosted Dari API. Sign in with `dari auth login`, or set `DARI_API_
 
 ```bash
 dari router list
-dari router create ./router.yml
+dari router apply ./router.yaml
 dari accounts provider add openrouter "OpenRouter" --value-stdin
 dari activity overview --from 2026-07-01T00:00:00Z --to 2026-07-08T00:00:00Z
 dari eval create --name "SWE-bench" --min-score 0 --max-score 100 --file scores.csv

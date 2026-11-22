@@ -79,11 +79,6 @@ export type CandidatePromptAccounting = {
   ) => CandidatePromptEstimate;
 };
 
-export type LegacyTailCharsFor = (
-  model: string,
-  hash: string,
-) => number | undefined;
-
 type CandidatePreparationSharedInput = {
   candidateModels: string[];
   metadataLookup: CandidateMetadataLookup;
@@ -125,19 +120,17 @@ type CandidatePreparationSharedInput = {
   cacheScope?: ReasoningCacheScopeLookup;
 };
 
-// Rich hosts provide provider-visible accounting. Existing Chat-shaped hosts
-// provide messages and may override same-model suffix sizing. These modes are
+// Rich hosts provide provider-visible accounting; Chat-shaped hosts provide
+// messages. These modes are
 // mutually exclusive so preparation never silently ignores one representation.
 export type CandidatePreparationInput = CandidatePreparationSharedInput & (
   | {
       promptAccounting: CandidatePromptAccounting;
       messages?: never;
-      tailCharsFor?: never;
     }
   | {
       promptAccounting?: undefined;
       messages: ChatMessage[];
-      tailCharsFor?: LegacyTailCharsFor;
     }
 );
 
@@ -422,15 +415,9 @@ export type RouteFallbackConfig = {
   requiresDifferentProvider: boolean;
 };
 
-type RouteAccountingInput =
-  | {
-      promptAccounting: CandidatePromptAccounting;
-      tailCharsFor?: never;
-    }
-  | {
-      promptAccounting?: undefined;
-      tailCharsFor?: LegacyTailCharsFor;
-    };
+type RouteAccountingInput = {
+  promptAccounting?: CandidatePromptAccounting;
+};
 
 export type RouteInput = CandidatePreparationSharedInput & RouteAccountingInput & {
   // Full request message list, system messages included.
@@ -456,7 +443,7 @@ export function prepareRoute(input: RouteInput): PreparedRoute {
   const preparation = prepareCandidatesWithAccounting(
     input,
     input.promptAccounting
-      ?? chatPromptAccounting(input.messages, input.tailCharsFor),
+      ?? chatPromptAccounting(input.messages),
   );
   const resolution = preparation.candidateResolution;
   const fallbackConfig: RouteFallbackConfig = {
@@ -541,22 +528,13 @@ export async function route(
   return { ...finalizeRoute(prepared, outputText), prepared };
 }
 
-export function chatPromptAccounting(
-  messages: ChatMessage[],
-  tailCharsFor?: LegacyTailCharsFor,
-): CandidatePromptAccounting {
+export function chatPromptAccounting(messages: ChatMessage[]): CandidatePromptAccounting {
   const conversation = conversationMessages({ messages });
   const blockDepth = conversationBlockCount({ messages });
   return {
     anchorSemantics: "matched_prefix",
     providerBlockDepthFor: () => blockDepth,
-    promptEstimateFor: (model, anchor) => {
-      if (anchor) {
-        const exact = tailCharsFor?.(model, anchor.hash);
-        if (exact !== undefined) {
-          return { chars: exact, reusesStoredPromptTokens: true };
-        }
-      }
+    promptEstimateFor: (_model, anchor) => {
       return {
         chars: JSON.stringify(
           anchor ? conversation.slice(anchor.depth) : messages,
@@ -593,7 +571,7 @@ function resolvePromptAccounting(
 ): CandidatePromptAccounting {
   if (input.promptAccounting) return input.promptAccounting;
   if (input.messages) {
-    return chatPromptAccounting(input.messages, input.tailCharsFor);
+    return chatPromptAccounting(input.messages);
   }
   throw new RouterCoreError(
     "invalid_request",

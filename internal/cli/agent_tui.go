@@ -1642,10 +1642,3 @@ func agentPickerCircle(checked, recommended, changed bool) string {
 	}
 	return ansiCoral + "◉" + ansiReset
 }
-
-func agentCheckbox(checked bool) string {
-	if checked {
-		return ansiCoral + "◉" + ansiReset
-	}
-	return ansiGray + "○" + ansiReset
-}

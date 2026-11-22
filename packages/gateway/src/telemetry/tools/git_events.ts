@@ -47,11 +47,6 @@ export function gitEvents(request: InteractionRequest, zdr: boolean): GitEventRe
   return gitEventsIn(request.items, newlySubmittedToolResults(request).results.map(({ ordinal }) => ordinal));
 }
 
-/** The GitHub pull requests and pushes in every tool result of a request, as a stored request is read. */
-export function allGitEvents(request: InteractionRequest): GitEventReport[] {
-  return gitEventsIn(request.items, request.items.flatMap((item, ordinal) => (item.type === "tool_result" ? [ordinal] : [])));
-}
-
 function gitEventsIn(items: readonly InteractionItem[], resultOrdinals: readonly number[]): GitEventReport[] {
   const calls = new Map<string, string>();
   for (const item of items) {

@@ -119,11 +119,6 @@ export function subtractDecimals(left: Decimal, right: Decimal): Decimal {
   return addDecimals(left, { coefficient: -right.coefficient, exponent: right.exponent });
 }
 
-export function compareDecimals(left: Decimal, right: Decimal): number {
-  const difference = subtractDecimals(left, right).coefficient;
-  return difference === 0n ? 0 : difference < 0n ? -1 : 1;
-}
-
 /** Python's `str(Decimal)`. */
 export function formatDecimal(value: Decimal): string {
   const negative = value.coefficient < 0n;

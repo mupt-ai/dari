@@ -53,9 +53,7 @@ export function createAutoRouter<Metadata = unknown>(
       "auto_router_custom_rules_unsupported",
     );
   }
-  const endpoint = (options.endpoint ?? DEFAULT_AUTO_ROUTER_ENDPOINT)
-    .replace(/\/+$/, "")
-    .replace(/\/select$/, "");
+  const endpoint = options.endpoint ?? DEFAULT_AUTO_ROUTER_ENDPOINT;
   const {
     apiKey,
     endpoint: _endpoint,
@@ -66,37 +64,56 @@ export function createAutoRouter<Metadata = unknown>(
     ...policyOptions,
     selectorModel: DEFAULT_AUTO_ROUTER_MODEL,
     selectorContextWindowChars: DEFAULT_AUTO_ROUTER_CONTEXT_WINDOW_CHARS,
-    selector: async (request, signal) => {
-      let response: Response;
-      try {
-        response = await fetch(`${endpoint}/select`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(request),
-          signal,
-        });
-      } catch (error) {
-        if (error instanceof Error && error.name === "AbortError") throw error;
-        throw new RouterFrameworkError(
-          "policy",
-          `Dari Auto Router request failed: ${error instanceof Error ? error.message : String(error)}`,
-          "auto_router_request_failed",
-          undefined,
-          { cause: error },
-        );
-      }
-      if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        throw new RouterFrameworkError(
-          "policy",
-          `Dari Auto Router returned HTTP ${response.status}: ${body}`,
-          "auto_router_http_error",
-        );
-      }
-      return await response.text();
-    },
+    selector: (request, signal) => requestAutoRouterSelection({ endpoint, apiKey, request, signal }),
   }, false);
+}
+
+export const AUTO_ROUTER_TIMEOUT_MS = 30_000;
+
+/**
+ * One selection call to the hosted Auto Router API. Returns the selector's raw
+ * output text. Shared by `createAutoRouter` and the gateway's Auto Routing
+ * selector backend.
+ */
+export async function requestAutoRouterSelection(args: {
+  apiKey: string;
+  endpoint?: string;
+  request: unknown;
+  signal?: AbortSignal;
+  fetch?: typeof fetch;
+}): Promise<string> {
+  const endpoint = (args.endpoint ?? DEFAULT_AUTO_ROUTER_ENDPOINT)
+    .replace(/\/+$/, "")
+    .replace(/\/select$/, "");
+  const timeout = AbortSignal.timeout(AUTO_ROUTER_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await (args.fetch ?? fetch)(`${endpoint}/select`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${args.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(args.request),
+      signal: args.signal ? AbortSignal.any([args.signal, timeout]) : timeout,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") throw error;
+    throw new RouterFrameworkError(
+      "policy",
+      `Dari Auto Router request failed: ${error instanceof Error ? error.message : String(error)}`,
+      "auto_router_request_failed",
+      undefined,
+      { cause: error },
+    );
+  }
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new RouterFrameworkError(
+      "policy",
+      `Dari Auto Router returned HTTP ${response.status}: ${body}`,
+      "auto_router_http_error",
+    );
+  }
+  return await response.text();
 }

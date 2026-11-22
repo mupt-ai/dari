@@ -34,10 +34,3 @@ export function jsonRecord(value: unknown, label: string): Record<string, JsonVa
   return value as Record<string, JsonValue>;
 }
 
-export function withoutKeys(
-  value: Readonly<Record<string, JsonValue>>,
-  keys: readonly string[],
-): JsonObject {
-  const omitted = new Set(keys);
-  return Object.fromEntries(Object.entries(value).filter(([key]) => !omitted.has(key)));
-}

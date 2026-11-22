@@ -1,11 +1,11 @@
 ---
 name: dari
-description: Use when the user wants to create, configure, inspect, or call a Dari managed router; work with router.yml/router.yaml manifests, the Dari CLI/API, provider keys, evals, or routing API keys.
+description: Use when the user wants to create, configure, inspect, or call a Dari managed router; work with router specs (`dari router apply`), the Dari CLI/API, provider keys, evals, or routing API keys.
 ---
 
 # Dari Managed Routers
 
-Dari's managed path lets you define a router in YAML and create it with the public CLI. The self-hosted framework path is `@mupt-ai/dari-router`; see its [public documentation](https://docs.dari.dev/framework/overview) for framework usage.
+Dari's managed path lets you define a router in a YAML spec and apply it with the public CLI. The self-hosted framework path is `@mupt-ai/dari-router`; see its [public documentation](https://docs.dari.dev/framework/overview) for framework usage.
 
 ## Router Specs
 
@@ -28,8 +28,6 @@ hosted:
   speculative_routing: true   # settings only hosted Dari has
 ```
 
-The `router.yml` manifest below is the older format; `dari router create` still takes it.
-
 ## Create A Router
 
 Install the CLI and authenticate:
@@ -40,100 +38,43 @@ dari auth login
 dari router models
 ```
 
-Create a `router.yml`:
-
-```yaml
-name: Production Router
-enabled_models:
-  - openai/gpt-5.6-sol
-  - anthropic/claude-sonnet-5
-provider_key_sources:
-  openai: managed
-  anthropic: managed
-```
-
-Create it:
+Write a spec to `router.yaml` and apply it:
 
 ```bash
-dari router create ./router.yml
+dari router apply ./router.yaml
 ```
 
-The command accepts a file or a directory containing `router.yml` or `router.yaml`. The CLI strictly parses and validates the manifest before sending it to the managed API.
-
-Models default to the provider shown by `dari router models`; the CLI resolves those defaults from the model catalog during create. Bind a model to a different provider with `model_providers` (when present, it must cover every enabled model):
-
-```yaml
-enabled_models:
-  - openai/gpt-5.6-sol
-  - zai-org/GLM-5.3
-model_providers:
-  openai/gpt-5.6-sol: openai
-  zai-org/GLM-5.3: fireworks
-```
+`apply` accepts a file or a directory containing `router.yml` or `router.yaml`; the API parses and validates the spec. Models default to the provider shown by `dari router models`; set a model's `provider` only to serve it elsewhere (a gateway, Bedrock, Azure).
 
 ## Provider Keys
 
-Use Dari-managed keys when available:
-
-```yaml
-provider_key_sources:
-  openai: managed
-```
-
-For BYOK, read the value from the local environment instead of committing it:
-
-```yaml
-provider_key_sources:
-  fireworks: user
-provider_key_envs:
-  fireworks: FIREWORKS_API_KEY
-```
-
-```bash
-export FIREWORKS_API_KEY=fw_...
-dari router create ./router.yml
-```
-
-Never commit provider keys or `.env` files.
+A spec carries no credentials. Save provider keys with `dari accounts provider add <provider> <name> --value-stdin`; `payment.allow` decides whether a model may use them. Never commit provider keys or `.env` files.
 
 ## Role Models
 
-Dari routes every request by default. Pin the main agent or subagents (including Claude Code workflow agents) to one enabled model with `role_models`; a pinned role is served that model directly, whatever model the client asked for. Leave a role unset or `null` to route it. Background requests such as compaction are unaffected.
+Dari routes every request by default. Pin the main agent or subagents (including Claude Code workflow agents) to one enabled model with `roles.<role>.model`; a pinned role is served that model directly, whatever model the client asked for. Leave it out to route the role. `roles.<role>.prompt` appends text to the end of that role's system prompt on every request from it. Background requests such as compaction get neither.
 
 ```yaml
-role_models:
-  main: anthropic/claude-sonnet-5
-  subagent: deepseek-ai/DeepSeek-V4.1-Flash
+roles:
+  main: { model: anthropic/claude-sonnet-5, prompt: Delegate codebase exploration to subagents. }
+  subagent: { model: deepseek-ai/DeepSeek-V4.1-Flash }
 ```
 
-The same works with flags: `dari router create <name> --model ... --main-model <id> --subagent-model <id>`. On `dari router update`, `--main-model ""` routes the main agent again.
-
-`role_prompts` appends text to the end of a role's system prompt on every request from it, routed or fixed, for example to nudge the main agent to delegate. Background requests never get it. Flags: `--main-prompt <text>` and `--subagent-prompt <text>`; an empty value removes it.
-
-```yaml
-role_prompts:
-  main: Delegate codebase exploration and independent edits to subagents.
-```
+The same works with flags: `dari router create <name> --model ... --main-model <id> --subagent-model <id> --main-prompt <text>`. On `dari router update`, `--main-model ""` routes the main agent again.
 
 ## Routing Instructions
 
-Dari already routes with each model's evals. Optional natural-language rules in `custom_config` steer it for roles left on routing; a request no rule matches is routed among every enabled model as usual:
+Dari already routes with each model's evals. Optional natural-language rules in `routing.rules` steer it for roles left on routing; a request no rule matches is routed among every enabled model as usual:
 
 ```yaml
-custom_config:
+routing:
   rules:
     - when: planning and architecture
       use: openai/gpt-5.6-sol
       thinking_level: high
 ```
 
-When `model_thinking_levels` is present, it must list every enabled model:
-
-```yaml
-model_thinking_levels:
-  openai/gpt-5.6-sol: [low, medium, high]
-  deepseek-ai/DeepSeek-V4.1-Flash: [off]
-```
+Limit a model's reasoning levels with its `thinking` list (omitted offers every level).
 
 ## Evals
 
@@ -220,9 +161,9 @@ dari router update <router-id-or-endpoint> --model openai/gpt-5.6-sol
 dari router delete <router-id-or-endpoint>
 ```
 
-Set `session_pinning: true` in `router.yml`, or pass `--session-pinning` to `dari router create` or `dari router update`, to route once per session and keep that model for the whole session; each subagent is routed once when it starts. It is off by default; `--session-pinning=false` turns it off on update.
+Set `routing.session_pinning: true` in a spec, or pass `--session-pinning` to `dari router create` or `dari router update`, to route once per session and keep that model for the whole session; each subagent is routed once when it starts. It is off by default; `--session-pinning=false` turns it off on update.
 
-Set `native_compaction: true` in `router.yml`, or pass `--native-compaction` to `dari router create` or `dari router update`, to let Codex compact context server-side with the provider's native compaction; requests carrying compaction state are routed only to models that support it. It is off by default; `--native-compaction=false` turns it off on update.
+Set `native_compaction: true` in a spec, or pass `--native-compaction` to `dari router create` or `dari router update`, to let Codex compact context server-side with the provider's native compaction; requests carrying compaction state are routed only to models that support it. It is off by default; `--native-compaction=false` turns it off on update.
 
 ## Activity
 
@@ -237,7 +178,7 @@ dari activity request rreq_... [--part client-response|selector-output]
 
 ## Examples
 
-- Managed-router manifests: https://github.com/mupt-ai/dari/tree/main/packages/router/examples/managed
+- Managed-router examples: https://github.com/mupt-ai/dari/tree/main/packages/router/examples/managed
 - Router Framework documentation: https://docs.dari.dev/framework/overview
 - Router Framework examples: https://github.com/mupt-ai/dari/tree/main/packages/router/examples
 - Managed router docs: https://docs.dari.dev/router/create-a-router

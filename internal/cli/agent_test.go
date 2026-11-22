@@ -249,7 +249,7 @@ func TestResolveAgentRoutingKeyCreatesAndReusesKey(t *testing.T) {
 	t.Setenv(agents.RoutingAPIKeyEnv, "")
 
 	for range 2 {
-		key, err := resolveAgentRoutingKey(context.Background(), strings.NewReader(""), io.Discard)
+		key, err := resolveAgentRoutingKeyFromAccess(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -265,7 +265,7 @@ func TestResolveAgentRoutingKeyCreatesAndReusesKey(t *testing.T) {
 func TestResolveAgentRoutingKeyPrefersEnvironment(t *testing.T) {
 	t.Setenv(agents.RoutingAPIKeyEnv, " dari_explicit ")
 	t.Setenv(launchedRoutingKeyEnv, "")
-	key, err := resolveAgentRoutingKey(context.Background(), strings.NewReader(""), io.Discard)
+	key, err := resolveAgentRoutingKeyForScope(context.Background(), "", "", io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestResolveAgentRoutingKeyIgnoresLaunchedKey(t *testing.T) {
 	t.Setenv(agents.RoutingAPIKeyEnv, "dari_parent_org")
 	t.Setenv(launchedRoutingKeyEnv, "1")
 
-	key, err := resolveAgentRoutingKey(context.Background(), strings.NewReader(""), io.Discard)
+	key, err := resolveAgentRoutingKeyFromAccess(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,4 +384,9 @@ func TestHostedRouting(t *testing.T) {
 			t.Errorf("hostedRouting(%q) = %v, want %v", baseURL, got, want)
 		}
 	}
+}
+
+func resolveAgentRoutingKeyFromAccess(ctx context.Context) (string, error) {
+	access, err := resolveAgentRoutingAccess(ctx, strings.NewReader(""), io.Discard)
+	return access.key, err
 }

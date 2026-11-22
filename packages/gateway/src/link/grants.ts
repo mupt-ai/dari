@@ -334,8 +334,6 @@ export function linkGrants(repo: LinkRepo) {
   };
 }
 
-export type LinkGrants = ReturnType<typeof linkGrants>;
-
 export const TOKEN_PREFIX: Record<LinkTokenKind, string> = {
   access: LINK_ACCESS_TOKEN_PREFIX,
   child: LINK_CHILD_TOKEN_PREFIX,

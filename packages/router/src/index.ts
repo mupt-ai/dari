@@ -5,6 +5,7 @@ export {
 } from "./framework_router.js";
 export {
   createAutoRouter,
+  requestAutoRouterSelection,
 } from "./auto_router.js";
 export {
   createGatewayExecutor,

@@ -105,14 +105,9 @@ func newAccountsLocalKeyCmd() *cobra.Command {
 				}
 				env, value := localProviderKeys[index].env, strings.TrimSpace(args[1])
 				if strings.EqualFold(value, "off") {
-					delete(gw.settings.ProviderKeys, env)
-				} else {
-					if gw.settings.ProviderKeys == nil {
-						gw.settings.ProviderKeys = map[string]string{}
-					}
-					gw.settings.ProviderKeys[env] = value
+					value = ""
 				}
-				if err := saveLocalGateway(cmd.Context(), gw, cmd.ErrOrStderr()); err != nil {
+				if err := setLocalProviderKey(cmd.Context(), gw, cmd.ErrOrStderr(), env, value); err != nil {
 					return err
 				}
 			}
@@ -707,13 +702,23 @@ func (page accountsPage) addLocalKey(ctx context.Context, stdin io.Reader, stder
 	}
 	key := localProviderKeys[choice]
 	_, err = runAgentSecretInputTUI(stdin, stderr, key.name+" API key", nil, func(value string) error {
-		if page.gw.settings.ProviderKeys == nil {
-			page.gw.settings.ProviderKeys = map[string]string{}
-		}
-		page.gw.settings.ProviderKeys[key.env] = value
-		return saveLocalGateway(ctx, page.gw, stderr)
+		return setLocalProviderKey(ctx, page.gw, stderr, key.env, value)
 	})
 	return err
+}
+
+// setLocalProviderKey stores a provider API key in the local gateway, or
+// removes it when value is empty, and saves the gateway.
+func setLocalProviderKey(ctx context.Context, gw *gatewayConfig, stderr io.Writer, env, value string) error {
+	if value == "" {
+		delete(gw.settings.ProviderKeys, env)
+	} else {
+		if gw.settings.ProviderKeys == nil {
+			gw.settings.ProviderKeys = map[string]string{}
+		}
+		gw.settings.ProviderKeys[env] = value
+	}
+	return saveLocalGateway(ctx, gw, stderr)
 }
 
 // buyAgentSubscription opens the vendor's plan page, where the user signs up

@@ -55,24 +55,3 @@ export function reasoningCacheScope(
     ?? "effort_keyed";
 }
 
-// The provider cache partition a prefix entry belongs to. An effort-keyed
-// provider warms one partition per effective reasoning effort, so the pair
-// identifies it; a shared-scope provider holds a single partition per model,
-// and keying that by effort would remember several entries describing one
-// cache. Hosts that store warmth per partition derive their key here so a
-// reclassified provider moves the estimator and their storage together.
-// modelId is used verbatim, matching how ChainHits keys warm prefixes: ids that
-// differ only in spelling stay separate rather than cross-contaminating. The
-// separator cannot appear in a model id or a bucket, so the pair is injective
-// and can never collide with a shared-scope key.
-export function cachePartitionKey(
-  modelId: string,
-  reasoningBucket: string | null | undefined,
-  cacheScope?: ReasoningCacheScopeLookup,
-  provider?: string,
-): string {
-  const scope = cacheScope ?? ((model: string) => reasoningCacheScope(model, provider));
-  const executionIdentity = provider ? `${provider.toLowerCase()}\u0000${modelId}` : modelId;
-  if (scope(modelId) === "shared") return executionIdentity;
-  return `${executionIdentity}\u0000${reasoningBucket ?? ""}`;
-}

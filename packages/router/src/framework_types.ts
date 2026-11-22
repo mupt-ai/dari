@@ -1,11 +1,9 @@
 import type { ReasoningEffort, RoutingDecision } from "./types.js";
 import type {
-  RouterContinuationState,
-  RouterProviderIdentity,
+  ProviderContinuationState,
+  ProviderIdentity,
 } from "./continuation_state.js";
 import type { RouterFrameworkError } from "./framework_error.js";
-
-export type { RouterContinuationState, RouterProviderIdentity } from "./continuation_state.js";
 
 export type RouterProtocol = "openai_chat_completions" | "anthropic_messages";
 
@@ -65,7 +63,7 @@ export type RouterHostedToolCallItem = {
   providerType: "web_search_call";
   status?: RouterHostedToolCallStatus;
   payload: Record<string, unknown>;
-  source?: RouterProviderIdentity;
+  source?: ProviderIdentity;
 };
 
 // Prior-turn reasoning/thinking carried across turns. The framework does not
@@ -77,8 +75,8 @@ export type RouterReasoningItem = {
   id?: string;
   summary?: string[];
   content: string[];
-  source?: RouterProviderIdentity;
-  continuation?: RouterContinuationState;
+  source?: ProviderIdentity;
+  continuation?: ProviderContinuationState;
 };
 
 export type RouterInputItem =
@@ -242,8 +240,8 @@ export type RouterOutputReasoning = {
   // redacted thinking, where only the encrypted continuation is available.
   text: string;
   redacted?: boolean;
-  source?: RouterProviderIdentity;
-  continuation?: RouterContinuationState;
+  source?: ProviderIdentity;
+  continuation?: ProviderContinuationState;
 };
 
 export type RouterOutputHostedToolCall = {
@@ -253,7 +251,7 @@ export type RouterOutputHostedToolCall = {
   providerType: "web_search_call";
   status?: RouterHostedToolCallStatus;
   payload: Record<string, unknown>;
-  source?: RouterProviderIdentity;
+  source?: ProviderIdentity;
 };
 
 export type RouterOutputItem =
@@ -286,7 +284,7 @@ export type RouterStreamEvent =
       // Provider identity and stable item id for signing plain (no-
       // continuation) reasoning with a portable envelope on replayable wire
       // formats.
-      source?: RouterProviderIdentity;
+      source?: ProviderIdentity;
       itemId?: string;
       continuation?: import("./continuation_state.js").ProviderContinuationState;
     }

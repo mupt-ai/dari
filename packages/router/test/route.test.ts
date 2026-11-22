@@ -484,19 +484,6 @@ test("legacy output identity rows price a fresh tail when full estimates undercu
   expect(mini?.est_input_cost_usd).toBeCloseTo(0.000592, 12);
 });
 
-test("prepareCandidates preserves legacy messages and tailCharsFor inputs", () => {
-  const prepared = prepareRoute(routeInput({
-    promptAccounting: undefined,
-    tailCharsFor: (model, hash) =>
-      model === MINI && hash === "mini-h1" ? 40 : undefined,
-  }));
-  const estimateByModel = new Map(
-    prepared.costEstimates.map((estimate) => [estimate.model, estimate]),
-  );
-
-  expect(estimateByModel.get(MINI)?.est_prompt_tokens).toBe(2058);
-});
-
 test("finalizeRoute validates the selector output against the candidates", () => {
   const prepared = prepareRoute(routeInput());
   const result = finalizeRoute(

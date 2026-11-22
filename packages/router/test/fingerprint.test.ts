@@ -3,7 +3,6 @@ import { expect, test } from "bun:test";
 import {
   canonicalMessage,
   conversationBlockCount,
-  extendChain,
   headHash,
   messageBlockCount,
   optionsFingerprints,
@@ -30,9 +29,6 @@ test("chain is deterministic and extends without changing earlier hashes", () =>
   expect(turn1).toEqual(prefixChain(ROUTER, request()));
   expect(turn1).toHaveLength(1);
 
-  const assistant = { role: "assistant", content: "hi there" };
-  const entryHash = extendChain(turn1[0], assistant);
-
   const turn2 = prefixChain(
     ROUTER,
     request({
@@ -46,7 +42,6 @@ test("chain is deterministic and extends without changing earlier hashes", () =>
   );
   expect(turn2).toHaveLength(3);
   expect(turn2[0]).toBe(turn1[0]);
-  expect(turn2[1]).toBe(entryHash);
 });
 
 test("mid-conversation system notes extend without reseeding the prefix", () => {

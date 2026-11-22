@@ -1,6 +1,6 @@
 # Managed Router Examples
 
-Runnable `router.yml` manifests for Dari's managed router path. TypeScript framework examples remain in the parent [`examples/`](../) directory.
+Runnable router specs for Dari's managed router path. TypeScript framework examples remain in the parent [`examples/`](../) directory.
 
 ## Prerequisites
 
@@ -26,7 +26,7 @@ From an example directory:
 
 ```bash
 cd examples/managed/dari
-dari router create ./router.yml
+dari router apply ./router.yaml
 dari router get <router_id>
 ```
 
@@ -42,8 +42,8 @@ curl https://routing.dari.dev/rtr_.../chat/completions \
   -d '{"model":"dari/routing","messages":[{"role":"user","content":"Explain prompt caching."}]}'
 ```
 
-Run `dari router models` before editing a manifest. Model IDs and reasoning levels must match the current catalog.
+Run `dari router models` before editing a spec. Model IDs and reasoning levels must match the current catalog.
 
 ## Adding An Example
 
-Each example is a self-contained directory containing a `README.md` and `router.yml`. Keep one managed-router concept per example. Use `provider_key_envs` for BYOK examples, never commit provider credentials, and validate changes against a test organization with `dari router create <example>/router.yml`.
+Each example is a self-contained directory containing a `README.md` and `router.yaml`. Keep one managed-router concept per example. Specs hold no credentials; BYOK examples save the key with `dari accounts provider add`. Validate changes against a test organization with `dari router apply <example>/router.yaml`.

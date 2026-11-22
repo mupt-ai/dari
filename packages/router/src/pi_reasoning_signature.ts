@@ -21,21 +21,3 @@ export function encodeOpenAIReasoningSignature(state: {
   });
 }
 
-export function decodeOpenAIReasoningSignature(value: string): {
-  id?: string;
-  encryptedContent?: string;
-} | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(value);
-  } catch {
-    return null;
-  }
-  if (!isRecord(parsed) || parsed.type !== "reasoning") return null;
-  return {
-    ...(typeof parsed.id === "string" && parsed.id.length > 0 ? { id: parsed.id } : {}),
-    ...(typeof parsed.encrypted_content === "string" && parsed.encrypted_content.length > 0
-      ? { encryptedContent: parsed.encrypted_content }
-      : {}),
-  };
-}

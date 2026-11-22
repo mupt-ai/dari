@@ -1,3 +1,4 @@
+import { requestAutoRouterSelection } from "@mupt-ai/dari-router";
 import { parseSelectorDecision, SELECTOR_LEASE_TURNS } from "@mupt-ai/dari-router/policy-engine";
 import { HttpError } from "../http/errors.js";
 import type { SelectorBackend } from "./routing.js";
@@ -7,7 +8,6 @@ export const DARI_AUTO_ROUTING_ENDPOINT = "https://routing.dari.dev/v1/auto-rout
 // @mupt-ai/dari-router, which calls the same API.
 const AUTO_ROUTER_MODEL = "dari/auto-router";
 const AUTO_ROUTER_CONTEXT_WINDOW_CHARS = 32_000;
-const AUTO_ROUTER_TIMEOUT_MS = 30_000;
 
 /**
  * Choose among a router's models with Dari Auto Routing, the hosted routing
@@ -23,10 +23,6 @@ export function createAutoRoutingSelectorBackend(config: {
   if (!apiKey) {
     throw new Error("Dari Auto Routing needs an API key.");
   }
-  const endpoint = (config.endpoint ?? DARI_AUTO_ROUTING_ENDPOINT)
-    .replace(/\/+$/, "")
-    .replace(/\/select$/, "");
-  const fetchImpl = config.fetch ?? fetch;
   return {
     selectorModel: AUTO_ROUTER_MODEL,
     contextWindowChars: async () => AUTO_ROUTER_CONTEXT_WINDOW_CHARS,
@@ -34,28 +30,17 @@ export function createAutoRoutingSelectorBackend(config: {
     // the policy rather than the runtime's stateless hold.
     negotiatedLeaseTurns: async () => SELECTOR_LEASE_TURNS,
     select: async (args) => {
-      let response: Response;
+      let outputText: string;
       try {
-        response = await fetchImpl(`${endpoint}/select`, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(args.selectorRequest),
-          signal: AbortSignal.timeout(AUTO_ROUTER_TIMEOUT_MS),
+        outputText = await requestAutoRouterSelection({
+          apiKey,
+          endpoint: config.endpoint ?? DARI_AUTO_ROUTING_ENDPOINT,
+          request: args.selectorRequest,
+          fetch: config.fetch,
         });
       } catch {
         throw new HttpError(502, "Dari Auto Routing request failed.", "selector_execution_failed");
       }
-      if (!response.ok) {
-        throw new HttpError(
-          502,
-          `Dari Auto Routing returned HTTP ${response.status}.`,
-          "selector_execution_failed",
-        );
-      }
-      const outputText = await response.text();
       return {
         decision: parseSelectorDecision(outputText).decision,
         selectorModel: args.selectorModel,

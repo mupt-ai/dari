@@ -147,19 +147,6 @@ export function prefixChain(routerId: string, request: ChatCompletionRequest): s
   return chain;
 }
 
-// Chain extended with the assistant reply we are about to return, in the
-// exact OpenAI shape the client will echo back next turn.
-export function extendChain(lastHash: string, assistantMessage: Record<string, unknown>): string {
-  const canonical = canonicalMessage({
-    role: "assistant",
-    content: (assistantMessage.content as ChatMessage["content"]) ?? null,
-    tool_calls: Array.isArray(assistantMessage.tool_calls)
-      ? (assistantMessage.tool_calls as Array<Record<string, unknown>>)
-      : undefined,
-  });
-  return sha256(`${lastHash}\u0000${canonical}`);
-}
-
 // NOT part of the chain (see the module comment): compared against the
 // matched entry's stored values to downgrade cache-warmth estimates when
 // these knobs flip mid-conversation. Do not "fix" this by folding them into

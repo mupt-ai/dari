@@ -1,0 +1,7 @@
+name: Example BYOK Router
+models:
+  - openai/gpt-6.2-sol
+  - id: deepseek-ai/DeepSeek-V4.1-Flash-1017
+    provider: fireworks
+payment:
+  allow: [key, credits]

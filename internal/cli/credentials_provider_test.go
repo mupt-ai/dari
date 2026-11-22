@@ -186,20 +186,3 @@ func TestRouterCreateSendsSavedProviderCredential(t *testing.T) {
 		t.Fatalf("create body = %#v, want %#v", body, want)
 	}
 }
-
-func TestRouterManifestAcceptsSavedProviderCredentialWithoutSource(t *testing.T) {
-	body, err := (routerCreateManifest{
-		Name:                  "Production",
-		EnabledModels:         []string{"openrouter/openai/gpt-5.5"},
-		ProviderCredentialIDs: map[string]string{"OpenRouter": "cred_openrouter"},
-	}).createRequest("router.yml", nil)
-	if err != nil {
-		t.Fatalf("createRequest: %v", err)
-	}
-	if !reflect.DeepEqual(body.ProviderCredentialIDs, map[string]string{"openrouter": "cred_openrouter"}) {
-		t.Fatalf("provider credential IDs = %#v", body.ProviderCredentialIDs)
-	}
-	if body.ProviderKeySources != nil {
-		t.Fatalf("provider key sources = %#v, want nil", body.ProviderKeySources)
-	}
-}

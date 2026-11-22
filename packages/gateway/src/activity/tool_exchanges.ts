@@ -18,7 +18,6 @@ import { join, raw, sql, type ActivityDb, type Sql } from "./sql.js";
 import { formatInstant, readInt, readOptionalInstant, readOptionalString } from "./values.js";
 
 export const EXCHANGE_STATES = ["matched", "unmatched_call", "orphan_result"] as const;
-export type ExchangeState = (typeof EXCHANGE_STATES)[number];
 export const EXCHANGE_MAX_LIMIT = 200;
 const EXCHANGE_MAX_REQUEST_IDS = 100;
 

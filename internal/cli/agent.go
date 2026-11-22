@@ -375,22 +375,6 @@ func explicitRoutingKey(stderr io.Writer) string {
 	return key
 }
 
-func resolveAgentRoutingKey(ctx context.Context, stdin io.Reader, stderr io.Writer) (string, error) {
-	if key := explicitRoutingKey(stderr); key != "" {
-		return key, nil
-	}
-
-	apiURL, err := (&globalFlags{}).resolveAPIURL()
-	if err != nil {
-		return "", err
-	}
-	scope, err := agentKeyScope(ctx, apiURL, stdin, stderr)
-	if err != nil {
-		return "", err
-	}
-	return resolveAgentRoutingKeyForScope(ctx, apiURL, scope, stderr)
-}
-
 func resolveAgentRoutingKeyForScope(
 	ctx context.Context,
 	apiURL string,

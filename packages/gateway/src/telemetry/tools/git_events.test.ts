@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { anthropicMessagesToInteraction } from "../../protocol/input/anthropic_messages.js";
-import { allGitEvents, gitEvents } from "./git_events.js";
+import { gitEvents } from "./git_events.js";
 
 /** A Claude Code turn history: each Bash command and what it printed, the last one just submitted. */
 function claudeCode(...exchanges: Array<{ command: string; output: string; isError?: boolean }>) {
@@ -54,15 +54,14 @@ test("gh pr commands on one pull request link it; listings and API calls do not"
     { command: "gh pr list --json url", output: "https://github.com/acme/web/pull/1\nhttps://github.com/acme/web/pull/2" },
     { command: "gh pr checks https://github.com/acme/web/pull/7 --watch", output: "All checks were successful" },
   );
-  expect(allGitEvents(request)).toEqual([
+  expect(gitEvents(request, false)).toEqual([
     { kind: "referenced", repository: "acme/web", number: 7, title: null, branch: null, ordinal: 4 },
   ]);
 });
 
-test("a request reports only its newly submitted results; a stored one reads its whole history", () => {
+test("a request reports only its newly submitted results", () => {
   const request = claudeCode(PUSH_AND_OPEN, { command: "gh pr view https://github.com/acme/web/pull/9", output: "title: Fix" });
   expect(gitEvents(request, false).map((event) => event.number)).toEqual([9]);
-  expect(allGitEvents(request).map((event) => event.number)).toEqual([null, 1216, 9]);
 });
 
 test("nothing is read from a ZDR request or from a failed command", () => {

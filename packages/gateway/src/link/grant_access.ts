@@ -105,11 +105,16 @@ const SNAPSHOT_DATE = /-(?:\d{8}|\d{4}-\d{2}-\d{2})$/;
 
 /* The model id in `models` a name means: the id itself, the one id it is the
    bare form of (`claude-haiku-4-5` is `anthropic/claude-haiku-4-5`), or either
-   of those for a dated snapshot of it. A name two models share means neither. */
+   of those for a dated snapshot of it. A name two models share means neither.
+   Names match in any case and answer the catalog's own id: some ids carry
+   capitals (`deepseek-ai/DeepSeek-V4.1-Flash-1017`), which a lowercased name
+   would never equal. */
 export function catalogModelFor(name: string, models: readonly string[]): string | null {
+  const lower = models.map((id) => id.toLowerCase());
   for (const candidate of new Set([name.toLowerCase(), name.toLowerCase().replace(SNAPSHOT_DATE, "")])) {
-    if (models.includes(candidate)) return candidate;
-    const matches = models.filter((id) => id.endsWith(`/${candidate}`));
+    const exact = lower.indexOf(candidate);
+    if (exact >= 0) return models[exact]!;
+    const matches = models.filter((_, i) => lower[i]!.endsWith(`/${candidate}`));
     if (matches.length === 1) return matches[0]!;
   }
   return null;

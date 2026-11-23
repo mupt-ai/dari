@@ -57,7 +57,7 @@ The agent must be on `PATH`, or set `DARI_<AGENT>_PATH`. Supported status lines 
 dari codex --org acme --router rtr_123 exec "Fix the failing tests"
 ```
 
-Without `--router` the launch uses that organization's router for the agent. `--org` uses your browser sign-in on hosted Dari, so it does not go with `DARI_API_KEY`, `DARI_ROUTING_API_KEY`, a gateway, or `--default`.
+Without `--router` the launch uses that organization's router for the agent. `--org` uses your browser sign-in on hosted Dari, so it does not go with `DARI_API_KEY`, `DARI_ROUTING_API_KEY`, a gateway, or `--default`. OpenClaw and Hermes Agent route on their own setup, so they do not take it.
 
 **Running the agent directly.** A launch routes only its own session and leaves the agent's config alone. `dari setup <agent> --cli` (for `claude`, `codex`, `pi`, or `opencode`) writes Dari into that agent's own config, so running it without `dari` routes the same way, then exits. The config follows `dari gateway setup` between routing modes and keeps your last `/model` choice while that model remains available; rerun it after changing the router's models. Codex 0.156 or newer is the exception on gateways new enough to serve it its own list: it reads its `/model` list from the router and keeps it current while it runs (after its next turn, or within five minutes). `dari setup codex --refresh` updates it at once, on any gateway. `dari setup <agent> --remove` undoes it and restores what was there. A local gateway must be running for direct runs: `dari gateway start`.
 

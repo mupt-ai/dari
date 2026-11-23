@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -328,5 +329,33 @@ func TestLaunchOrgLeavesTheAgentRunDirectlyAlone(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "Codex") {
 		t.Fatalf("a launch in the current organization left Codex run directly behind: %q", output.String())
+	}
+}
+
+// OpenClaw and Hermes route on the setup in their own config, which one
+// launch cannot move to another organization: --org is refused rather than
+// handed to the agent as an argument of its own.
+func TestLaunchOrgIsRefusedForAgentsThatRouteOnTheirSetup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake agent executable is a shell script")
+	}
+	setGatewayEnv(t, "")
+	record := filepath.Join(t.TempDir(), "launch.txt")
+	script := filepath.Join(t.TempDir(), "agent")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\necho started >> \""+record+"\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"openclaw", "hermes"} {
+		t.Setenv("DARI_"+strings.ToUpper(name)+"_PATH", script)
+		for _, args := range [][]string{{"--org", "b", "chat"}, {"chat", "--org=b"}} {
+			var stderr strings.Builder
+			code := runAgentLaunch(context.Background(), agentLaunch{name: name, args: args}, strings.NewReader(""), io.Discard, &stderr)
+			if code != 1 || !strings.Contains(stderr.String(), "--org does not apply") {
+				t.Fatalf("%s %v: exit %d, stderr %q", name, args, code, stderr.String())
+			}
+		}
+	}
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Fatalf("an agent started with --org: %v", err)
 	}
 }

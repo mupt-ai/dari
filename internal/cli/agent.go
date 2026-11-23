@@ -117,6 +117,12 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 	}
 
 	if routesOnlyWhenSetUp[launch.name] && !agents.OnlyRequestsInfo(launch.args) {
+		// Their launches run on the setup in the agent's own config, in the
+		// organization it was made in, so one launch cannot run in another.
+		if agents.ArgsContainFlag(launch.args, "--org") {
+			fmt.Fprintf(stderr, "%s routes on the setup in its own config, so --org does not apply to it; to move it, run `dari org switch` and then `dari setup %s --cli`\n", agentApps[launch.name].name, launch.name)
+			return 1
+		}
 		if !gatewayAgentSetUp(ctx, launch.name) {
 			fmt.Fprintf(stderr, "%s routes through Dari only once it is set up; run `dari setup %s --cli` first\n", agentApps[launch.name].name, launch.name)
 			return 1

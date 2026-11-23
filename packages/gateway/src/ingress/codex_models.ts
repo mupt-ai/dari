@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import type { ReasoningEffort } from "@mupt-ai/dari-router/policy-engine";
 import type { ResolvedRouter } from "../types.js";
 import { CANONICAL_ROUTER_MODEL, explicitModelSlug } from "../protocol/input/router_model.js";
 import { effectiveContextWindow } from "../models/context_limits.js";
@@ -112,7 +113,7 @@ function codexReadable(entry: Record<string, unknown>): Record<string, unknown> 
    that this gateway serves one, so it can point Codex at the URL instead of
    a snapshot that goes stale when the router's models change. */
 export function codexModelsResponse(
-  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed" | "native_compaction">,
+  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed" | "native_compaction" | "model_thinking_levels">,
   imageInputFor: (model: string) => boolean,
   nativeCompactionFor: (model: string) => boolean = () => false,
   direct = false,
@@ -127,20 +128,24 @@ export function codexModelsResponse(
 }
 
 /* A version of the list Codex's /model menu shows: it changes when a model
-   is added or removed, or dari/routing comes or goes. Sent as
+   is added or removed, dari/routing comes or goes, or a model's thinking
+   levels or default change. Sent as
    `X-Models-Etag` on the catalog and on Codex's responses, it makes a running
    Codex re-read the catalog after the first turn that sees a new value,
    instead of on its next timed refresh. Codex reads it only from a successful
    response; a refused stale pick carries the menu hint instead. */
 export function codexModelsEtag(
-  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed">,
+  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed" | "model_thinking_levels">,
 ): string {
-  const slugs = codexCatalogEntries(router, () => false).map((entry) => entry.slug);
-  return createHash("sha256").update(slugs.join("\n")).digest("hex").slice(0, 16);
+  const menu = codexCatalogEntries(router, () => false).map((entry) => {
+    const levels = (entry.supported_reasoning_levels as Array<{ effort: string }>).map((level) => level.effort);
+    return `${entry.slug} ${entry.default_reasoning_level ?? ""} ${levels.join(",")}`;
+  });
+  return createHash("sha256").update(menu.join("\n")).digest("hex").slice(0, 16);
 }
 
 function codexCatalogEntries(
-  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed">,
+  router: Pick<ResolvedRouter, "enabled_models" | "model_configs" | "allow_long_context" | "autorouting_enabled" | "routing_listed" | "model_thinking_levels">,
   imageInputFor: (model: string) => boolean,
 ): Record<string, unknown>[] {
   return [
@@ -162,11 +167,39 @@ function codexCatalogEntries(
         contextWindow: codexRouterContextWindow({ ...router, enabled_models: [model] }),
         hostedWebSearch: codexRouterSupportsHostedWebSearch({ ...router, enabled_models: [model] }),
         imageInput: imageInputFor(model),
-        reasoningLevels: router.model_configs?.[model]?.supported_thinking_levels
-          ?.map((effort) => effort === "off" ? "none" : effort),
-        defaultReasoningLevel: router.model_configs?.[model]?.default_thinking_level === "off"
-          ? "none" : router.model_configs?.[model]?.default_thinking_level,
+        ...codexThinkingChoices(router, model),
       })
     ),
   ];
+}
+
+const codexEffort = (effort: ReasoningEffort): string => effort === "off" ? "none" : effort;
+
+/* The thinking levels a pinned `dari/model/<id>` actually serves, so Codex's
+   /model and /effort menus offer only levels that run as picked. The gateway
+   keeps a requested level only when the router enables it for the model and
+   the model supports it (`clampRequestedEffort`, and candidate compatibility
+   in the router package); otherwise it drops the level and serves the
+   model's default if the router enables that, else the router's first
+   enabled level (`pickCandidate`). The menu shows that same set and default.
+   A model the router sets no levels for serves every level it supports. */
+function codexThinkingChoices(
+  router: Pick<ResolvedRouter, "model_configs" | "model_thinking_levels">,
+  model: string,
+): Pick<CodexCatalogEntry, "reasoningLevels" | "defaultReasoningLevel"> {
+  const config = router.model_configs?.[model];
+  const supported = config?.supported_thinking_levels;
+  if (!supported) {
+    const fallback = config?.default_thinking_level;
+    return { defaultReasoningLevel: fallback ? codexEffort(fallback) : fallback };
+  }
+  const configured = router.model_thinking_levels?.[model] ?? supported;
+  const served = configured.filter((level) => supported.includes(level));
+  const modelDefault = config.default_thinking_level;
+  const fallback = modelDefault && served.includes(modelDefault) ? modelDefault : served[0];
+  return {
+    // Codex lists levels in the order given: keep the model's low-to-high order.
+    reasoningLevels: supported.filter((level) => served.includes(level)).map(codexEffort),
+    defaultReasoningLevel: fallback ? codexEffort(fallback) : null,
+  };
 }

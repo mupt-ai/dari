@@ -4,6 +4,7 @@ import type { RequestRecord, SessionPin } from "../platform/platform.js";
 import type { SelectorBackend } from "../strategies/routing.js";
 import { testPlatform } from "../test_support/platform.js";
 import type { ResolvedRouter } from "../types.js";
+import { codexModelsResponse } from "../ingress/codex_models.js";
 import { createRequestHandler } from "./handler.js";
 
 // Session pinning end to end through the real handler: a rotating selector
@@ -230,6 +231,25 @@ test("an explicit model serves its default when it lacks the requested level", a
   });
   expect(response.status).toBe(200);
   expect(response.headers.get("x-dari-thinking-level")).toBe("low");
+});
+
+test("Codex's menu default is the level a dropped thinking level is served at", async () => {
+  // The model's default (medium) is not one the router enables, so the
+  // gateway serves the router's first level, and the Codex menu must say so.
+  const base = router;
+  router = {
+    ...base,
+    model_thinking_levels: { [MODEL_B]: ["low", "high"] },
+    model_configs: { ...base.model_configs, [MODEL_B]: { ...base.model_configs![MODEL_B]!, supported_thinking_levels: ["low", "medium", "high"], default_thinking_level: "medium" as const } },
+  };
+  const menu = (codexModelsResponse(router, () => false).models as Array<Record<string, unknown>>)
+    .find((model) => model.slug === `dari/model/${MODEL_B}`)!;
+  expect((menu.supported_reasoning_levels as Array<{ effort: string }>).map((level) => level.effort)).toEqual(["low", "high"]);
+  for (const effort of ["max", "medium"] as const) {
+    const response = await chat({ model: `dari/model/${MODEL_B}`, headers: {}, messages: [user("hi")], effort });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-dari-thinking-level")).toBe(menu.default_reasoning_level as string);
+  }
 });
 
 test("Codex subagent threads are routed on their own", async () => {

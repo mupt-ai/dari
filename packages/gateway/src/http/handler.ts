@@ -61,9 +61,12 @@ export function createRequestHandler(options: GatewayHandlerOptions) {
 
     const endpoint = routedEndpoint(url.pathname);
     if (endpoint !== null) {
-      if (request.method === "OPTIONS") return withCors(request, new Response(null, { status: 204 }));
+      // Browsers send Origin on every cross-origin call; a request without
+      // one (a server, a coding agent) is served exactly as before.
+      const fromBrowser = request.headers.has("Origin");
+      if (fromBrowser && request.method === "OPTIONS") return withCors(request, new Response(null, { status: 204 }));
       const response = await serveEndpoint(request, endpoint, selectorBackend);
-      if (response !== null) return withCors(request, response);
+      if (response !== null) return fromBrowser ? withCors(request, response) : response;
     }
     // The gateway counts no tokens. Claude Code calls this for any Anthropic
     // base URL and estimates locally when it fails, so it gets an error it parses.

@@ -1321,7 +1321,13 @@ test("a browser app calls the model endpoints from its own origin", async () => 
   }
 
   // The request itself: the page can read the reply, and its headers.
-  const reply = await chat(gateway, tokens.access_token!);
+  const chat = (accessToken: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = { origin }) =>
+    fetch(`${gateway.baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json", ...headers },
+      body: JSON.stringify({ model: "dari/routing", messages: [{ role: "user", content: "hello" }], ...extra }),
+    });
+  const reply = await chat(tokens.access_token!);
   expect(reply.status).toBe(200);
   expect(reply.headers.get("access-control-allow-origin")).toBe("*");
   expect(reply.headers.get("access-control-expose-headers")).toBe("*");
@@ -1329,14 +1335,21 @@ test("a browser app calls the model endpoints from its own origin", async () => 
   expect(((await reply.json()) as { choices: unknown[] }).choices).toHaveLength(1);
 
   // A stream, and a refusal the page must read to show Reconnect.
-  const stream = await chat(gateway, tokens.access_token!, "dari/routing", { stream: true });
+  const stream = await chat(tokens.access_token!, { stream: true });
   expect(stream.headers.get("access-control-allow-origin")).toBe("*");
   expect(await stream.text()).toContain("[DONE]");
-  const refused = await chat(gateway, "dlk_at_unknown");
+  const refused = await chat("dlk_at_unknown");
   expect(refused.status).toBe(401);
   expect(refused.headers.get("access-control-allow-origin")).toBe("*");
   const models = await fetch(`${gateway.baseUrl}/v1/models`, { headers: { authorization: `Bearer ${tokens.access_token!}`, origin } });
   expect(models.headers.get("access-control-allow-origin")).toBe("*");
+
+  // A request with no Origin (a server, a coding agent) is served as before.
+  const server = await chat(tokens.access_token!, {}, {});
+  expect(server.status).toBe(200);
+  expect(server.headers.get("access-control-allow-origin")).toBeNull();
+  expect(server.headers.get("access-control-expose-headers")).toBeNull();
+  expect((await fetch(`${gateway.baseUrl}/v1/chat/completions`, { method: "OPTIONS" })).status).toBe(404);
 });
 
 // /v1/link/usage as the wire carries it.

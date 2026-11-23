@@ -15,7 +15,6 @@ import {
   revoke as revokeToken,
   usage as linkUsage,
   type LinkTokenSet,
-  type LinkUsage,
 } from "./client.js";
 import { startStubGateway, type StubGateway, type StubLinkApp } from "../self_host/stub_gateway.js";
 import { anthropicReply, startSubscriptionGateway } from "../self_host/subscription_test_gateway.js";
@@ -653,9 +652,9 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
   const read = async (query = "", bearer = access) =>
     await fetch(`${gateway.baseUrl}/v1/link/usage${query}`, { headers: { authorization: `Bearer ${bearer}` } });
   // Requests are recorded once they finish, a moment after the response.
-  let all: LinkUsage | undefined;
+  let all: WireUsage | undefined;
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    all = (await (await read()).json()) as LinkUsage;
+    all = (await (await read()).json()) as WireUsage;
     if (all.requests === 7) break;
     await Bun.sleep(20);
   }
@@ -679,13 +678,13 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
   // With nothing in flight, every request until moments ago is counted.
   expect(Date.parse(all!.complete_through!)).toBeGreaterThan(Date.now() - 60_000);
   // Totals per value of one tag; requests without it come first, as null.
-  expect(((await (await read("?group_by=tag%3Arun")).json()) as LinkUsage).by_tag).toEqual([
+  expect(((await (await read("?group_by=tag%3Arun")).json()) as WireUsage).by_tag).toEqual([
     { value: "r1", requests: 6, errors: 0, input_tokens: 60, output_tokens: 12, cache_read_tokens: 24, cache_write_tokens: 2 },
     { value: "r2", requests: 1, errors: 0, input_tokens: 10, output_tokens: 2, cache_read_tokens: 4, cache_write_tokens: 0 },
   ]);
   expect((await read("?group_by=run")).status).toBe(400);
 
-  const filtered = async (query: string) => (await (await read(query)).json()) as LinkUsage;
+  const filtered = async (query: string) => (await (await read(query)).json()) as WireUsage;
   expect((await filtered("?tag=run%3Dr1")).requests).toBe(6);
   expect(await filtered("?tag=run%3Dr1&tag=trial%3D6")).toMatchObject({
     requests: 1,
@@ -719,10 +718,11 @@ test("an app reads back its grant's usage by tag, in one shape for every protoco
   };
   const storage = { gatewayUrl: gateway.baseUrl, clientId, loadTokens: () => stored, saveTokens: (next: LinkTokenSet) => { stored = next; } };
   const viaClient = await linkUsage({ ...storage, tags: { run: "r1", trial: "3" } });
-  expect(viaClient).toMatchObject({ requests: 1, by_model: [{ model: "openai/gpt-6.1-sol", thinking: "high" }] });
+  expect(viaClient).toMatchObject({ requests: 1, inputTokens: 10, byModel: [{ model: "openai/gpt-6.1-sol", thinking: "high", cacheReadTokens: 4 }] });
+  expect(viaClient.completeThrough).toEqual(expect.any(String));
   // Or through the app's own linkFetch, sharing its refresh.
   const viaFetcher = await linkUsage({ fetcher: linkFetch(storage), groupByTag: "trial", tags: { run: "r2" } });
-  expect(viaFetcher.by_tag).toMatchObject([{ value: "9", requests: 1 }]);
+  expect(viaFetcher.byTag).toMatchObject([{ value: "9", requests: 1 }]);
 });
 
 // A budget caps the tokens the app may use per window, counted from the
@@ -1297,3 +1297,5 @@ test("the stub gateway runs as a process and reports the calls it served", async
   expect(served.calls).toEqual([expect.objectContaining({ kind: "openai_codex", model: "gpt-6.1-sol", path: "/backend-api/codex/responses" })]);
 });
 
+// /v1/link/usage as the wire carries it.
+type WireUsage = Record<string, unknown> & { requests: number; complete_through: string | null; by_tag?: unknown[] };

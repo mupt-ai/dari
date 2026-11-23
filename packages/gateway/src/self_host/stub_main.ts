@@ -22,7 +22,7 @@
  * Options: `--plans` (comma-separated
  * `openai_codex` and `anthropic_claude_code`), `--keys` (comma-separated
  * `anthropic`, `openai`, and `openrouter`: an API key of the plans' user for each), `--models` (the default
- * router's models), `--key` (the gateway key), `--port` (the gateway's port),
+ * router's models), `--key` (the gateway key), `--port` (the gateway's port; 0 or none picks a free one),
  * `--redirect-uri` (the redirect URI `app` is registered with),
  * and `--allow-http-redirect-host` (repeatable: a host apps may register http
  * redirect URIs on, such as `*.example.ts.net`).

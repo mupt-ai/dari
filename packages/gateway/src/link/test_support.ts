@@ -27,6 +27,7 @@ export function approveTestGrant(
     codeExpiresAt: now.getTime() + LINK_CODE_TTL_MS,
     credentialIds: request.credentialIds,
     budget: [],
+    limits: [],
     now: now.getTime(),
   });
   return code;

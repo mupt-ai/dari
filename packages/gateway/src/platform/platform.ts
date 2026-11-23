@@ -141,6 +141,8 @@ export type LinkPlatform = {
   }): Promise<LinkApp & { clientSecret?: string }>;
   /** The registered app, or null for an unknown client id. */
   app(clientId: string): Promise<LinkApp | null>;
+  /** The app a client id and secret prove; throws `invalid_client` otherwise. */
+  authenticateClient(request: LinkClient): Promise<LinkApp>;
   /** Redeem a code once for the grant's first tokens. */
   exchangeCode(request: LinkCodeExchange): Promise<LinkTokens>;
   /**
@@ -259,7 +261,7 @@ export type LinkApprovalPage = {
    * One of the user's live grants for this app, which an update request edits
    * in place; null when the user has none by that id.
    */
-  grant(subject: string, grantId: string, clientId: string): Promise<Pick<LinkGrant, "credentialIds" | "budget"> | null>;
+  grant(subject: string, grantId: string, clientId: string): Promise<Pick<LinkGrant, "credentialIds" | "budget" | "limits"> | null>;
   /** Create a grant on the chosen subscriptions and return its one-time code. */
   approve(request: LinkApproval): Promise<{ code: string }>;
   /** The user's live grants, oldest first, as the connections page shows them. */
@@ -400,6 +402,8 @@ export type LinkApproval = {
   codeChallenge: string;
   credentialIds: string[];
   budget: LinkBudget[];
+  // The most of each shared plan or key the app may use.
+  limits: LinkLimit[];
 };
 
 export type LinkCodeExchange = LinkClient & {

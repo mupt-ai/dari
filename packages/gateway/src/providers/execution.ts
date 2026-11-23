@@ -1,5 +1,6 @@
 import type { RoutingDecision } from "@mupt-ai/dari-router/policy-engine";
 import { HttpError } from "../http/errors.js";
+import { linkUnavailableError, plansExhausted } from "../link/errors.js";
 import { piMessageToInteractionOutput } from "./pi_output.js";
 import type { InteractionRequest } from "../interaction/types.js";
 import { captureOperationalError } from "../observability/errors.js";
@@ -468,6 +469,10 @@ async function throwProviderFailure(args: {
       undefined,
       { "retry-after": "1" },
     );
+  }
+  if (limit !== null && result.choice.execution.subscriptionLinkGrantId) {
+    // A Dari Link app gets the one plan-limit contract, without CLI advice.
+    throw linkUnavailableError(plansExhausted([limit.oauthProvider], limit.resetsAt));
   }
   if (limit !== null) {
     const accountsUrl = gatewayPlatform().accountsUrl;

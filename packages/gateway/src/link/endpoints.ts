@@ -67,6 +67,7 @@ import type {
   GatewayPlatform,
   LinkApp,
   LinkApprovalPage,
+  LinkLimit,
   LinkClient,
   LinkConnect,
   LinkConnection,
@@ -89,6 +90,7 @@ import { CANONICAL_MODELS, canonicalModelName } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
 import { budgetBody, limitsBody, spendBody, validBudget, validLimits } from "./budget.js";
 import { catalogModelFor } from "./grant_access.js";
+import { registeredRedirect } from "./grants.js";
 import { requestTags } from "../runtime/request_tags.js";
 import type { ClientHarness, ResolvedRouter, SubscriptionKind } from "../types.js";
 import { parseJsonRequest } from "../ingress/json.js";
@@ -166,6 +168,10 @@ type PlanAudience = "any_app" | "claude_code" | "muse_code";
 const PLAN_AUDIENCES: readonly PlanAudience[] = ["any_app", "claude_code", "muse_code"];
 
 export const LINK_ROUTE_PREFIX = "/v1/link/";
+const LINK_TOKEN_CREATE_PATH = "/v1/link/link_token/create";
+const LINK_TOKEN_PREFIX = "link-";
+// A link token is good this long, as long as Plaid's.
+const LINK_TOKEN_SECONDS = 4 * 60 * 60;
 export const LINK_METADATA_PATH = "/.well-known/oauth-authorization-server";
 
 /** The PKCE S256 challenge for a code verifier. */
@@ -212,6 +218,9 @@ export async function handleLinkRequest(request: Request, platform: GatewayPlatf
     }
     if (pathname === "/v1/link/token" && request.method === "POST") {
       return withCors(await oauthEndpoint(() => token(platform, link, request)));
+    }
+    if (pathname === LINK_TOKEN_CREATE_PATH && request.method === "POST") {
+      return await oauthEndpoint(() => createLinkToken(link, request));
     }
     if (pathname === "/v1/link/register" && request.method === "POST") {
       return withCors(await registerClient(link, request));
@@ -667,17 +676,37 @@ async function token(platform: GatewayPlatform, link: LinkPlatform, request: Req
   const grantType = body.get("grant_type");
   if (grantType === "authorization_code") {
     const code = body.get("code") ?? "";
+    const verifier = body.get("code_verifier");
+    if (!code) return oauthError("invalid_request", "code is required.");
+    if (verifier === null && client.clientSecret !== undefined) {
+      // A code from a link token: the client's secret proves it, as Plaid's
+      // public token exchange does. It was approved on one of the app's
+      // redirect URIs, which the link token named.
+      const app = await link.authenticateClient(client);
+      const codeChallenge = linkTokenChallenge(link, app.clientId);
+      let failure: unknown = new HttpError(400, "The authorization code is invalid, expired, or already used.", "invalid_grant");
+      for (const redirectUri of app.redirectUris) {
+        let tokens: LinkTokens;
+        try {
+          tokens = await link.exchangeCode({ ...client, code, redirectUri, codeChallenge });
+        } catch (error) {
+          failure = error;
+          continue;
+        }
+        return await tokenResponse(platform, link, request, tokens);
+      }
+      throw failure;
+    }
     const redirectUri = body.get("redirect_uri") ?? "";
-    const verifier = body.get("code_verifier") ?? "";
-    if (!code || !redirectUri) return oauthError("invalid_request", "code and redirect_uri are required.");
-    if (!VERIFIER.test(verifier)) {
+    if (!redirectUri) return oauthError("invalid_request", "redirect_uri is required with code_verifier.");
+    if (!VERIFIER.test(verifier ?? "")) {
       return oauthError("invalid_request", "code_verifier must be 43 to 128 unreserved characters.");
     }
     return await tokenResponse(platform, link, request, await link.exchangeCode({
       ...client,
       code,
       redirectUri,
-      codeChallenge: pkceChallenge(verifier),
+      codeChallenge: pkceChallenge(verifier!),
     }));
   }
   if (grantType === "refresh_token") {
@@ -1074,6 +1103,90 @@ function oauthError(
   );
 }
 
+/**
+ * Plaid's `/link/token/create`: the app's server, with its client id and
+ * secret, makes a short-lived token that carries what Link offers. The page
+ * opens Link with it and gets back a code, which the server redeems with its
+ * secret alone: no state or PKCE for the app to keep. JSON body:
+ * `client_id`, `secret` (or HTTP Basic), and optionally `redirect_uri` (one
+ * the app registered; default its first), `plans`, `client`, `key_providers`
+ * (arrays), `purposes` ({ any_app, claude_code, muse_code }), and `grant_id`
+ * for update mode.
+ */
+async function createLinkToken(link: LinkPlatform, request: Request): Promise<Response> {
+  let body: Record<string, unknown>;
+  try {
+    body = await parseJsonRequest(request);
+  } catch {
+    return oauthError("invalid_request", "The request body must be a JSON object.");
+  }
+  const named = clientFrom(request, new URLSearchParams(stringFields(body)));
+  const clientSecret = named?.clientSecret ?? (typeof body.secret === "string" ? body.secret : undefined);
+  if (named === null || !clientSecret) return oauthError("invalid_request", "client_id and secret are required.");
+  const app = await link.authenticateClient({ clientId: named.clientId, clientSecret });
+  const list = (name: string) => {
+    const value = body[name];
+    return Array.isArray(value) ? value.filter((item) => typeof item === "string").join(" ") : typeof value === "string" ? value : "";
+  };
+  const purposes = typeof body.purposes === "object" && body.purposes !== null ? body.purposes as Record<string, unknown> : {};
+  const fields: Record<string, string> = {
+    client_id: app.clientId,
+    redirect_uri: typeof body.redirect_uri === "string" ? body.redirect_uri : app.redirectUris[0] ?? "",
+    ...(list("plans") ? { plans: list("plans") } : {}),
+    ...(list("client") ? { client: list("client") } : {}),
+    ...(list("key_providers") ? { key_providers: list("key_providers") } : {}),
+    ...(typeof body.grant_id === "string" ? { grant_id: body.grant_id } : {}),
+    ...Object.fromEntries(PLAN_AUDIENCES.flatMap((audience) =>
+      typeof purposes[audience] === "string" ? [[`purpose_${audience}`, purposes[audience] as string]] : []
+    )),
+  };
+  // Exactly a registered URI, which the code exchange tries; then the same
+  // checks the approval page makes, so a bad request fails here.
+  if (!app.redirectUris.includes(fields.redirect_uri!)) {
+    return oauthError("invalid_request", "redirect_uri must be exactly one the app registered.");
+  }
+  const checked = await authorizeRequest(link, new URLSearchParams({
+    ...fields,
+    response_type: "code",
+    code_challenge: linkTokenChallenge(link, app.clientId),
+    code_challenge_method: "S256",
+  }));
+  if (checked instanceof Response) return oauthError("invalid_request", await errorText(checked));
+  const expiration = new Date(Date.now() + LINK_TOKEN_SECONDS * 1000);
+  return Response.json(
+    {
+      link_token: `${LINK_TOKEN_PREFIX}${signedValue(link.approval.sessionSecret(), "link_token", fields, LINK_TOKEN_SECONDS)}`,
+      expiration: expiration.toISOString(),
+    },
+    { headers: { "Cache-Control": "no-store" } },
+  );
+}
+
+// The authorize fields a link token carries, or null for a bad or expired one.
+function readLinkToken(link: LinkPlatform, token: string): Record<string, string> | null {
+  if (!token.startsWith(LINK_TOKEN_PREFIX)) return null;
+  const value = readSignedValue(token.slice(LINK_TOKEN_PREFIX.length), link.approval.sessionSecret(), "link_token");
+  if (value === null) return null;
+  const { exp: _, ...fields } = value;
+  return stringFields(fields);
+}
+
+// The PKCE challenge every link-token code for a client carries: the client's
+// secret, not a verifier, proves the code at the exchange.
+function linkTokenChallenge(link: LinkPlatform, clientId: string): string {
+  return pkceChallenge(sign(link.approval.sessionSecret(), `link_token_pkce\0${clientId}`));
+}
+
+// What a refused approval request says: the text of its page.
+async function errorText(response: Response): Promise<string> {
+  const message = /<p>([^<]*)<\/p>/.exec(await response.text())?.[1];
+  return message === undefined ? "The link token request is invalid." : unescapeHtml(message);
+}
+
+function unescapeHtml(text: string): string {
+  return text.replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&#39;", "'").replaceAll("&amp;", "&");
+}
+
 type AuthorizeRequest = {
   app: LinkApp;
   redirectUri: string;
@@ -1104,10 +1217,27 @@ function listParam(value: string | null): string[] {
  * redirected (RFC 6749 section 4.1.2.1).
  */
 async function authorizeRequest(link: LinkPlatform, params: URLSearchParams): Promise<AuthorizeRequest | Response> {
+  const linkToken = params.get("link_token");
+  if (linkToken !== null) {
+    const fields = readLinkToken(link, linkToken);
+    if (fields === null) {
+      return page("Link Expired", `<div class="body"><h1>Link Expired</h1><p>Go back to the app and connect again.</p></div>`, { status: 400 });
+    }
+    // The token's request, with the challenge its code redeems by and the
+    // token itself as the state the app's window matches the result to.
+    params = new URLSearchParams({
+      ...fields,
+      response_type: "code",
+      code_challenge: linkTokenChallenge(link, fields.client_id ?? ""),
+      code_challenge_method: "S256",
+      state: linkToken,
+      ...(params.get("response_mode") !== null ? { response_mode: params.get("response_mode")! } : {}),
+    });
+  }
   const clientId = params.get("client_id") ?? "";
   const redirectUri = params.get("redirect_uri") ?? "";
   const app = clientId ? await link.app(clientId) : null;
-  if (app === null || !app.redirectUris.includes(redirectUri)) {
+  if (app === null || !registeredRedirect(app.redirectUris, redirectUri)) {
     return page("Unknown App", `<div class="body"><h1>Unknown App</h1><p>This link request names an app or redirect URI Dari does not know.</p></div>`, { status: 400 });
   }
   const state = params.get("state");
@@ -1205,7 +1335,7 @@ async function grantToUpdate(
   return grant;
 }
 
-type GrantToUpdate = { credentialIds: string[]; budget: LinkBudget[] };
+type GrantToUpdate = { credentialIds: string[]; budget: LinkBudget[]; limits: LinkLimit[] };
 
 async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSearchParams): Promise<Response> {
   const approval = link.approval;
@@ -1290,6 +1420,8 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
   if (!credentialIds.every((id) => usable.has(id))) {
     return choosePage(authorize, session, subscriptions, current, `${authorize.app.name} cannot use one of the plans you chose.`);
   }
+  const limits = limitsFromForm(form, credentialIds);
+  if (limits === null) return choosePage(authorize, session, subscriptions, current, LIMITS_ERROR);
   try {
     const { code } = await approval.approve({
       subject: session.subject,
@@ -1298,8 +1430,8 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
       redirectUri: authorize.redirectUri,
       codeChallenge: authorize.codeChallenge,
       credentialIds,
-      // The user sets a limit where they manage the connection, not here.
       budget: current?.budget ?? [],
+      limits,
     });
     return redirect(back, { code }, [endConnect]);
   } catch (error) {
@@ -1371,6 +1503,28 @@ ${session.account ? `<form method="post" action="${CONNECTIONS_PATH}">${csrf}${S
   );
 }
 
+const LIMITS_ERROR = "Each plan limit is a percent above 0 and at most 100, and each key limit a dollar amount; leave it empty for none.";
+
+// The limits typed into a form: `pct_<id>` a percent of a plan, `usd_<id>`
+// dollars a month; empty means none. Only for `only`'s plans when given; null
+// when one is not a valid limit.
+function limitsFromForm(form: URLSearchParams, only?: readonly string[]): LinkLimit[] | null {
+  return validLimits([...form.entries()].flatMap(([field, raw]) => {
+    const value = raw.replace(/[\s,$%]/g, "");
+    const kind = field.slice(0, 4);
+    const id = field.slice(4);
+    if ((kind !== "usd_" && kind !== "pct_") || value === "" || (only !== undefined && !only.includes(id))) return [];
+    const amount = /^\d+(\.\d+)?$/.test(value) ? Number(value) : Number.NaN;
+    return [{ credential_id: id, [kind === "usd_" ? "monthly_usd" : "max_percent"]: amount }];
+  }));
+}
+
+// A limit field for one plan or key, as the connections page and consent share.
+function limitInput(plan: LinkSubscription, id: string, label: string, value: number | undefined): string {
+  const key = plan.apiKeyProvider !== undefined;
+  return `<input id="${id}" type="text" inputmode="decimal" name="${key ? "usd" : "pct"}_${escapeHtml(plan.id)}" value="${value ?? ""}" placeholder="${key ? "$ / Month" : "% Of Plan"}" aria-label="${escapeHtml(label)} ${key ? "Monthly Limit ($)" : "Most Of Plan (%)"}" autocomplete="off">`;
+}
+
 function connectionCard(connection: LinkConnection, csrf: string): string {
   const names = connection.subscriptions.map(planName);
   // A plan's account tells it apart only when the app shares two of the same name.
@@ -1422,16 +1576,8 @@ async function connectionsSubmit(approval: LinkApprovalPage, request: Request, f
     return back;
   }
   if (decision === "limits") {
-    const limits = validLimits([...form.entries()].flatMap(([field, raw]) => {
-      const value = raw.replace(/[\s,$%]/g, "");
-      const kind = field.slice(0, 4);
-      if ((kind !== "usd_" && kind !== "pct_") || value === "") return [];
-      const amount = /^\d+(\.\d+)?$/.test(value) ? Number(value) : Number.NaN;
-      return [{ credential_id: field.slice(4), [kind === "usd_" ? "monthly_usd" : "max_percent"]: amount }];
-    }));
-    if (limits === null) {
-      return await connectionsPage(approval, request, "Each plan limit is a percent above 0 and at most 100, and each key limit a dollar amount; leave it empty for none.");
-    }
+    const limits = limitsFromForm(form);
+    if (limits === null) return await connectionsPage(approval, request, LIMITS_ERROR);
     await approval.setLimits(session.subject, grantId, limits);
     return back;
   }
@@ -1573,19 +1719,22 @@ async function signedIn(approval: LinkApprovalPage, request: Request, params: UR
 function readSigned(request: Request, secret: string, cookie: string): Record<string, unknown> | null {
   for (const part of (request.headers.get("cookie") ?? "").split(";")) {
     const [name, ...rest] = part.trim().split("=");
-    if (name !== cookie) continue;
-    const [payload, signature] = rest.join("=").split(".");
-    if (!payload || !signature || !sameText(signature, sign(secret, `${cookie}\0${payload}`))) return null;
-    try {
-      const value: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-      if (typeof value !== "object" || value === null) return null;
-      const exp = (value as { exp?: unknown }).exp;
-      return typeof exp === "number" && exp > Date.now() ? value as Record<string, unknown> : null;
-    } catch {
-      return null;
-    }
+    if (name === cookie) return readSignedValue(rest.join("="), secret, cookie);
   }
   return null;
+}
+
+function readSignedValue(signed: string, secret: string, name: string): Record<string, unknown> | null {
+  const [payload, signature] = signed.split(".");
+  if (!payload || !signature || !sameText(signature, sign(secret, `${name}\0${payload}`))) return null;
+  try {
+    const value: unknown = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (typeof value !== "object" || value === null) return null;
+    const exp = (value as { exp?: unknown }).exp;
+    return typeof exp === "number" && exp > Date.now() ? value as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
 }
 
 function signedValue(secret: string, cookie: string, value: Record<string, unknown>, seconds: number): string {
@@ -1838,10 +1987,19 @@ function choosePage(
     error,
     body: `<h1>${current === null ? `Share With ${app}` : `Update Plans For ${app}`}</h1>
 <input type="hidden" name="csrf" value="${session.csrf}">
+<!-- First in the form, so Enter in a limit field allows rather than pressing Connect Another. -->
+<button type="submit" name="decision" value="approve" tabindex="-1" aria-hidden="true" style="position:absolute;left:-9999px"></button>
 ${plans.map((plan) => planOption(authorize, plan, ticked.has(plan.id))).join("\n")}
+<details${current?.limits.length ? " open" : ""}><summary>Set Limits</summary>
+${plans.map((plan) => {
+  const set = current?.limits.find((limit) => limit.credentialId === plan.id);
+  const label = plan.apiKeyProvider === undefined ? KINDS[plan.provider as SubscriptionKind].name : plan.name;
+  return `<div class="limit">${logo(plan.apiKeyProvider ?? plan.provider, label)}<label class="grow" for="limit_${escapeHtml(plan.id)}"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(planLabel(plan))}</small></label>${limitInput(plan, `limit_${escapeHtml(plan.id)}`, label, set?.maxPercent ?? set?.monthlyUsd)}</div>`;
+}).join("\n")}
+</details>
 <div class="actions"><button class="btn ghost" type="submit" name="decision" value="select" formnovalidate>${ICONS.plus}Connect Another</button><span><a class="btn ghost" href="${CONNECTIONS_PATH}" target="_blank" rel="noopener">Manage</a>${session.account ? SIGN_OUT : ""}</span></div>`,
     footer: `<button class="btn primary" type="submit" name="decision" value="approve">${current === null ? "Allow" : "Save"}</button>
-<p class="fine">${app} keeps access until you or it disconnect. Its requests fail while a plan is at its usage limit.</p>`,
+<p class="fine">${app} keeps access until you or it disconnect. Its requests fail while a plan is at its usage limit or yours.</p>`,
   });
 }
 
@@ -1945,6 +2103,14 @@ function page(
   body: string,
   options: { status?: number; cookies?: string[]; scriptNonce?: string; event?: PageEvent; refresh?: number } = {},
 ): Response {
+  // Every page: a pressed button shows it is working until the next page loads.
+  const busyNonce = options.scriptNonce ?? randomUUID();
+  body += `\n<script nonce="${busyNonce}">document.addEventListener("submit", (event) => {
+  const button = event.submitter;
+  if (!(button instanceof HTMLButtonElement) || button.form?.target) return;
+  setTimeout(() => { button.disabled = true; button.setAttribute("aria-busy", "true"); button.prepend(Object.assign(document.createElement("span"), { className: "spin" })); });
+});</script>`;
+  options = { ...options, scriptNonce: busyNonce };
   if (options.event !== undefined) {
     const nonce = options.scriptNonce ?? randomUUID();
     // `<` is escaped so the JSON cannot close the script element.

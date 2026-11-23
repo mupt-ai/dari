@@ -2,6 +2,8 @@
    tell its user what to do.
 
    401, the token itself is dead:
+   - `authentication_error`: the gateway knows no such token (malformed,
+     never issued, or deleted). The app must link again.
    - `link_token_expired`: refresh the access token (or mint a new child
      token) and retry.
    - `grant_revoked`: the grant is gone; `revoked_by` says who ended it
@@ -10,8 +12,9 @@
 
    424, the grant's subscriptions cannot serve the request:
    - `subscription_exhausted`: the plans that can serve this client are at
-     their usage limits; `resets_at` (and Retry-After) says when the first one
-     is back, when that is known.
+     their usage limits, whether the gateway knew before the request or the
+     provider refused it; `resets_at` (ISO 8601, and Retry-After) says when the
+     first one is back, when that is known.
    - `grant_budget_exhausted`: the grant used the most tokens the user
      allowed it in a window (per five hours or per week), or every plan and
      key it shares is at its monthly spend limit; `resets_at` (and

@@ -539,9 +539,9 @@ export class SubscriptionStore {
     return true;
   }
 
-  /** Clear a subscription's usage-limit holds. Null when it is not connected. */
-  markAvailable(name: string, now = new Date()): SubscriptionCredential | null {
-    const credential = this.getByName(name);
+  /** Clear a subscription's usage-limit holds (a Dari Link user's with `owner`). Null when it is not connected. */
+  markAvailable(name: string, now = new Date(), owner: string | null = null): SubscriptionCredential | null {
+    const credential = this.getByName(name, owner);
     if (credential === null) return null;
     this.db.run(
       `UPDATE subscription_credentials SET unavailable_until = NULL, unavailable_reason = NULL, model_holds = NULL,

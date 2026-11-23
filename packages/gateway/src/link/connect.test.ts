@@ -3,6 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import {
   authorizeUrl,
   createAuthorization,
+  createLinkToken,
   DariLink,
   exchange,
   type LinkBrowser,
@@ -64,6 +65,41 @@ async function chat(gateway: StubGateway, accessToken: string) {
   });
 }
 
+test("a link token opens Link, and its code redeems with the client secret alone", async () => {
+  const gateway = await startStubGateway({ plans: ["openai_codex"] });
+  stop = gateway.stop;
+  const registered = await fetch(`${gateway.baseUrl}/v1/link/register`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ client_name: "Bench", redirect_uris: [REDIRECT_URI], token_endpoint_auth_method: "client_secret_basic" }),
+  });
+  const { client_id: clientId, client_secret: clientSecret } = (await registered.json()) as { client_id: string; client_secret: string };
+  const server = { gatewayUrl: gateway.baseUrl, clientId, clientSecret };
+
+  // Only the app's server, with its secret, makes one.
+  await expect(createLinkToken({ ...server, clientSecret: "wrong" })).rejects.toMatchObject({ code: "invalid_client" });
+  await expect(createLinkToken({ ...server, plans: ["nope"] })).rejects.toMatchObject({ code: "invalid_request" });
+  const { linkToken, expiration } = await createLinkToken(server);
+  expect(Date.parse(expiration)).toBeGreaterThan(Date.now());
+
+  const url = `${gateway.baseUrl}/v1/link/authorize?link_token=${encodeURIComponent(linkToken)}&response_mode=web_message`;
+  const { message, targetOrigin } = await gateway.approve(url);
+  expect(targetOrigin).toBe(new URL(REDIRECT_URI).origin);
+  expect(message.state).toBe(linkToken);
+
+  // No verifier, no redirect URI: the secret proves the code, once.
+  await expect(exchange({ ...server, clientSecret: "wrong", code: message.code! })).rejects.toMatchObject({ code: "invalid_client" });
+  const tokens = await exchange({ ...server, code: message.code! });
+  expect(tokens.grantId).toStartWith("lgr_");
+  expect((await chat(gateway, tokens.accessToken)).status).toBe(200);
+  await expect(exchange({ ...server, code: message.code! })).rejects.toMatchObject({ code: "invalid_grant" });
+
+  // A tampered token is refused on the page.
+  const tampered = await fetch(url.replace("link_token=link-", "link_token=link-x"));
+  expect(tampered.status).toBe(400);
+  expect(await tampered.text()).toContain("Link Expired");
+});
+
 test("update mode changes a grant's plans in place, and its tokens keep working", async () => {
   const gateway = await start(["openai_codex", "openai_codex"]);
   const [a, b] = gateway.planIds as [string, string];
@@ -79,6 +115,8 @@ test("update mode changes a grant's plans in place, and its tokens keep working"
   expect(page).toContain("<title>Update Plans For Bench</title>");
   expect(page).toContain(`value="${a}" checked`);
   expect(page).not.toContain(`value="${b}" checked`);
+  // Enter in a limit field presses the form's first submit button: Save.
+  expect(/<button[^>]*type="submit"[^>]*>/.exec(page)![0]).toContain('value="approve"');
 
   const updated = await connect(gateway, { credentialIds: [b], grantId: first.grantId! });
   expect(updated.grantId).toBe(first.grantId);
@@ -143,13 +181,48 @@ test("each plan says whether it serves the app now, and the stub forces each sta
     headers: { authorization: "Bearer k", "content-type": "application/json" },
     body: JSON.stringify({ budget: [] }),
   });
+  // A forced limit shows at once, with when the plan is back.
   await fetch(`${gateway.controlUrl}/state`, { method: "POST", body: JSON.stringify({ limited: true }) });
-  expect((await chat(gateway, tokens.accessToken)).status).not.toBe(200);
   const plan = (await grantOf(gateway, tokens.accessToken)).plans[0]!;
   expect(plan.state).toBe("plan_limit");
   expect(Date.parse(plan.available_at!)).toBeGreaterThan(Date.now());
-  const exhausted = await chat(gateway, tokens.accessToken);
-  expect(((await exhausted.json()) as { error: { code: string } }).error.code).toBe("subscription_exhausted");
+  // Every refusal is the one contract: 424 subscription_exhausted, an ISO
+  // resets_at and Retry-After, and no Dari CLI advice.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const exhausted = await chat(gateway, tokens.accessToken);
+    expect(exhausted.status).toBe(424);
+    expect(Number(exhausted.headers.get("retry-after"))).toBeGreaterThan(0);
+    const { error } = (await exhausted.json()) as { error: { code: string; message: string; resets_at: string } };
+    expect(error.code).toBe("subscription_exhausted");
+    expect(error.resets_at).toBe(plan.available_at!);
+    expect(error.message).not.toContain("dari accounts");
+  }
+  // Clearing it serves again at once.
+  gateway.setState({ limited: false });
+  expect((await grantOf(gateway, tokens.accessToken)).plans[0]).toMatchObject({ state: "ready", available_at: null });
+  expect((await chat(gateway, tokens.accessToken)).status).toBe(200);
+});
+
+// A Link request a plan refuses mid-flight gets the same contract as one
+// refused up front.
+test("a plan refusing a Link request answers 424 subscription_exhausted", async () => {
+  const reset = new Date(Date.now() + 7_200_000);
+  const refusing = await startStubGateway({
+    plans: ["openai_codex"],
+    upstream: () => Response.json(
+      { error: { type: "usage_limit_reached", code: "usage_limit_reached", message: "limit", resets_at: Math.floor(reset.getTime() / 1000) } },
+      { status: 429 },
+    ),
+  });
+  stop = refusing.stop;
+  const { code, codeVerifier } = await refusing.connect();
+  const own = await exchange({ ...refusing.app, code, codeVerifier });
+  const refused = await chat(refusing, own.accessToken);
+  expect(refused.status).toBe(424);
+  const { error } = (await refused.json()) as { error: { code: string; message: string; resets_at: string } };
+  expect(error.code).toBe("subscription_exhausted");
+  expect(Date.parse(error.resets_at)).toBe(Math.floor(reset.getTime() / 1000) * 1000);
+  expect(error.message).not.toContain("dari accounts");
 });
 
 // The parts of a window a popup test needs, posting what the gateway's pages post.

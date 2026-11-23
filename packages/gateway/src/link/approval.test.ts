@@ -264,8 +264,13 @@ test("the connections page sets a grant's spend limits, disconnects it, and remo
   const choose = await browser.page();
   const id = /name="credential_id" value="([^"]+)"/.exec(choose)![1]!;
   const csrf = /name="csrf" value="([^"]+)"/.exec(choose)![1]!;
-  await browser.submit({ decision: "approve", csrf, credential_id: id });
+  // The user may limit the app while allowing it.
+  expect(choose).toContain("Set Limits");
+  expect(await (await browser.submit({ decision: "approve", csrf, credential_id: id, [`pct_${id}`]: "200" })).text()).toContain("percent above 0");
+  expect(browser.links.grants(null)).toEqual([]);
+  await browser.submit({ decision: "approve", csrf, credential_id: id, [`pct_${id}`]: "25" });
   const [grant] = browser.links.grants(null);
+  expect(grant!.limits).toEqual([{ credentialId: id, maxPercent: 25 }]);
 
   const page = await browser.connections();
   expect(page).toContain("Notes App");
@@ -279,7 +284,7 @@ test("the connections page sets a grant's spend limits, disconnects it, and remo
   expect(await (await browser.manage({ csrf, grant_id: grant!.id, decision: "limits", [`pct_${id}`]: "lots" })).text())
     .toContain("percent above 0");
   await browser.manage({ csrf: "forged", grant_id: grant!.id, decision: "limits", [`pct_${id}`]: "10" });
-  expect(browser.links.grant(grant!.id)!.limits).toEqual([]);
+  expect(browser.links.grant(grant!.id)!.limits).toEqual([{ credentialId: id, maxPercent: 25 }]);
   expect((await browser.manage({ csrf, grant_id: grant!.id, decision: "limits", [`pct_${id}`]: "10%" })).status).toBe(303);
   expect(browser.links.grant(grant!.id)!.limits).toEqual([{ credentialId: id, maxPercent: 10 }]);
   expect(await browser.connections()).toContain('value="10"');

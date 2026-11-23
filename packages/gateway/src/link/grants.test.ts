@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { expect, test } from "bun:test";
 
 import { HttpError } from "../http/errors.js";
-import { LINK_ACCESS_TOKEN_TTL_MS, LINK_REFRESH_RACE_MS, linkGrants } from "./grants.js";
+import { LINK_ACCESS_TOKEN_TTL_MS, LINK_REFRESH_RACE_MS, linkGrants, registeredRedirect } from "./grants.js";
 import { SqliteLinkStore } from "./sqlite_store.js";
 import { addTestApp, approveTestGrant } from "./test_support.js";
 
@@ -101,4 +101,13 @@ test("a child token outlives its parent access token and dies with the grant", a
   await link.revokeToken({ ...client, token: tokens.refreshToken }, hours(1));
   expect((await link.authenticate(child.accessToken, hours(1)))).toMatchObject({ status: "revoked", revokedBy: "app" });
   expect(await codeOf(() => link.refresh({ ...client, refreshToken: tokens.refreshToken }, hours(1)))).toBe("invalid_grant");
+});
+
+test("a loopback redirect URI matches on any port; others match exactly", () => {
+  const registered = ["http://127.0.0.1:8765/callback", "https://myapp.com/dari/callback"];
+  expect(registeredRedirect(registered, "http://127.0.0.1:51234/callback")).toBe(true);
+  expect(registeredRedirect(registered, "http://127.0.0.1:51234/other")).toBe(false);
+  expect(registeredRedirect(registered, "http://localhost:8765/callback")).toBe(false);
+  expect(registeredRedirect(registered, "https://myapp.com:444/dari/callback")).toBe(false);
+  expect(registeredRedirect(registered, "https://myapp.com/dari/callback")).toBe(true);
 });

@@ -33,9 +33,10 @@
  * Each lands in `gateway.messages` and `GET <controlUrl>/messages`.
  *
  * Error states on demand: `gateway.setState({...})` (or `POST
- * <controlUrl>/state`): `limited: true` makes every provider call a usage-limit
- * refusal, so the plans go `unavailable_until` and requests get 424
- * `subscription_exhausted`; `five_hour` and `weekly` (0 to 1) are the plan
+ * <controlUrl>/state`): `limited: true` holds every plan at its usage limit
+ * for an hour at once (`plans[].state` `plan_limit` with `available_at`) and
+ * makes every provider call a usage-limit refusal, so Link requests get 424
+ * `subscription_exhausted`; `limited: false` (or a state without it) clears it; `five_hour` and `weekly` (0 to 1) are the plan
  * usage each default reply reports, which fills `plans[].usage`. A grant's
  * token budget, once its replies' tokens reach it, leads to 424
  * `grant_budget_exhausted`.
@@ -65,6 +66,7 @@ import { authorizeUrl, LinkError } from "../link/client.js";
 import { linkUserCookie } from "../link/endpoints.js";
 import type { SubscriptionKind } from "../types.js";
 import { SqliteLinkStore } from "../link/sqlite_store.js";
+import { CANONICAL_MODELS } from "../models/canonical.js";
 import { secretBoxFromEnv } from "./secret_box.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 
@@ -93,7 +95,7 @@ export type StubUpstreamCall = {
 };
 
 export type StubGatewayOptions = {
-  // One connected plan per entry, in order. Default: two Claude Code plans.
+  // One connected plan per entry, in order. Default: one ChatGPT plan.
   plans?: Array<"anthropic_claude_code" | "openai_codex">;
   // An API key of the plans' user for each of these providers. Default: none.
   keys?: Array<"anthropic" | "openai" | "openrouter">;
@@ -101,12 +103,13 @@ export type StubGatewayOptions = {
   // which serve only the grants that user approves. `"gateway"` connects them
   // as the gateway owner's instead, which serve the gateway key.
   owner?: "link_user" | "gateway";
-  // The default router's models. Default: Claude Sonnet and GPT-5.5.
+  // The default router's models, as canonical `provider/model` ids (a
+  // `dari/model/` prefix is dropped). Default: Claude Sonnet and GPT-5.5.
   models?: string[];
   upstream?: (call: StubUpstreamCall) => Response;
   // The gateway key. Default: `k`.
   gatewayKey?: string;
-  // The gateway's port. Default: a free one.
+  // The gateway's port. Default (or 0): a free one.
   port?: number;
   // Hosts the gateway allows http redirect URIs on (`link.allowHttpRedirectHosts`).
   allowHttpRedirectHosts?: string[];
@@ -132,7 +135,8 @@ export type StubConnectOptions = {
 export type StubLinkMessage = { message: Record<string, string>; targetOrigin: string };
 
 export type StubState = {
-  // Every provider call is a usage-limit refusal.
+  // Every plan is held at its usage limit for an hour, and every provider
+  // call is a usage-limit refusal. Unset clears it.
   limited?: boolean;
   // Plan usage each default reply reports, 0 to 1.
   five_hour?: number;
@@ -172,14 +176,32 @@ export type StubGateway = {
 const STUB_USER = "stub-user";
 
 export async function startStubGateway(options: StubGatewayOptions = {}): Promise<StubGateway> {
-  const kinds = options.plans ?? ["anthropic_claude_code", "anthropic_claude_code"];
-  const models = options.models ?? ["anthropic/claude-sonnet-5-5", "openai/gpt-5.5"];
+  // A plain stub serves any app: a Claude Code plan serves only Claude Code.
+  const kinds = options.plans ?? ["openai_codex"];
+  const models = (options.models ?? ["anthropic/claude-sonnet-5-5", "openai/gpt-6.2-astra"]).map((model) => model.replace(/^dari\/model\//, ""));
+  const unknown = models.filter((model) => !CANONICAL_MODELS.some((entry) => entry.id === model));
+  if (unknown.length > 0) {
+    throw new Error(
+      `startStubGateway models must be canonical "provider/model" ids, such as "openai/gpt-6.1-sol"; unknown: ${unknown.join(", ")}.`,
+    );
+  }
   const gatewayKey = options.gatewayKey ?? "k";
   const upstream = options.upstream;
   const served: string[] = [];
   const calls: StubUpstreamCall[] = [];
   const messages: StubLinkMessage[] = [];
   let state: StubState = {};
+  // While `limited`: when the forced limit resets.
+  let limitedUntil: Date | null = null;
+  // Set once the plans are stored.
+  let holdPlans: (until: Date | null) => void = () => {};
+  // A forced limit holds the plans at once, as a refusal would, until it
+  // resets or `limited: false` clears it.
+  const setState = (next: StubState) => {
+    state = next;
+    limitedUntil = next.limited ? new Date(Date.now() + 3_600_000) : null;
+    holdPlans(limitedUntil);
+  };
   let approve: StubGateway["approve"] = async () => {
     throw new Error("The gateway is not up yet.");
   };
@@ -194,7 +216,7 @@ export async function startStubGateway(options: StubGatewayOptions = {}): Promis
       if (pathname === "/served" && request.method === "GET") return Response.json({ calls });
       if (pathname === "/messages" && request.method === "GET") return Response.json({ messages });
       if (pathname === "/state" && request.method === "POST") {
-        state = (await request.json()) as StubState;
+        setState((await request.json()) as StubState);
         return Response.json({ state });
       }
       if (pathname === "/connect" && request.method === "POST") {
@@ -218,7 +240,7 @@ export async function startStubGateway(options: StubGatewayOptions = {}): Promis
           });
           return Response.json({ code: result.code, code_verifier: result.codeVerifier, state: result.state });
         } catch (error) {
-          return Response.json({ error: error instanceof LinkError ? error.code : String(error) }, { status: 400 });
+          return Response.json({ error: error instanceof LinkError ? error.code : errorMessage(error) }, { status: 400 });
         }
       }
       if (pathname === "/approve" && request.method === "POST") {
@@ -230,9 +252,11 @@ export async function startStubGateway(options: StubGatewayOptions = {}): Promis
           });
           return Response.json({ message: result.message, target_origin: result.targetOrigin });
         } catch (error) {
-          return Response.json({ error: String(error) }, { status: 400 });
+          return Response.json({ error: errorMessage(error) }, { status: 400 });
         }
       }
+      // A provider key check (list models): the operator's stand-in keys are good.
+      if (pathname.endsWith("/models") && request.method === "GET") return Response.json({ data: [] });
       // The Codex usage report: a fresh plan, nothing used.
       if (pathname.endsWith("/wham/usage")) {
         return Response.json({ rate_limit: { primary_window: { used_percent: 0, reset_at: null } } });
@@ -281,7 +305,7 @@ export async function startStubGateway(options: StubGatewayOptions = {}): Promis
       if (upstream !== undefined) return upstream(call);
       if (chat) return chatReply(call.model);
       const plan: SubscriptionKind = kind === "openai_codex" ? kind : "anthropic_claude_code";
-      if (state.limited) return limitRefusal(plan);
+      if (limitedUntil !== null) return limitRefusal(plan, limitedUntil);
       return stubReply(plan, call.model, usageHeaders(plan, state));
     },
   });
@@ -303,6 +327,12 @@ export async function startStubGateway(options: StubGatewayOptions = {}): Promis
       accountEmail: `${letter}@example.com`,
     }, null, new Date(), options.owner === "gateway" ? null : STUB_USER)!.id;
   });
+  holdPlans = (until) => {
+    for (const id of planIds) {
+      if (until === null) store.markAvailable(store.get(id)!.name, new Date(), options.owner === "gateway" ? null : STUB_USER);
+      else store.markUnavailable(id, until, "The stub gateway's forced usage limit.");
+    }
+  };
   const keys = options.keys ?? [];
   const links = new SqliteLinkStore(new Database(dbPath), secrets);
   const keyIds = keys.map((key) => links.addKey(STUB_USER, key, `stub-key-${key}`).id);
@@ -317,14 +347,22 @@ providers:
     baseUrl: ${stubUrl}
     api: anthropic-messages
     apiKeyEnv: STUB_ANTHROPIC_API_KEY
+  openai:
+    baseUrl: ${stubUrl}/openai
+    apiKeyEnv: STUB_OPENAI_API_KEY
   openai-codex:
     baseUrl: ${stubUrl}/backend-api
-${keys.filter((key) => key !== "anthropic").map((key) => `  ${key}:\n    baseUrl: ${stubUrl}/${key}\n    apiKeyEnv: STUB_${key.toUpperCase().replaceAll("-", "_")}_API_KEY\n`).join("")}${options.allowHttpRedirectHosts?.length ? `link:\n  allowHttpRedirectHosts: [${options.allowHttpRedirectHosts.map((host) => JSON.stringify(host)).join(", ")}]\n` : ""}`);
-  const port = options.port ?? await freePort();
+${keys.filter((key) => key === "openrouter").map((key) => `  ${key}:\n    baseUrl: ${stubUrl}/${key}\n    apiKeyEnv: STUB_${key.toUpperCase().replaceAll("-", "_")}_API_KEY\n`).join("")}${options.allowHttpRedirectHosts?.length ? `link:\n  allowHttpRedirectHosts: [${options.allowHttpRedirectHosts.map((host) => JSON.stringify(host)).join(", ")}]\n` : ""}`);
+  // 0, like none, is a free one.
+  const port = options.port || await freePort();
   const sessionSecret = randomBytes(32).toString("base64url");
   // The gateway's own entrypoint, beside this file as source or as built.
   const entrypoint = fileURLToPath(new URL(import.meta.url.endsWith(".ts") ? "./main.ts" : "./main.js", import.meta.url));
-  const gateway = Bun.spawn([process.execPath, entrypoint], {
+  // The gateway exits once its stdin closes: when this process dies, however
+  // it dies, the gateway goes with it.
+  const child = `process.stdin.on("end", () => process.exit(0)).resume(); `
+    + `await (await import(${JSON.stringify(entrypoint)})).runSelfHostedGateway();`;
+  const gateway = Bun.spawn([process.execPath, "-e", child], {
     env: {
       PATH: process.env.PATH ?? "",
       DARI_GATEWAY_KEYS: gatewayKey,
@@ -333,13 +371,23 @@ ${keys.filter((key) => key !== "anthropic").map((key) => `  ${key}:\n    baseUrl
       DARI_LINK_SESSION_SECRET: sessionSecret,
       DARI_GATEWAY_ENCRYPTION_KEY: encryptionKey,
       // The operator's own keys for the stand-in providers.
-      ...Object.fromEntries(["anthropic", ...keys].map((key) => [`STUB_${key.toUpperCase().replaceAll("-", "_")}_API_KEY`, "stub-operator-key"])),
+      ...Object.fromEntries(["anthropic", "openai", ...keys].map((key) => [`STUB_${key.toUpperCase().replaceAll("-", "_")}_API_KEY`, "stub-operator-key"])),
       PORT: String(port),
     },
+    stdin: "pipe",
     stdout: "pipe",
-    stderr: "inherit",
+    stderr: "pipe",
   });
-  await waitForLine(gateway.stdout as ReadableStream<Uint8Array>, "dari-gateway listening");
+  const killGateway = () => gateway.kill();
+  process.on("exit", killGateway);
+  const stderr = echo(gateway.stderr as ReadableStream<Uint8Array>);
+  try {
+    await waitForLine(gateway.stdout as ReadableStream<Uint8Array>, "dari-gateway listening");
+  } catch {
+    await gateway.exited;
+    await provider.stop(true);
+    throw new Error(`The stub gateway did not start:\n${(await stderr).trim()}`);
+  }
   const baseUrl = `http://127.0.0.1:${port}`;
   const userCookie = linkUserCookie(sessionSecret, STUB_USER);
   approve = async (authorizeUrl, approveOptions = {}) => {
@@ -387,10 +435,9 @@ ${keys.filter((key) => key !== "anthropic").map((key) => `  ${key}:\n    baseUrl
     approve: (url, approveOptions) => approve(url, approveOptions),
     app,
     connect: (connectOptions) => connect(connectOptions),
-    setState: (next) => {
-      state = next;
-    },
+    setState,
     stop: async () => {
+      process.off("exit", killGateway);
       gateway.kill();
       await gateway.exited;
       await provider.stop(true);
@@ -411,7 +458,12 @@ async function driveApproval(
   const params = [...url.searchParams];
   const choose = await (await fetch(page, { headers: { cookie } })).text();
   const csrf = /name="csrf" value="([^"]+)"/.exec(choose)?.[1];
-  if (csrf === undefined) throw new Error(`No approval form:\n${choose}`);
+  if (csrf === undefined) {
+    throw new Error(
+      "The approval page offers this app nothing to approve: none of the stub user's plans or keys serves it. "
+        + 'A Claude Code plan serves only an app that asks for clients: ["claude_code"].',
+    );
+  }
   const usable = [...choose.matchAll(/name="credential_id" value="([^"]+)"/g)].map((match) => match[1]!);
   const decided = await fetch(`${baseUrl}${url.pathname}`, {
     method: "POST",
@@ -436,9 +488,9 @@ async function driveApproval(
   return { message, targetOrigin };
 }
 
-// A usage-limit refusal in the plan's provider protocol, resetting in an hour.
-function limitRefusal(kind: SubscriptionKind): Response {
-  const reset = String(Math.floor(Date.now() / 1000) + 3600);
+// A usage-limit refusal in the plan's provider protocol, resetting at `until`.
+function limitRefusal(kind: SubscriptionKind, until: Date): Response {
+  const reset = String(Math.floor(until.getTime() / 1000));
   if (kind === "openai_codex") {
     return Response.json(
       { error: { type: "usage_limit_reached", code: "usage_limit_reached", message: "The usage limit has been reached", resets_at: Number(reset) } },
@@ -555,6 +607,21 @@ async function freePort(): Promise<number> {
   const port = probe.port;
   await probe.stop(true);
   return port!;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+// Copy the gateway's stderr to this process's, and resolve with all of it once it closes.
+async function echo(stream: ReadableStream<Uint8Array>): Promise<string> {
+  const decoder = new TextDecoder();
+  let output = "";
+  for await (const chunk of stream) {
+    process.stderr.write(chunk);
+    output += decoder.decode(chunk, { stream: true });
+  }
+  return output;
 }
 
 async function waitForLine(stream: ReadableStream<Uint8Array>, marker: string): Promise<void> {

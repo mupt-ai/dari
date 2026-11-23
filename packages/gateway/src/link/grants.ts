@@ -78,6 +78,33 @@ export type LinkTokenAuth =
 /** A registered app as stored: with the hash of a confidential client's secret. */
 export type LinkAppRecord = LinkApp & { clientSecretHash: string | null };
 
+const LOOPBACK_HOSTS = ["127.0.0.1", "[::1]"];
+
+/**
+ * Whether an app registered this redirect URI. A loopback one matches on any
+ * port (RFC 8252 section 7.3), so a CLI can listen on whatever port is free.
+ */
+export function registeredRedirect(redirectUris: readonly string[], redirectUri: string): boolean {
+  if (redirectUris.includes(redirectUri)) return true;
+  let url: URL;
+  try {
+    url = new URL(redirectUri);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== "http:" || !LOOPBACK_HOSTS.includes(url.hostname)) return false;
+  url.port = "";
+  return redirectUris.some((registered) => {
+    try {
+      const candidate = new URL(registered);
+      candidate.port = "";
+      return candidate.toString() === url.toString();
+    } catch {
+      return false;
+    }
+  });
+}
+
 /** A stored token with the grant it belongs to. Times are epoch milliseconds. */
 export type LinkTokenRecord = {
   kind: LinkTokenKind;
@@ -222,6 +249,9 @@ export function linkGrants(repo: LinkRepo) {
   return {
     /** What a presented access or child token is, or null when it is neither. */
     authenticate,
+
+    /** The app a client id and secret prove; throws `invalid_client` otherwise. */
+    authenticateClient: client,
 
     /** Redeem a code once: the grant's first tokens. */
     async exchangeCode(request: LinkCodeExchange, now = new Date()): Promise<LinkTokens> {

@@ -104,7 +104,7 @@ export async function resolveSelfHostedRouter(
   const keyIndex = gatewayKeyIndex(deps.gatewayKeys, request.apiKey);
   const grant = keyIndex === null ? await linkTokenGrant(deps.links, { plansWithIds: async (ids) => deps.subscriptions.withIds(new Set(ids)).map(linkSubscription) }, request.apiKey) : null;
   if (keyIndex === null && grant === null) {
-    throw new HttpError(401, "Missing or invalid gateway key.", "authentication_error");
+    throw new HttpError(401, "Missing or invalid gateway key or Dari Link access token.", "authentication_error");
   }
   if (grant !== null && request.routerId !== DEFAULT_ROUTER_ALIAS) {
     throw new HttpError(403, "Dari Link tokens serve only the default router.", "permission_denied");

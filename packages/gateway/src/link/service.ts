@@ -48,6 +48,7 @@ import {
   linkHash,
   linkSecret,
   LINK_TOKEN_RETENTION_MS,
+  registeredRedirect,
   TOKEN_PREFIX,
 } from "./grants.js";
 
@@ -91,6 +92,7 @@ export type LinkStore = LinkRepo & {
     codeExpiresAt: number;
     credentialIds: string[];
     budget: LinkBudget[];
+    limits: LinkLimit[];
     now: number;
   }): MaybePromise<string | null>;
   /**
@@ -167,13 +169,13 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
   };
 
   // A grant's budget windows and each granted plan or key's spend this month.
-  const standings = async (grant: LinkGrantRecord, now = new Date()): Promise<{
+  const standings = async (grant: LinkGrantRecord, known?: LinkSubscription[], now = new Date()): Promise<{
     budget: LinkBudgetStanding[];
     spend: LinkSpend[];
   }> => {
     const [uses, plans] = await Promise.all([
       store.budgetUses(grant.id, usesSince(grant.budget, now)),
-      users.plansWithIds(grant.credentialIds),
+      known ?? users.plansWithIds(grant.credentialIds),
     ]);
     return {
       budget: budgetStandings(grant.budget, uses, now).map((standing) => ({
@@ -258,15 +260,17 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
       },
       async grant(subject, grantId, clientId) {
         const grant = await ownGrant(subject, grantId);
-        return grant === null || grant.clientId !== clientId ? null : { credentialIds: grant.credentialIds, budget: grant.budget };
+        return grant === null || grant.clientId !== clientId ? null : { credentialIds: grant.credentialIds, budget: grant.budget, limits: grant.limits };
       },
       async approve(request) {
-        const owned = new Set((await users.plans(request.subject)).map((plan) => plan.id));
+        const plans = await users.plans(request.subject);
+        const owned = new Set(plans.map((plan) => plan.id));
         if (request.credentialIds.length === 0 || !request.credentialIds.every((id) => owned.has(id))) {
           throw new HttpError(400, "Choose one or more connected subscriptions.", "invalid_request");
         }
+        requireLimitsFit(request.limits, request.credentialIds, plans);
         const app = await store.appRecord(request.clientId);
-        if (app === null || !app.redirectUris.includes(request.redirectUri)) {
+        if (app === null || !registeredRedirect(app.redirectUris, request.redirectUri)) {
           throw new HttpError(400, "Unknown app or redirect URI.", "invalid_client");
         }
         const code = linkSecret(LINK_CODE_PREFIX);
@@ -281,22 +285,30 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
           codeExpiresAt: now + LINK_CODE_TTL_MS,
           credentialIds: [...new Set(request.credentialIds)].sort(),
           budget: request.budget,
+          limits: request.limits,
           now,
         });
         if (grantId === null) throw new HttpError(400, "That connection no longer exists.", "invalid_request");
         return { code };
       },
       async connections(subject) {
-        return await Promise.all((await store.grants(subject)).map(async (grant) => {
-          const { byModel: _, ...usage } = await protocol.usage(grant.id, { tags: {} });
+        const grants = await store.grants(subject);
+        // One lookup for every grant's plans, not one per grant per use.
+        const plans = await users.plansWithIds([...new Set(grants.flatMap((grant) => grant.credentialIds))]);
+        return await Promise.all(grants.map(async (grant) => {
+          const shared = plans.filter((plan) => grant.credentialIds.includes(plan.id));
+          const [{ byModel: _, ...usage }, standing] = await Promise.all([
+            protocol.usage(grant.id, { tags: {} }),
+            standings(grant, shared),
+          ]);
           return {
             id: grant.id,
             clientId: grant.clientId,
             appName: grant.appName,
             endpoint: grant.clientId === LINK_PERSONAL_CLIENT_ID,
             createdAt: grant.createdAt,
-            ...(await standings(grant)),
-            subscriptions: await users.plansWithIds(grant.credentialIds),
+            ...standing,
+            subscriptions: shared,
             usage,
           };
         }));
@@ -324,6 +336,10 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
       const record = await store.appRecord(clientId);
       if (record === null) return null;
       const { clientSecretHash: _, ...app } = record;
+      return app;
+    },
+    async authenticateClient(request) {
+      const { clientSecretHash: _, ...app } = await protocol.authenticateClient(request);
       return app;
     },
     exchangeCode: (request) => protocol.exchangeCode(request),

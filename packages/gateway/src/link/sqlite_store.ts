@@ -301,14 +301,16 @@ export class SqliteLinkStore implements LinkStore {
 
   saveGrant(request: Parameters<LinkStore["saveGrant"]>[0]): string | null {
     const budget = request.budget.length === 0 ? null : JSON.stringify(request.budget);
+    const limits = request.limits.length === 0 ? null : JSON.stringify(request.limits);
     if (request.grantId !== undefined) {
       const updated = this.db.run(
-        `UPDATE link_grants SET credential_ids = ?, budget = ?, code_hash = ?, code_challenge = ?, redirect_uri = ?,
+        `UPDATE link_grants SET credential_ids = ?, budget = ?, limits = ?, code_hash = ?, code_challenge = ?, redirect_uri = ?,
            code_expires_at = ?
          WHERE id = ? AND client_id = ? AND subject = ? AND revoked_at IS NULL`,
         [
           JSON.stringify(request.credentialIds),
           budget,
+          limits,
           request.codeHash,
           request.codeChallenge,
           request.redirectUri,
@@ -323,8 +325,8 @@ export class SqliteLinkStore implements LinkStore {
     const id = `lgr_${randomUUID().replaceAll("-", "")}`;
     this.db.run(
       `INSERT INTO link_grants (id, client_id, credential_ids, code_hash, code_challenge, redirect_uri,
-         code_expires_at, created_at, budget, subject)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         code_expires_at, created_at, budget, limits, subject)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         request.clientId,
@@ -335,6 +337,7 @@ export class SqliteLinkStore implements LinkStore {
         request.codeExpiresAt,
         request.now,
         budget,
+        limits,
         request.subject,
       ],
     );

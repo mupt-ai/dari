@@ -191,6 +191,35 @@ export async function authorizeUrl(args: AuthorizeOptions): Promise<{ url: strin
   return { url: authorizationUrl({ ...args, codeChallenge, state }), codeVerifier, state };
 }
 
+/**
+ * On your server: a link token for one user's `DariLink.open`, as Plaid's
+ * `/link/token/create`. It carries what Link offers and lasts four hours.
+ * `redirectUri` defaults to the first one the app registered; `grantId`
+ * opens Link on that grant to change its plans (update mode).
+ */
+export async function createLinkToken(
+  args: Client & { clientSecret: string } & Omit<AuthorizeOptions, "gatewayUrl" | "clientId" | "redirectUri" | "state" | "responseMode"> & {
+    redirectUri?: string;
+  },
+): Promise<{ linkToken: string; expiration: string }> {
+  const response = await (args.fetch ?? fetch)(endpoint(args.gatewayUrl, "/v1/link/link_token/create"), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      client_id: args.clientId,
+      secret: args.clientSecret,
+      ...(args.redirectUri ? { redirect_uri: args.redirectUri } : {}),
+      ...(args.plans?.length ? { plans: args.plans } : {}),
+      ...(args.clients?.length ? { client: args.clients } : {}),
+      ...(args.keyProviders?.length ? { key_providers: args.keyProviders } : {}),
+      ...(args.purposes ? { purposes: args.purposes } : {}),
+      ...(args.grantId ? { grant_id: args.grantId } : {}),
+    }),
+  });
+  const body = await json(response);
+  return { linkToken: String(body.link_token), expiration: String(body.expiration) };
+}
+
 export type AuthorizeOptions = {
   gatewayUrl: string;
   clientId: string;
@@ -278,17 +307,26 @@ export type LinkStep = "connect_subscription" | "choose_plans" | "denied";
 /** Why the popup ended without a code, and the step the user left at (null before any). */
 export type LinkExit = { error: string; step: LinkStep | null };
 
-export type OpenLinkOptions = AuthorizeOptions & {
-  // A PKCE challenge and state your server made with `createAuthorization`
-  // (recommended for a server app): the verifier stays on the server, the page
-  // needs no Web Crypto, and the result's `codeVerifier` is null.
-  codeChallenge?: string;
+type LinkCallbacks = {
   fetch?: Fetch;
   window?: LinkBrowser;
   // Each step the user reaches, as they reach it.
   onEvent?: (step: LinkStep) => void;
   // Called before the call rejects: where the user left and why.
   onExit?: (exit: LinkExit) => void;
+};
+
+/**
+ * `{ gatewayUrl, linkToken }` with a token from `createLinkToken` (a server
+ * app); or the authorize options themselves, for an app with no server.
+ */
+export type OpenLinkOptions = ({ gatewayUrl: string; linkToken: string } & LinkCallbacks) | PublicLinkOptions;
+
+type PublicLinkOptions = AuthorizeOptions & LinkCallbacks & {
+  // A PKCE challenge and state your server made with `createAuthorization`
+  // (recommended for a server app): the verifier stays on the server, the page
+  // needs no Web Crypto, and the result's `codeVerifier` is null.
+  codeChallenge?: string;
 };
 
 /**
@@ -320,7 +358,7 @@ export async function openLink(
   // Making PKCE in the page needs Web Crypto, which browsers give only to
   // https (or localhost) pages; a challenge from the server needs none.
   const insecure = (args: OpenLinkOptions) =>
-    args.codeChallenge === undefined && (browser.isSecureContext === false || globalThis.crypto?.subtle === undefined);
+    !("linkToken" in args) && args.codeChallenge === undefined && (browser.isSecureContext === false || globalThis.crypto?.subtle === undefined);
   const insecureError = () => new LinkError(
     "insecure_context",
     "Connect with Dari needs a secure page (https, or localhost) to make its PKCE pair, or a codeChallenge and state from your server.",
@@ -351,16 +389,7 @@ export async function openLink(
       args.onExit?.({ error: "insecure_context", step: null });
       throw insecureError();
     }
-    const supplied = args.codeChallenge;
-    if (supplied !== undefined && args.state === undefined) {
-      throw new LinkError("invalid_request", "Pass the state your server made with the codeChallenge.", 0);
-    }
-    [request, origin] = await Promise.all([
-      supplied !== undefined
-        ? { url: authorizationUrl({ ...args, codeChallenge: supplied, state: args.state!, responseMode: "web_message" }), codeVerifier: null, state: args.state! }
-        : authorizeUrl({ ...args, responseMode: "web_message" }),
-      approvalOrigin(args),
-    ]);
+    [request, origin] = await Promise.all([linkRequest(args), approvalOrigin(args)]);
   } catch (error) {
     popup.close();
     throw error;
@@ -424,6 +453,26 @@ export async function openLink(
     if (channel) channel.onmessage = (event) => accept(event.data);
     popup.location.href = request.url;
   });
+}
+
+// The approval URL to open, and the state its result comes back with.
+async function linkRequest(args: OpenLinkOptions): Promise<{ url: string; codeVerifier: string | null; state: string }> {
+  if ("linkToken" in args) {
+    const url = new URL(endpoint(args.gatewayUrl, "/v1/link/authorize"));
+    url.search = new URLSearchParams({ link_token: args.linkToken, response_mode: "web_message" }).toString();
+    // The gateway returns the link token as the state.
+    return { url: url.toString(), codeVerifier: null, state: args.linkToken };
+  }
+  const supplied = args.codeChallenge;
+  if (supplied === undefined) return await authorizeUrl({ ...args, responseMode: "web_message" });
+  if (args.state === undefined) {
+    throw new LinkError("invalid_request", "Pass the state your server made with the codeChallenge.", 0);
+  }
+  return {
+    url: authorizationUrl({ ...args, codeChallenge: supplied, state: args.state, responseMode: "web_message" }),
+    codeVerifier: null,
+    state: args.state,
+  };
 }
 
 /**
@@ -497,15 +546,19 @@ async function approvalOrigin(args: Gateway): Promise<string> {
   return typeof origin === "string" ? origin : new URL(args.gatewayUrl).origin;
 }
 
-/** Redeem the code from the approval redirect for the grant's first tokens. */
+/**
+ * Redeem the code `DariLink.open` returned for the grant's first tokens. A
+ * code from a link token needs only your client secret; one from an
+ * authorize URL also needs its `redirectUri` and `codeVerifier`.
+ */
 export async function exchange(
-  args: Client & { redirectUri: string; code: string; codeVerifier: string },
+  args: Client & { code: string; redirectUri?: string; codeVerifier?: string },
 ): Promise<LinkTokenSet> {
   return tokenSet(await tokenCall(args, {
     grant_type: "authorization_code",
-    redirect_uri: args.redirectUri,
     code: args.code,
-    code_verifier: args.codeVerifier,
+    ...(args.redirectUri ? { redirect_uri: args.redirectUri } : {}),
+    ...(args.codeVerifier ? { code_verifier: args.codeVerifier } : {}),
   }));
 }
 
@@ -616,20 +669,20 @@ export type LinkUsageTotals = {
   // Requests the provider or Dari failed; they count in `requests` too.
   errors: number;
   // Excludes cache reads and writes, whatever protocol the requests spoke.
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_tokens: number;
-  cache_write_tokens: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 };
 
 export type LinkUsage = LinkUsageTotals & {
   // Every request received before this time is counted; null when the
   // gateway cannot tell (hosted Dari, for now).
-  complete_through: string | null;
+  completeThrough: string | null;
   // Per model and thinking level served, most requests first.
-  by_model: Array<LinkUsageTotals & { model: string; thinking: string | null }>;
+  byModel: Array<LinkUsageTotals & { model: string; thinking: string | null }>;
   // With `groupByTag`: per value of that tag (null: requests without it).
-  by_tag?: Array<LinkUsageTotals & { value: string | null }>;
+  byTag?: Array<LinkUsageTotals & { value: string | null }>;
 };
 
 // A `linkFetch` the app already made, or what makes one.
@@ -669,7 +722,28 @@ export async function usage(args: GrantCall & {
   const query = params.toString();
   const fetcher = "fetcher" in args ? args.fetcher : linkFetch(args);
   const response = await fetcher(`/v1/link/usage${query ? `?${query}` : ""}`);
-  return await json(response) as LinkUsage;
+  const payload = await json(response) as Record<string, unknown> & {
+    complete_through: string | null;
+    by_model: Array<Record<string, unknown> & { model: string; thinking: string | null }>;
+    by_tag?: Array<Record<string, unknown> & { value: string | null }>;
+  };
+  return {
+    ...usageTotals(payload),
+    completeThrough: payload.complete_through,
+    byModel: payload.by_model.map((row) => ({ ...usageTotals(row), model: row.model, thinking: row.thinking })),
+    ...(payload.by_tag === undefined ? {} : { byTag: payload.by_tag.map((row) => ({ ...usageTotals(row), value: row.value })) }),
+  };
+}
+
+function usageTotals(row: Record<string, unknown>): LinkUsageTotals {
+  return {
+    requests: row.requests as number,
+    errors: row.errors as number,
+    inputTokens: row.input_tokens as number,
+    outputTokens: row.output_tokens as number,
+    cacheReadTokens: row.cache_read_tokens as number,
+    cacheWriteTokens: row.cache_write_tokens as number,
+  };
 }
 
 /**

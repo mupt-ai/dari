@@ -25,6 +25,7 @@ export function anthropicMessagesSseStream(args: {
   request: InteractionRequest;
   conversationId?: string;
   onFinal?: (outcome: ProviderStreamOutcome) => void;
+  modelCost?: (message: Record<string, unknown>, failed: boolean) => number | null;
   beforeClose?: (outcome: ProviderStreamOutcome) => Promise<void> | void;
   clientSignal?: AbortSignal;
   onAbort?: () => void;
@@ -254,8 +255,9 @@ export function anthropicMessagesSseStream(args: {
                   },
                   // message_start goes out before the provider answers, so the
                   // cumulative input and cache counts ride here, as on Anthropic.
-                  // Claude Code sizes its context window from them.
-                  usage: anthropicUsage(output),
+                  // Claude Code sizes its context window from them. `cost` as on
+                  // Chat Completions: null means unpriced.
+                  usage: { ...anthropicUsage(output), cost: args.modelCost?.(event.message, false) ?? null },
                 });
               }
               break;

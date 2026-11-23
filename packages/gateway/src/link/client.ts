@@ -72,7 +72,7 @@ export type LinkPlan = {
   // Quota windows the plan last reported, shortest first; empty when unknown.
   usage: Array<{ window_minutes: number; utilization: number; resets_at: string; model_family?: "fable" }>;
   // Why the plan does or does not serve the app now, and when it will again.
-  state: "ready" | "plan_limit";
+  state: "ready" | "plan_limit" | "user_limit";
   available_at: string | null;
   // The models the plan serves its clients now: the name a request uses, and the display name.
   models: LinkModel[];

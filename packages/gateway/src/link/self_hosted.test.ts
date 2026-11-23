@@ -1352,5 +1352,50 @@ test("a browser app calls the model endpoints from its own origin", async () => 
   expect((await fetch(`${gateway.baseUrl}/v1/chat/completions`, { method: "OPTIONS" })).status).toBe(404);
 });
 
+test("a plan or key at the limit the user set for the app reads user_limit until it resets", async () => {
+  const gateway = await startStubGateway({ plans: ["openai_codex"], keys: ["anthropic"] });
+  stop = gateway.stop;
+  const [planId, keyId] = [gateway.planIds[0]!, gateway.keyIds[0]!];
+  const { tokens } = await link(gateway, [planId, keyId]);
+  const ask = () => chat(gateway, tokens.access_token!, "gpt-5.6-sol");
+  const states = async () => {
+    const response = await fetch(`${gateway.baseUrl}/v1/link/grant`, { headers: { authorization: `Bearer ${tokens.access_token!}` } });
+    const { plans } = (await response.json()) as { plans: Array<{ id: string; state: string; available_at: string | null }> };
+    return Object.fromEntries(plans.map((plan) => [plan.id, [plan.state, plan.available_at]]));
+  };
+  const limit = (limits: unknown[]) => fetch(`${gateway.baseUrl}/v1/link/grants/${tokens.grant_id}/limits`, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${gateway.gatewayKey}`, "content-type": "application/json" },
+    body: JSON.stringify({ limits }),
+  });
+
+  // The plan reports 90% of its week used, on its next reply.
+  gateway.setState({ weekly: 0.9 });
+  expect((await ask()).status).toBe(200);
+  expect(await states()).toEqual({ [planId]: ["ready", null], [keyId]: ["ready", null] });
+
+  // Capped at 70% of the plan and $0 on the key: neither serves the app.
+  expect((await limit([{ credential_id: planId, max_percent: 70 }, { credential_id: keyId, monthly_usd: 0 }])).status).toBe(200);
+  const capped = await states();
+  expect(capped[planId]).toEqual(["user_limit", expect.any(String)]);
+  expect(capped[keyId]).toEqual(["user_limit", expect.any(String)]);
+  const refused = await ask();
+  expect(refused.status).toBe(424);
+  const error = await errorOf(refused);
+  expect(error.code).toBe("grant_budget_exhausted");
+  // The request is back when the first of them is.
+  expect([capped[planId]![1], capped[keyId]![1]]).toContain(error.resets_at ?? null);
+
+  // Raised above what is used, it serves again.
+  expect((await limit([{ credential_id: planId, max_percent: 95 }])).status).toBe(200);
+  expect(await states()).toEqual({ [planId]: ["ready", null], [keyId]: ["ready", null] });
+  expect((await ask()).status).toBe(200);
+
+  // The plan's own limit still reads plan_limit, capped by the user or not.
+  expect((await limit([{ credential_id: planId, max_percent: 70 }])).status).toBe(200);
+  gateway.setState({ limited: true });
+  expect((await states())[planId]![0]).toBe("plan_limit");
+});
+
 // /v1/link/usage as the wire carries it.
 type WireUsage = Record<string, unknown> & { requests: number; complete_through: string | null; by_tag?: unknown[] };

@@ -73,6 +73,7 @@ import type {
   LinkConnection,
   LinkPlanAdded,
   LinkGrantDetail,
+  LinkSpend,
   LinkKeyProvider,
   LinkManagedGrant,
   LinkUsageTotals,
@@ -980,7 +981,7 @@ async function grantBody(platform: GatewayPlatform, request: Request, accessToke
       const kind = subscription.provider as SubscriptionKind;
       const client = keyFor === undefined ? subscriptionClient(kind) : undefined;
       return {
-        ...planState(subscription, now),
+        ...planState(subscription, detail.spend.find((entry) => entry.credentialId === subscription.id), now),
         id: subscription.id,
         kind: keyFor === undefined ? kind : API_KEY,
         // What to call it on screen: "Claude", "ChatGPT", "OpenRouter".
@@ -1017,19 +1018,22 @@ function latest(times: readonly string[]): string | null {
 }
 
 /**
- * Whether a granted plan serves the app now. `plan_limit`: the plan is at its
- * own usage limit, available again at `available_at` (null when ready or not
- * known).
+ * Whether a granted plan or key serves the app now. `plan_limit`: the plan is
+ * at its own usage limit. `user_limit`: it is at the limit the user set for
+ * this app. Either way it is available again at `available_at` (null when
+ * ready or not known).
  */
-function planState(subscription: LinkSubscription, now: number): {
-  state: "ready" | "plan_limit";
+function planState(subscription: LinkSubscription, spend: LinkSpend | undefined, now: number): {
+  state: "ready" | "plan_limit" | "user_limit";
   available_at: string | null;
 } {
   const planTimes = [
     ...(subscription.unavailableUntil !== null && Date.parse(subscription.unavailableUntil) > now ? [subscription.unavailableUntil] : []),
     ...subscription.usage.filter((window) => window.modelFamily === undefined && window.utilization >= 1 && Date.parse(window.resetsAt) > now).map((window) => window.resetsAt),
   ];
-  return planTimes.length > 0 ? { state: "plan_limit", available_at: latest(planTimes) } : { state: "ready", available_at: null };
+  if (planTimes.length > 0) return { state: "plan_limit", available_at: latest(planTimes) };
+  if (spend?.reached) return { state: "user_limit", available_at: spend.resetsAt };
+  return { state: "ready", available_at: null };
 }
 
 /** Whether the grant is within its budget: `budget_limit` until every window at its cap rolls on. */

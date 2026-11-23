@@ -109,13 +109,28 @@ func subscriptionColumnsFor(subscriptions []subscriptionCredential) subscription
 	return columns
 }
 
-// subscriptionPlan is the plan in parentheses, "(Pro)", or empty.
+// subscriptionPlan is the plan and workspace in parentheses, "(Team · Mupt)",
+// "(Pro)", or empty. One email can hold several workspaces, so the workspace
+// tells them apart.
 func subscriptionPlan(subscription subscriptionCredential) string {
+	parts := []string{}
 	if plan := subscription.SafeMetadata["plan"]; plan != "" {
-		return "(" + plan + ")"
+		parts = append(parts, plan)
 	}
-	return ""
+	if workspace := subscription.SafeMetadata["workspace_name"]; workspace != "" {
+		if runes := []rune(workspace); len(runes) > maxWorkspaceName {
+			workspace = string(runes[:maxWorkspaceName-1]) + "…"
+		}
+		parts = append(parts, workspace)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "(" + strings.Join(parts, " · ") + ")"
 }
+
+// maxWorkspaceName keeps a long workspace name from widening every row.
+const maxWorkspaceName = 24
 
 // subscriptionLabel is a subscription's provider, plan, and name, each in its
 // column.

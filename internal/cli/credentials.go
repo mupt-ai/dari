@@ -385,6 +385,7 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 					"label":              subscription.Label,
 					"account_email":      subscription.SafeMetadata["account_email"],
 					"plan":               subscription.SafeMetadata["plan"],
+					"workspace_name":     subscription.SafeMetadata["workspace_name"],
 					"renews_at":          subscription.SafeMetadata["renews_at"],
 					"status":             subscriptionStatus(subscription),
 					"unavailable_until":  subscription.UnavailableUntil,

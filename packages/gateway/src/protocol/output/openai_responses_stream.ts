@@ -30,6 +30,7 @@ type StreamArgs = {
   request: InteractionRequest;
   conversationId?: string;
   onFinal?: (outcome: ProviderStreamOutcome) => void;
+  modelCost?: (message: Record<string, unknown>, failed: boolean) => number | null;
   // Optional terminal barrier. Streaming deltas are unaffected, but the
   // terminal Responses event and EOF are held until this settles.
   beforeClose?: (outcome: ProviderStreamOutcome) => Promise<void> | void;
@@ -81,6 +82,7 @@ export function openAIResponsesSseStream(args: StreamArgs): ReadableStream<Uint8
               const output = accumulator.complete(event.message, send);
               settle({ status: "completed", message: event.message, output });
               const terminal = openAIResponsesTerminal(output);
+              const cost = args.modelCost?.(event.message, false);
               emitTerminal = () => {
                 send(`response.${terminal.status}`, {
                   response: responseEnvelope(
@@ -89,7 +91,8 @@ export function openAIResponsesSseStream(args: StreamArgs): ReadableStream<Uint8
                     createdAt,
                     terminal.status,
                     openAIResponsesOutputItems(output),
-                    output
+                    output,
+                    cost
                   ),
                 });
               };
@@ -606,7 +609,8 @@ function responseEnvelope(
   createdAt: number,
   status: "in_progress" | "completed" | "incomplete" | "failed",
   output: Array<Record<string, unknown>>,
-  interaction: InteractionOutput | undefined
+  interaction: InteractionOutput | undefined,
+  cost?: number | null
 ): Record<string, unknown> {
   return {
     id,
@@ -617,7 +621,8 @@ function responseEnvelope(
     model: args.model,
     output,
     parallel_tool_calls: args.request.parallelToolCalls ?? true,
-    ...(interaction ? { usage: openAIResponsesUsage(interaction) } : {}),
+    // `cost` as on Chat Completions: null means unpriced.
+    ...(interaction ? { usage: { ...openAIResponsesUsage(interaction), cost: cost ?? null } } : {}),
     dari_routing: openAIResponsesRouting(args.routing, args.id, args.conversationId),
   };
 }
@@ -633,7 +638,7 @@ function sendFailure(
   send("response.failed", {
     response: {
       ...responseEnvelope(args, responseId, createdAt, "failed", accumulator.currentOutputItems(), undefined),
-      usage: accumulator.currentUsage(),
+      usage: { ...accumulator.currentUsage(), cost: args.modelCost?.(error, true) ?? null },
       error: {
         message: providerFailureMessage(error),
         type: "server_error",

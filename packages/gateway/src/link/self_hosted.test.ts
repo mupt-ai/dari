@@ -1352,6 +1352,42 @@ test("a browser app calls the model endpoints from its own origin", async () => 
   expect((await fetch(`${gateway.baseUrl}/v1/chat/completions`, { method: "OPTIONS" })).status).toBe(404);
 });
 
+test("every protocol reports the request's cost in usage, streamed or not", async () => {
+  const gateway = await startStubGateway({ plans: ["openai_codex"] });
+  stop = gateway.stop;
+  const { tokens } = await link(gateway, [gateway.planIds[0]!]);
+  const post = (path: string, body: Record<string, unknown>) => fetch(`${gateway.baseUrl}${path}`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${tokens.access_token!}`, "content-type": "application/json" },
+    body: JSON.stringify({ model: "dari/routing", ...body }),
+  });
+  // The `data:` payloads of a stream, parsed.
+  const events = async (response: Response) => (await response.text()).split("\n")
+    .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+    .map((line) => JSON.parse(line.slice(6)) as Record<string, any>);
+  const messages = [{ role: "user", content: "hello" }];
+
+  const chat = (await (await post("/v1/chat/completions", { messages })).json()) as Record<string, any>;
+  const chatStream = (await events(await post("/v1/chat/completions", { messages, stream: true }))).filter((event) => event.usage).at(-1);
+  const responses = (await (await post("/v1/responses", { input: "hello" })).json()) as Record<string, any>;
+  const responsesStream = (await events(await post("/v1/responses", { input: "hello", stream: true }))).find((event) => event.type === "response.completed");
+  const message = (await (await post("/v1/messages", { messages, max_tokens: 64 })).json()) as Record<string, any>;
+  const messageStream = (await events(await post("/v1/messages", { messages, max_tokens: 64, stream: true }))).find((event) => event.type === "message_delta");
+
+  const costs = {
+    chat: chat.usage.cost,
+    chatStream: chatStream?.usage.cost,
+    responses: responses.usage.cost,
+    responsesStream: responsesStream?.response.usage.cost,
+    messages: message.usage.cost,
+    messagesStream: messageStream?.usage.cost,
+  };
+  for (const [name, cost] of Object.entries(costs)) expect([name, typeof cost, cost > 0]).toEqual([name, "number", true]);
+  // The protocols' own usage fields are still there beside it.
+  expect(responses.usage).toEqual(expect.objectContaining({ input_tokens: expect.any(Number), output_tokens: expect.any(Number) }));
+  expect(message.usage).toEqual(expect.objectContaining({ input_tokens: expect.any(Number), output_tokens: expect.any(Number) }));
+});
+
 test("a plan or key at the limit the user set for the app reads user_limit until it resets", async () => {
   const gateway = await startStubGateway({ plans: ["openai_codex"], keys: ["anthropic"] });
   stop = gateway.stop;

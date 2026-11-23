@@ -292,6 +292,9 @@ export function selectedEffort(record: ConversationRecord): ReasoningEffort | nu
 }
 
 /** The conversation summary over its steps, oldest first. */
+/** Titles are model-generated from content, so ZDR sessions get a fixed one. */
+export const ZDR_SESSION_TITLE = "Zero Data Retention Session";
+
 export function conversationSummary(
   records: readonly ConversationRecord[],
   entities: Entities,
@@ -329,13 +332,14 @@ export function conversationSummary(
     allZdr &&= record.zdr;
     anyZdr ||= record.zdr;
   }
+  const retention = router?.zdr || allZdr ? "zdr" : anyZdr ? "mixed" : "retained";
   return {
     conversation_ref: first.id,
     conversation_id: first.conversationId || null,
     agent_session_id: first.agentSessionId || null,
     context_runs: runs.size,
     source_protocol: first.sourceProtocol,
-    title: title || ([...records].reverse().find((record) => record.conversationTitle)?.conversationTitle ?? null),
+    title: retention === "zdr" ? ZDR_SESSION_TITLE : title || ([...records].reverse().find((record) => record.conversationTitle)?.conversationTitle ?? null),
     router_id: first.routerId,
     router_name: router?.name ?? null,
     api_key_id: first.apiKeyId,
@@ -358,7 +362,7 @@ export function conversationSummary(
     has_error: hasError,
     has_aborted: hasAborted,
     terminal_status: last.status,
-    retention: router?.zdr || allZdr ? "zdr" : anyZdr ? "mixed" : "retained",
+    retention,
   };
 }
 

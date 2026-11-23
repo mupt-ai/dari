@@ -192,7 +192,9 @@ function conversationStep(record: ConversationRecord, organizationId: string, cu
       }
     }
   }
-  const available = (key: string | null) => Boolean(record.blobBucket) && Boolean(key);
+  const zdr = record.zdr || currentRouterZdr;
+  // ZDR content is never served, even when an older blob is still stored.
+  const available = (key: string | null) => !zdr && Boolean(record.blobBucket) && Boolean(key);
   const url = (name: string) => `/v1/organizations/${organizationId}/routing/activity/requests/${record.id}/${name}`;
   return {
     id: record.id,
@@ -223,7 +225,7 @@ function conversationStep(record: ConversationRecord, organizationId: string, cu
     has_declared_tools: record.hasTools,
     received_at: formatInstant(record.receivedAt),
     completed_at: record.completedAt === null ? null : formatInstant(record.completedAt),
-    zdr: record.zdr || currentRouterZdr,
+    zdr,
     decision_source: typeof details?.decision_source === "string" ? details.decision_source : null,
     selector_reason: record.selectorReason,
     selector_policy_bypassed: bypassed,

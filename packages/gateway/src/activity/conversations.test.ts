@@ -7,7 +7,7 @@ import { canonicalInstant } from "./values.js";
 const ORG = "org_1";
 const at = (seconds: number) => canonicalInstant(Date.UTC(2026, 2, 10) * 1000 + seconds * 1_000_000 + 250);
 
-function platform(): ActivityPlatform {
+function platform(routerZdr = 0): ActivityPlatform {
   const db = new Database(":memory:");
   db.exec(`
     create table routing_requests (
@@ -27,7 +27,7 @@ function platform(): ActivityPlatform {
     create table routing_tool_skill_events (id text, routing_request_id text, ordinal integer, event_type text,
       capability_id text, observed_name text, skill_version text, evidence_source text, exchange_context_hash text, tool_call_id text);
     create table routing_tool_result_observations (id text, routing_request_id text, exchange_context_hash text, tool_call_id text);
-    insert into model_routers values ('rtr_1', '${ORG}', 'Main Router', 0);
+    insert into model_routers values ('rtr_1', '${ORG}', 'Main Router', ${routerZdr});
     insert into organization_api_keys values ('oak_1', '${ORG}', 'Laptop', 'dari_abc');
   `);
   const insert = db.query(`insert into routing_requests (id, request_id, organization_id, source_protocol, router_id,
@@ -106,4 +106,15 @@ test("serves a stored payload and 404s a missing one", async () => {
   const missing = await get(p, "requests/rreq_2/client-request");
   expect(missing.status).toBe(404);
   expect(JSON.parse(missing.body).detail).toBe("No client request payload is stored for this routing request.");
+});
+
+test("summarizes a ZDR session without a content title or payload links", async () => {
+  const p = platform(1);
+  const list = JSON.parse((await get(p, `conversations?${RANGE}`)).body);
+  expect(list.conversations[0]).toMatchObject({ title: "Zero Data Retention Session", retention: "zdr" });
+  const detail = JSON.parse((await get(p, "conversations/rreq_1?limit=10")).body);
+  expect(detail.conversation.title).toBe("Zero Data Retention Session");
+  for (const step of detail.steps) {
+    expect(step).toMatchObject({ zdr: true, client_request_url: null, client_response_url: null, selector_output_url: null });
+  }
 });

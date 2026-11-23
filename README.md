@@ -51,6 +51,14 @@ dari codex exec "Fix the failing tests"
 
 The agent must be on `PATH`, or set `DARI_<AGENT>_PATH`. Supported status lines show the serving model, thinking level, and lease turns left (turns before the routing choice is reconsidered).
 
+**Another organization.** A launch runs in your current organization, which `dari org switch` changes for every command. `--org <slug or ID>` runs one launch in another of your organizations and leaves the current one, and the agent run directly, as they are:
+
+```bash
+dari codex --org acme --router rtr_123 exec "Fix the failing tests"
+```
+
+Without `--router` the launch uses that organization's router for the agent. `--org` uses your browser sign-in on hosted Dari, so it does not go with `DARI_API_KEY`, `DARI_ROUTING_API_KEY`, a gateway, or `--default`.
+
 **Running the agent directly.** A launch routes only its own session and leaves the agent's config alone. `dari setup <agent> --cli` (for `claude`, `codex`, `pi`, or `opencode`) writes Dari into that agent's own config, so running it without `dari` routes the same way, then exits. The config follows `dari gateway setup` between routing modes and keeps your last `/model` choice while that model remains available; rerun it after changing the router's models. Codex 0.156 or newer is the exception on gateways new enough to serve it its own list: it reads its `/model` list from the router and keeps it current while it runs (after its next turn, or within five minutes). `dari setup codex --refresh` updates it at once, on any gateway. `dari setup <agent> --remove` undoes it and restores what was there. A local gateway must be running for direct runs: `dari gateway start`.
 
 **Desktop apps.** `dari setup claude --desktop` writes Dari into the Claude app's config; pass `--cli --desktop` to set up `claude` and the app. The Codex app reads the same `config.toml` as `codex`, so either flag sets up both. OpenClaw and Hermes Agent route only through this setup, since their long-lived gateways read their own config: `dari openclaw` and `dari hermes` refuse to start until `dari setup <agent> --cli` has run. Muse Code has no setup: it fetches its model list from its endpoint's root, so it routes only through `dari muse`.

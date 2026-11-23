@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/state"
@@ -108,6 +109,101 @@ func ensureStoredCurrentOrgKey(ctx context.Context, apiURL, orgID string) (*stat
 	})
 }
 
+// ensureStoredOrgKey caches a managed CLI key for orgID in place of
+// replacedKey, the key the organization has now ("" for none), and leaves the
+// current organization as it is. Ensuring a key revokes the one this device
+// had, so it is fetched while holding the state lock, and a key another
+// process stored meanwhile is kept rather than revoked under that process.
+func ensureStoredOrgKey(ctx context.Context, apiURL, orgID, replacedKey string) (*state.CliState, error) {
+	apiURL = api.NormalizeURL(apiURL)
+	if _, err := refreshStoredSession(ctx, apiURL, ""); err != nil {
+		return nil, err
+	}
+	return updateStoredState(apiURL, func(s *state.CliState) error {
+		org, ok := s.Organizations[orgID]
+		if !ok {
+			return fmt.Errorf("organization %q is not known locally", orgID)
+		}
+		if org.APIKey != replacedKey {
+			return nil
+		}
+		key, err := fetchManagedOrgKey(ctx, apiURL, s.SupabaseSession.AccessToken, orgID)
+		if err != nil {
+			return translateAuthError(err)
+		}
+		org.APIKey = key
+		s.Organizations[orgID] = org
+		return nil
+	})
+}
+
+// ReplaceOrgKey fetches a new managed CLI key for orgID in place of rejected,
+// the one the API refused, leaving the current organization as it is.
+func ReplaceOrgKey(ctx context.Context, apiURL, orgID, rejected string) error {
+	if EnvAPIKeyValue() != "" {
+		return ErrNeedsUserLogin
+	}
+	_, err := ensureStoredOrgKey(ctx, apiURL, orgID, rejected)
+	return err
+}
+
+// ActAs makes this process act as one of the signed-in user's organizations,
+// named by ID or slug, in place of the current one, which stays as it is for
+// every other process. Its managed CLI key is the cached one, or is fetched
+// with the saved login.
+func ActAs(ctx context.Context, apiURL, identifier string) (*state.Organization, error) {
+	if EnvAPIKeyValue() != "" {
+		return nil, ErrNeedsUserLogin
+	}
+	s, err := state.Load()
+	if err != nil {
+		return nil, err
+	}
+	if !api.URLsMatch(s.APIURL, apiURL) {
+		return nil, ErrNotLoggedIn
+	}
+	org, ok := findStoredOrg(s, identifier)
+	if !ok {
+		// An organization joined since the last sync is not saved yet.
+		if s, _, err = ListOrganizations(ctx, apiURL); err != nil {
+			return nil, signInError(err)
+		}
+		if org, ok = findStoredOrg(s, identifier); !ok {
+			return nil, fmt.Errorf("unknown organization %q; list yours with `dari org list`", identifier)
+		}
+	}
+	if org.APIKey == "" {
+		if s, err = ensureStoredOrgKey(ctx, apiURL, org.ID, ""); err != nil {
+			return nil, signInError(err)
+		}
+		org = s.Organizations[org.ID]
+	}
+	state.ActAs(org.ID)
+	return &org, nil
+}
+
+// signInError reports a sign-in that can no longer be refreshed as
+// ErrNotLoggedIn: it has to be made again.
+func signInError(err error) error {
+	if he := api.AsHTTPError(err); he != nil && (he.Status == http.StatusBadRequest || he.Status == http.StatusUnauthorized) {
+		return fmt.Errorf("%w: %s", ErrNotLoggedIn, strings.TrimSpace(he.Detail))
+	}
+	return err
+}
+
+// findStoredOrg matches identifier against a saved org's id or slug.
+func findStoredOrg(s *state.CliState, identifier string) (state.Organization, bool) {
+	if org, ok := s.Organizations[identifier]; ok {
+		return org, true
+	}
+	for _, org := range s.Organizations {
+		if org.Slug == identifier {
+			return org, true
+		}
+	}
+	return state.Organization{}, false
+}
+
 // syncOrganizations reconciles a freshly-fetched org list with the locally
 // cached managed API keys. Orgs removed server-side are dropped.
 func syncOrganizations(s *state.CliState, orgs []OrgRecord) {
@@ -155,7 +251,7 @@ func ListOrganizations(ctx context.Context, apiURL string) (*state.CliState, []O
 		return nil, nil, err
 	}
 	if org := s.CurrentOrg(); org != nil && org.APIKey == "" {
-		s, err = ensureStoredCurrentOrgKey(ctx, apiURL, org.ID)
+		s, err = ensureStoredOrgKey(ctx, apiURL, org.ID, "")
 		if err != nil {
 			return nil, nil, err
 		}

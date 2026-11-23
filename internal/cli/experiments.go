@@ -49,6 +49,9 @@ type agentRouterChoice struct {
 	name        string
 	pay         map[string]string
 	makeDefault bool
+	// org is a launch's `--org <slug or ID>`: the organization it runs in,
+	// in place of the current one.
+	org string
 }
 
 func (choice agentRouterChoice) file() bool {
@@ -59,8 +62,8 @@ func (choice agentRouterChoice) routerID() bool {
 	return strings.HasPrefix(choice.name, "rtr_")
 }
 
-// takeAgentRouterChoice takes `--router <name>`, `--pay` and `--default` out
-// of the agent's arguments.
+// takeAgentRouterChoice takes `--router <name>`, `--pay`, `--default` and
+// `--org <organization>` out of the agent's arguments.
 func takeAgentRouterChoice(launch *agentLaunch) (agentRouterChoice, error) {
 	choice := agentRouterChoice{pay: map[string]string{}}
 	if _, ok := agentSetups[launch.name]; !ok {
@@ -75,7 +78,7 @@ func takeAgentRouterChoice(launch *agentLaunch) (agentRouterChoice, error) {
 	for i := 0; i < end; i++ {
 		arg := launch.args[i]
 		flagName, value, inline := strings.Cut(arg, "=")
-		if flagName != "--router" && flagName != "--pay" {
+		if flagName != "--router" && flagName != "--pay" && flagName != "--org" {
 			if arg == "--default" {
 				choice.makeDefault = true
 			} else {
@@ -83,12 +86,19 @@ func takeAgentRouterChoice(launch *agentLaunch) (agentRouterChoice, error) {
 			}
 			continue
 		}
-		if !inline {
-			if i+1 >= end {
-				return choice, fmt.Errorf("%s needs a value; list templates with `dari router experiments`", flagName)
-			}
+		if !inline && i+1 < end {
 			i++
-			value = launch.args[i]
+			value, inline = launch.args[i], true
+		}
+		if flagName == "--org" {
+			if value == "" {
+				return choice, errors.New("--org needs an organization's slug or ID; list yours with `dari org list`")
+			}
+			choice.org = value
+			continue
+		}
+		if !inline {
+			return choice, fmt.Errorf("%s needs a value; list templates with `dari router experiments`", flagName)
 		}
 		if flagName != "--pay" {
 			choice.name, found = value, true
@@ -103,7 +113,7 @@ func takeAgentRouterChoice(launch *agentLaunch) (agentRouterChoice, error) {
 	if !found && (len(choice.pay) > 0 || choice.makeDefault) {
 		return choice, errors.New("--pay and --default go with --router <name>")
 	}
-	if found {
+	if found || choice.org != "" {
 		launch.args = append(kept, launch.args[end:]...)
 	}
 	return choice, nil

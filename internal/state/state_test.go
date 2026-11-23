@@ -250,3 +250,42 @@ func unsetXDG(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("APPDATA", "")
 }
+
+func TestActAsChangesThisProcessOnly(t *testing.T) {
+	t.Setenv("DARI_CONFIG_DIR", t.TempDir())
+	t.Cleanup(func() { ActAs("") })
+	if err := Save(&CliState{CurrentOrgID: "org_a", Organizations: map[string]Organization{
+		"org_a": {ID: "org_a", Slug: "a"},
+		"org_b": {ID: "org_b", Slug: "b"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	ActAs("org_b")
+	// A write made while acting, such as a refreshed sign-in, keeps the
+	// saved current organization.
+	if err := Update(func(s *CliState) error {
+		if org := s.CurrentOrg(); org == nil || org.ID != "org_b" {
+			t.Errorf("acting org = %#v", org)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.CurrentOrgID != "org_a" || s.CurrentOrg().ID != "org_b" {
+		t.Fatalf("saved = %q, acting = %q", s.CurrentOrgID, s.CurrentOrg().ID)
+	}
+
+	ActAs("org_gone")
+	if org := s.CurrentOrg(); org != nil {
+		t.Fatalf("an unknown acting org fell back to %#v", org)
+	}
+	ActAs("")
+	if org := s.CurrentOrg(); org == nil || org.ID != "org_a" {
+		t.Fatalf("org after acting = %#v", org)
+	}
+}

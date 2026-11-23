@@ -235,6 +235,11 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
+	if choice.org != "" {
+		if err := useLaunchOrg(ctx, choice, stderr); err != nil {
+			return "", "", agents.Models{}, err
+		}
+	}
 	gateway, err := agentGateway(ctx, stdin, stderr)
 	if err != nil {
 		return "", "", agents.Models{}, err
@@ -299,11 +304,45 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 	}
 	reportAgentModels(launch.name, models, true, stderr)
 	// The agent's router changed, or its models did: the agent run directly
-	// follows, where it is set up.
-	if !launch.setup() && (launch.reconfigure || choice.makeDefault || (choice.name != "" && agentUsesRouter(ctx, client, launch.name, routerID, stderr))) {
+	// follows, where it is set up. A launch in another organization (--org)
+	// leaves that setup on the organization it was made in.
+	if !launch.setup() && choice.org == "" && (launch.reconfigure || choice.makeDefault || (choice.name != "" && agentUsesRouter(ctx, client, launch.name, routerID, stderr))) {
 		syncAgentSetup(ctx, launch.name, access.key, baseURL, models, stderr)
 	}
 	return access.key, baseURL, models, nil
+}
+
+// useLaunchOrg makes the launch run in the organization `--org` names, one
+// the user is signed in to, in place of the current one. Only this process
+// changes: the current organization, and the agent run directly, stay as they
+// are.
+func useLaunchOrg(ctx context.Context, choice agentRouterChoice, stderr io.Writer) error {
+	switch {
+	case choice.makeDefault:
+		return errors.New("--org runs one launch in another organization and saves nothing; leave out --default, or run `dari org switch` first")
+	case auth.EnvAPIKeyValue() != "":
+		return errors.New("--org picks one of the organizations you are signed in to, and DARI_API_KEY is one organization's key already; unset it, or leave out --org")
+	case explicitRoutingKey(io.Discard) != "":
+		return errors.New("--org routes with that organization's own key, and " + agents.RoutingAPIKeyEnv + " sets another; unset it, or leave out --org")
+	}
+	if gw, err := currentGateway(); err != nil {
+		return err
+	} else if gw != nil {
+		return errors.New("--org is for hosted Dari; a gateway has no organizations")
+	}
+	apiURL, err := (&globalFlags{}).resolveAPIURL()
+	if err != nil {
+		return err
+	}
+	org, err := auth.ActAs(ctx, apiURL, choice.org)
+	if errors.Is(err, auth.ErrNotLoggedIn) {
+		return errors.New("--org uses your browser sign-in, which is missing or has expired; run `dari auth login`")
+	}
+	if err != nil {
+		return fmt.Errorf("--org: %w", err)
+	}
+	agentStep(stderr, "Organization: "+org.Name+" (this launch only)")
+	return nil
 }
 
 // agentUsesRouter reports whether the router is the agent's default, as it
@@ -436,9 +475,10 @@ func createAgentRoutingKey(ctx context.Context, apiURL string) (string, error) {
 	key, err := issueAgentRoutingKey(ctx, apiURL)
 	httpErr := api.AsHTTPError(err)
 	if httpErr != nil && httpErr.Status == http.StatusUnauthorized && auth.EnvAPIKeyValue() == "" {
-		s, loadErr := state.Load()
-		if loadErr == nil && s.CurrentOrg() != nil {
-			if _, refreshErr := auth.SwitchOrganization(ctx, apiURL, s.CurrentOrgID); refreshErr == nil {
+		// The managed key was refused: replace it without switching to its
+		// organization, which a launch with --org is not on.
+		if s, loadErr := state.Load(); loadErr == nil {
+			if org := s.CurrentOrg(); org != nil && auth.ReplaceOrgKey(ctx, apiURL, org.ID, org.APIKey) == nil {
 				key, err = issueAgentRoutingKey(ctx, apiURL)
 			}
 		}

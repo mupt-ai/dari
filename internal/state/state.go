@@ -241,12 +241,28 @@ func (s *CliState) marshalShape() onDisk {
 	return shape
 }
 
-// CurrentOrg returns the currently-selected organization, or nil if none.
+// actingOrgID is the organization this process acts as in place of the saved
+// current one. It is never written to disk.
+var actingOrgID string
+
+// ActAs makes this process act as orgID (`dari <agent> --org`): CurrentOrg
+// returns it, and the saved current organization stays as it is for every
+// other process. An empty orgID goes back to the saved one.
+func ActAs(orgID string) {
+	actingOrgID = orgID
+}
+
+// CurrentOrg returns the organization this process acts as: the saved
+// current one unless ActAs chose another, or nil if none.
 func (s *CliState) CurrentOrg() *Organization {
-	if s.CurrentOrgID == "" {
+	id := s.CurrentOrgID
+	if actingOrgID != "" {
+		id = actingOrgID
+	}
+	if id == "" {
 		return nil
 	}
-	org, ok := s.Organizations[s.CurrentOrgID]
+	org, ok := s.Organizations[id]
 	if !ok {
 		return nil
 	}

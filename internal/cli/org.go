@@ -99,7 +99,10 @@ func newOrgSwitchCmd(gf *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "switch <organization>",
 		Short: "Switch the current org by slug or ID",
-		Args:  cobra.ExactArgs(1),
+		Long: "Switch the current org by slug or ID, for every command and launch on this machine.\n\n" +
+			"To run one launch in another org and leave the current one alone, use\n" +
+			"`dari <agent> --org <organization>` instead.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			apiURL, err := gf.resolveAPIURL()
 			if err != nil {

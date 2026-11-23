@@ -1297,5 +1297,47 @@ test("the stub gateway runs as a process and reports the calls it served", async
   expect(served.calls).toEqual([expect.objectContaining({ kind: "openai_codex", model: "gpt-6.1-sol", path: "/backend-api/codex/responses" })]);
 });
 
+test("a browser app calls the model endpoints from its own origin", async () => {
+  const gateway = await startStubGateway({ plans: ["openai_codex"] });
+  stop = gateway.stop;
+  const { tokens } = await link(gateway, [gateway.planIds[0]!]);
+  const origin = "https://app.example";
+
+  // The preflight a browser sends first, for each endpoint and the headers each client sends.
+  for (const [path, method, asked] of [
+    ["/v1/chat/completions", "POST", "authorization,content-type,x-stainless-os"],
+    ["/v1/responses", "POST", "authorization,content-type,x-dari-tags"],
+    ["/v1/messages", "POST", "x-api-key,anthropic-version,content-type"],
+    ["/v1/models", "GET", "authorization"],
+  ] as const) {
+    const preflight = await fetch(`${gateway.baseUrl}${path}`, {
+      method: "OPTIONS",
+      headers: { origin, "access-control-request-method": method, "access-control-request-headers": asked },
+    });
+    expect([path, preflight.status]).toEqual([path, 204]);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("*");
+    expect(preflight.headers.get("access-control-allow-methods")).toContain(method);
+    expect(preflight.headers.get("access-control-allow-headers")).toBe(asked);
+  }
+
+  // The request itself: the page can read the reply, and its headers.
+  const reply = await chat(gateway, tokens.access_token!);
+  expect(reply.status).toBe(200);
+  expect(reply.headers.get("access-control-allow-origin")).toBe("*");
+  expect(reply.headers.get("access-control-expose-headers")).toBe("*");
+  expect(reply.headers.get("x-request-id")).toBeTruthy();
+  expect(((await reply.json()) as { choices: unknown[] }).choices).toHaveLength(1);
+
+  // A stream, and a refusal the page must read to show Reconnect.
+  const stream = await chat(gateway, tokens.access_token!, "dari/routing", { stream: true });
+  expect(stream.headers.get("access-control-allow-origin")).toBe("*");
+  expect(await stream.text()).toContain("[DONE]");
+  const refused = await chat(gateway, "dlk_at_unknown");
+  expect(refused.status).toBe(401);
+  expect(refused.headers.get("access-control-allow-origin")).toBe("*");
+  const models = await fetch(`${gateway.baseUrl}/v1/models`, { headers: { authorization: `Bearer ${tokens.access_token!}`, origin } });
+  expect(models.headers.get("access-control-allow-origin")).toBe("*");
+});
+
 // /v1/link/usage as the wire carries it.
 type WireUsage = Record<string, unknown> & { requests: number; complete_through: string | null; by_tag?: unknown[] };

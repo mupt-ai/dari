@@ -60,32 +60,10 @@ export function createRequestHandler(options: GatewayHandlerOptions) {
     }
 
     const endpoint = routedEndpoint(url.pathname);
-    if (endpoint?.protocol === "chat" && request.method === "POST") {
-      return await handleChatCompletions(
-        request,
-        endpoint.routerId,
-        selectorBackend,
-      );
-    }
-    if (endpoint?.protocol === "responses") {
-      if (request.method === "GET") return handleResponsesWebSocketFallback();
-      if (request.method === "POST") {
-        return await handleResponses(
-          request,
-          endpoint.routerId,
-          selectorBackend,
-        );
-      }
-    }
-    if (endpoint?.protocol === "messages" && request.method === "POST") {
-      return await handleAnthropicMessages(
-        request,
-        endpoint.routerId,
-        selectorBackend,
-      );
-    }
-    if (endpoint?.protocol === "models" && request.method === "GET") {
-      return await handleModels(request, endpoint.routerId);
+    if (endpoint !== null) {
+      if (request.method === "OPTIONS") return withCors(request, new Response(null, { status: 204 }));
+      const response = await serveEndpoint(request, endpoint, selectorBackend);
+      if (response !== null) return withCors(request, response);
     }
     // The gateway counts no tokens. Claude Code calls this for any Anthropic
     // base URL and estimates locally when it fails, so it gets an error it parses.
@@ -103,6 +81,52 @@ type RoutedEndpoint = {
   routerId: string;
   protocol: "chat" | "responses" | "messages" | "models";
 };
+
+async function serveEndpoint(
+  request: Request,
+  endpoint: RoutedEndpoint,
+  selectorBackend: SelectorBackend,
+): Promise<Response | null> {
+  if (endpoint.protocol === "chat" && request.method === "POST") {
+    return await handleChatCompletions(request, endpoint.routerId, selectorBackend);
+  }
+  if (endpoint.protocol === "responses") {
+    if (request.method === "GET") return handleResponsesWebSocketFallback();
+    if (request.method === "POST") return await handleResponses(request, endpoint.routerId, selectorBackend);
+  }
+  if (endpoint.protocol === "messages" && request.method === "POST") {
+    return await handleAnthropicMessages(request, endpoint.routerId, selectorBackend);
+  }
+  if (endpoint.protocol === "models" && request.method === "GET") {
+    return await handleModels(request, endpoint.routerId);
+  }
+  return null;
+}
+
+/**
+ * A browser app calls the model endpoints from its own origin, with a Dari
+ * Link token or a key. Neither is a cookie or other ambient credential, so
+ * any origin may call, as with Dari Link's own endpoints.
+ *
+ * The preflight allows the headers it asks for, since clients differ:
+ * `x-api-key` and `anthropic-version` from Anthropic's SDK, `x-stainless-*`
+ * from OpenAI's, `X-Dari-Tags`. Every response header is exposed, so a page
+ * can read `X-Request-Id`, `X-Dari-Usage`, and `Retry-After`.
+ */
+function withCors(request: Request, response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("Access-Control-Allow-Origin", "*");
+  headers.set("Access-Control-Expose-Headers", "*");
+  if (request.method === "OPTIONS") {
+    headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    headers.set(
+      "Access-Control-Allow-Headers",
+      request.headers.get("Access-Control-Request-Headers") ?? "Authorization, Content-Type",
+    );
+    headers.set("Access-Control-Max-Age", "600");
+  }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
 
 function routedEndpoint(pathname: string): RoutedEndpoint | null {
   const defaultProtocol = protocolForSuffix(pathname, "/v1");

@@ -10,6 +10,7 @@ import {
   isProtocolToolCallId,
   TOOL_CALL_ID_MAX_LENGTH,
   toolsByWireName,
+  toolWireName,
 } from "../../interaction/tool_identity.js";
 import type {
   InteractionContent,
@@ -236,6 +237,7 @@ function responseItem(value: unknown, itemIndex: number, hostedReplayId?: string
   if (type === "web_search_call") return hostedWebSearchCallItem(value, itemIndex, hostedReplayId);
   if (type === "function_call" || type === "custom_tool_call") return toolCallItem(value, type === "function_call" ? "function" : "custom");
   if (type === "function_call_output" || type === "custom_tool_call_output") {
+    if (value.call_id === undefined || value.call_id === null) return callIdlessToolOutputNote(value, `input.${type}`);
     return toolResultItem(value, type === "function_call_output" ? "function" : "custom");
   }
   if (type === "message" || typeof value.role === "string") return messageItem(value);
@@ -438,6 +440,22 @@ function toolResultItem(value: Record<string, unknown>, kind: ToolKind): Interac
     name: optionalString(value.name, `${prefix}.name`),
     output: responseToolOutput(value.output, `${prefix}.output`),
     outputShape: responseContentShape(value.output),
+  };
+}
+
+// Codex appends outputs that answer no call, such as its goal objective
+// (`agent` / `goal_objective`) after `create_goal`; they reach the model as a
+// developer note.
+function callIdlessToolOutputNote(value: Record<string, unknown>, prefix: string): InteractionMessage {
+  const name = optionalString(value.name, `${prefix}.name`);
+  const namespace = optionalString(value.namespace, `${prefix}.namespace`);
+  const output = responseContent(value.output, `${prefix}.output`);
+  return {
+    type: "message",
+    id: optionalString(value.id, `${prefix}.id`),
+    role: "developer",
+    content: name ? [{ type: "text", text: `${toolWireName(namespace, name)}:` }, ...output] : output,
+    contentShape: "parts",
   };
 }
 

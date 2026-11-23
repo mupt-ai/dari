@@ -681,3 +681,40 @@ test("Responses gate rejects Claude tier names", () => {
     );
   }
 });
+
+test("Responses ingress passes Codex's call-less goal objective output as a developer note", () => {
+  const interaction = openAIResponsesToInteraction({
+    model: "dari/routing",
+    input: [
+      { type: "message", role: "user", content: [{ type: "input_text", text: "Set a goal." }] },
+      { type: "function_call", id: "fc_1", call_id: "call_1", name: "create_goal", arguments: "{}" },
+      { type: "function_call_output", call_id: "call_1", output: "Goal created." },
+      {
+        type: "function_call_output",
+        id: "fco_1",
+        name: "goal_objective",
+        namespace: "agent",
+        output: "Ship the engine.",
+      },
+    ],
+  });
+  expect(interaction.items.at(-1)).toEqual({
+    type: "message",
+    id: "fco_1",
+    role: "developer",
+    content: [
+      { type: "text", text: "agent__goal_objective:" },
+      { type: "text", text: "Ship the engine." },
+    ],
+    contentShape: "parts",
+  });
+});
+
+test("Responses ingress still rejects an empty tool output call id", () => {
+  expect(() =>
+    openAIResponsesToInteraction({
+      model: "dari/routing",
+      input: [{ type: "function_call_output", call_id: "", output: "done" }],
+    })
+  ).toThrow("input.function_call_output.call_id must be a non-empty string");
+});

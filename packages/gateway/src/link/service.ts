@@ -295,12 +295,11 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
         const grants = await store.grants(subject);
         // One lookup for every grant's plans, not one per grant per use.
         const plans = await users.plansWithIds([...new Set(grants.flatMap((grant) => grant.credentialIds))]);
-        return await Promise.all(grants.map(async (grant) => {
+        // One grant, and one step of it, at a time: a hosted store holds a pooled connection per call.
+        return await inSeries(grants, async (grant) => {
           const shared = plans.filter((plan) => grant.credentialIds.includes(plan.id));
-          const [{ byModel: _, ...usage }, standing] = await Promise.all([
-            protocol.usage(grant.id, { tags: {} }),
-            standings(grant, shared),
-          ]);
+          const { byModel: _, ...usage } = await protocol.usage(grant.id, { tags: {} });
+          const standing = await standings(grant, shared);
           return {
             id: grant.id,
             clientId: grant.clientId,
@@ -311,7 +310,7 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
             subscriptions: shared,
             usage,
           };
-        }));
+        });
       },
       async disconnect(subject, grantId) {
         return (await ownGrant(subject, grantId)) !== null && (await revoke(grantId));
@@ -369,7 +368,7 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
     },
     async grants(apiKey) {
       const subject = await users.manager(apiKey);
-      return await Promise.all((await store.grants(subject)).map(managedGrant));
+      return await inSeries(await store.grants(subject), managedGrant);
     },
     async plans(apiKey) {
       return await users.plans(await endpointOwner(apiKey));
@@ -512,4 +511,11 @@ function endpointName(name: string): string {
     throw new HttpError(400, "Name the endpoint, in 120 characters or fewer.", "invalid_request");
   }
   return trimmed;
+}
+
+// Each item in turn, so a store that holds a connection per call holds one at a time.
+async function inSeries<T, R>(items: readonly T[], each: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (const item of items) results.push(await each(item));
+  return results;
 }

@@ -192,8 +192,10 @@ type agentRouterUpdateRequest struct {
 	// The models the router's subscriptions serve. Nil is omitted and keeps
 	// the router's current choice; an empty list serves none.
 	SubscriptionModels *[]string `json:"subscription_models,omitempty"`
-	SessionPinning     bool      `json:"session_pinning"`
-	NativeCompaction   bool      `json:"native_compaction"`
+	// Nil is omitted and keeps the router's current subscriptions.
+	SubscriptionProviders *[]string `json:"subscription_providers,omitempty"`
+	SessionPinning        bool      `json:"session_pinning"`
+	NativeCompaction      bool      `json:"native_compaction"`
 }
 
 // Omitting subscription_api_fallback_models keeps the router's current ones.
@@ -221,9 +223,11 @@ func subscriptionModelsFor(router agentRouter, choices []agentModelChoice, offer
 			if choice.Source.kind == "subscription" {
 				served = append(served, choice.ID)
 			}
-		} else if choice.Source.native() && slices.Contains(router.SubscriptionModels, choice.ID) {
+		} else if choice.Source.native() && (slices.Contains(router.SubscriptionModels, choice.ID) ||
+			(!slices.Contains(router.EnabledModels, choice.ID) && slices.Contains(router.SubscriptionProviders, choice.Source.modelProvider))) {
 			// A model moved to a gateway key is no longer its provider's, so
-			// no subscription serves it.
+			// no subscription serves it. A newly enabled model goes on its
+			// provider's plan, as the API does by default.
 			served = append(served, choice.ID)
 		}
 	}
@@ -536,13 +540,15 @@ func reconfigureAgentRouter(ctx context.Context, client *api.Client, setup agent
 		return err
 	}
 	models = includeCurrentAgentModels(models, router)
-	connected, err := connectedAgentSubscriptions(ctx, client, setup.subscriptions)
+	// Setup asks how to pay: the Accounts page connects subscriptions and
+	// keys, and every connected subscription is offered in the picker.
+	if _, err := (accountsPage{client: client, providers: setup.subscriptions, hosted: true, onboarding: true}).run(ctx, stdin, stderr); err != nil && !errors.Is(err, errAgentChoiceCanceled) {
+		return err
+	}
+	subscribed, err := connectedAgentSubscriptions(ctx, client, setup.subscriptions)
 	if err != nil {
 		return err
 	}
-	subscribed := slices.DeleteFunc(connected, func(subscription agentSubscriptionProvider) bool {
-		return !slices.Contains(router.SubscriptionProviders, subscription.routerProvider)
-	})
 	keyContext, err := loadAgentKeyContext(ctx, client, subscribed)
 	if err != nil {
 		return err
@@ -576,6 +582,22 @@ func reconfigureAgentRouter(ctx context.Context, client *api.Client, setup agent
 	body.ProviderCredentialIDs = keys.credentialIDs
 	body.SubscriptionAPIFallbackModels = keys.fallbackModels(router.SubscriptionAPIFallbackModels, body.EnabledModels)
 	body.SessionPinning = picked.sessionPinning
+	// Connected plans go on the router where it serves their models, in the
+	// same save as the models they pay for.
+	served := slices.Collect(maps.Values(body.ModelProviders))
+	providers := []string{}
+	for _, provider := range router.SubscriptionProviders {
+		if slices.Contains(served, provider) {
+			providers = append(providers, provider)
+		}
+	}
+	for _, subscription := range subscribed {
+		if slices.Contains(served, subscription.routerProvider) && !slices.Contains(providers, subscription.routerProvider) {
+			providers = append(providers, subscription.routerProvider)
+		}
+	}
+	body.SubscriptionProviders = &providers
+	router.SubscriptionProviders = providers
 	body.SubscriptionModels = subscriptionModelsFor(router, choices, keyContext.subscriptions)
 	if _, err := putAgentRouter(ctx, client, router.ID, body); err != nil {
 		return err
@@ -1691,9 +1713,11 @@ func chooseAgentSessionPinning(stdin io.Reader, stderr io.Writer, current bool) 
 	if !agentInputIsTerminal(stdin) {
 		return current, nil
 	}
-	choice, err := runAgentChoiceTUI(stdin, stderr, "When Should Dari Pick the Model?", nil, []agentChoiceOption{
-		{label: "Every Turn " + ansiGreen + "(Default)" + ansiReset, description: "Dari picks for each request.", done: "Routing every turn"},
-		{label: "Once per Session", description: "Dari picks once per session and subagent.", done: "Routing once per session"},
+	choice, err := runAgentChoiceTUI(stdin, stderr, "Route", []string{
+		"Dari can hold a model for a few turns (a lease) to keep its prompt cache warm.",
+	}, []agentChoiceOption{
+		{label: "Every Turn", description: "A pick for each request, holding a model with short leases", done: "Routing every turn"},
+		{label: "Once per Session", description: "One pick per session and subagent", done: "Routing once per session"},
 	})
 	if err != nil {
 		return false, err

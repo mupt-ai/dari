@@ -18,8 +18,14 @@ func maybePrintUpdateNotice(cmd *cobra.Command, version string) {
 func shouldSkipUpdateNotice(cmd *cobra.Command) bool {
 	for c := cmd; c != nil; c = c.Parent() {
 		name := strings.TrimSpace(c.Name())
+		if c.Parent() == cmd.Root() {
+			switch name {
+			case "run", "serve", "pull", "list", "show":
+				return true
+			}
+		}
 		switch name {
-		case "update", "completion", "help", "__complete", "__completeNoDesc":
+		case "inference", "update", "completion", "help", "__complete", "__completeNoDesc":
 			return true
 		}
 	}

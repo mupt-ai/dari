@@ -135,3 +135,16 @@ See [CONTRIBUTING.md](CONTRIBUTING.md).
 ## License
 
 [Apache-2.0](LICENSE) © 2026 Mupt AI.
+
+## Local Inference (Apple Silicon)
+
+Dari runs supported models on its own optimized Metal engine. No Ollama client, daemon, hosted account, or API key is involved.
+
+```sh
+dari pull inkling-2-mini       # Explicit download; skip if already installed
+dari run inkling-2-mini        # Start the local model API on port 8081
+```
+
+`run` keeps the model server in the foreground until you stop it with Ctrl-C. No separate `serve` step or terminal chat client is needed. Use `dari list` to see installed models and `dari show inkling-2-mini` to inspect the weights and context limit. Only `pull` installs or downloads. To configure a larger context, start with `dari run inkling-2-mini --context-window 100000` (or set `DARI_CONTEXT_LENGTH`); 50,000 is the benchmarked default.
+
+The CLI uses the `dari-inference` runtime on PATH. For a development checkout, set `DARI_INFERENCE_SOURCE` to its absolute `dari-inference/` directory before using these commands. The standalone runtime works without the Go CLI. Pi can connect to `http://127.0.0.1:8081/v1`; native text clients can post to `/api/chat` or `/api/generate` on the same server.

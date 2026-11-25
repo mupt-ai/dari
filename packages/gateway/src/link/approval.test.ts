@@ -14,7 +14,7 @@ import { SessionPinStore } from "../self_host/session_pin_store.js";
 import { SubscriptionStore } from "../self_host/subscriptions/index.js";
 import { codexAccessToken, fakeFetch, jsonResponse } from "../self_host/subscriptions/test_support.js";
 import { addTestApp, approveTestGrant } from "./test_support.js";
-import type { LinkSignIn } from "../platform/platform.js";
+import type { LinkPlanOnComputer, LinkSignIn } from "../platform/platform.js";
 import { ActivityStore } from "../self_host/activity_store.js";
 
 const BASE = "http://gateway.test";
@@ -22,8 +22,9 @@ const REDIRECT_URI = "http://127.0.0.1:9999/callback";
 
 // A gateway whose provider sign-ins answer from `responses`, and a browser
 // that keeps the approval page's cookies; with `signIn`, a platform whose
-// users sign in with an account.
-function gateway(responses: Array<() => Response>, signIn?: LinkSignIn) {
+// users sign in with an account; with `plansOnComputers`, one whose users
+// also keep plans on their computers.
+function gateway(responses: Array<() => Response>, signIn?: LinkSignIn, plansOnComputers?: LinkPlanOnComputer[]) {
   const db = new Database(":memory:");
   const secrets = new SecretBox([randomBytes(32)]);
   const subscriptions = new SubscriptionStore(db, secrets);
@@ -43,9 +44,12 @@ function gateway(responses: Array<() => Response>, signIn?: LinkSignIn) {
     env: {},
     fetch: fakeFetch(responses),
   });
-  const withSignIn = (signIn: LinkSignIn | undefined) => signIn === undefined
+  const approval = plansOnComputers === undefined
+    ? selfHosted.link!.approval
+    : { ...selfHosted.link!.approval, plansOnComputers: async () => plansOnComputers };
+  const withSignIn = (signIn: LinkSignIn | undefined) => signIn === undefined && plansOnComputers === undefined
     ? selfHosted
-    : { ...selfHosted, link: { ...selfHosted.link!, approval: { ...selfHosted.link!.approval, signIn } } };
+    : { ...selfHosted, link: { ...selfHosted.link!, approval: { ...approval, ...(signIn === undefined ? {} : { signIn }) } } };
   let platform = withSignIn(signIn);
   const app = addTestApp(links, "Notes App", [REDIRECT_URI], false);
   const params = {
@@ -389,3 +393,21 @@ test("a browser Link remembered before it had accounts signs in", async () => {
   expect(await browser.connections()).toContain('value="sign_in"');
 });
 
+
+// A plan kept on one of the user's computers cannot serve an app: the page
+// says where it is, for each kind the user has no plan of here.
+test("the page says which plans are on the user's computers", async () => {
+  const browser = gateway([], undefined, [
+    { provider: "anthropic_claude_code", computer: "avyay-mbp" },
+    { provider: "vercel_token_pass", computer: "avyay-mbp" },
+  ]);
+  await browser.page();
+  expect((await browser.submit({ connect: "vercel_token_pass" })).status).toBe(303);
+  await browser.page();
+  expect((await browser.submit({ decision: "complete", authorization_response: "vck_pass" })).status).toBe(303);
+  const choose = await browser.page();
+  expect(choose).toContain("Share With Notes App");
+  expect(choose).toContain("Your Claude plan is on avyay-mbp. Apps can only use plans on Dari.");
+  // The Token Pass the user connected here is the one the app can use.
+  expect(choose).not.toContain("Your Vercel Token Pass plan is on");
+});

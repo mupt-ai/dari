@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
-import { activeModelHolds, currentUsage, SubscriptionStore } from "./store.js";
+import { activeModelHolds, currentUsage, SubscriptionAccountConnectedError, SubscriptionStore } from "./store.js";
 import { tokens } from "./test_support.js";
 
 const now = new Date("2026-10-20T12:00:00Z");
@@ -38,14 +38,73 @@ describe("connecting", () => {
     ]);
   });
 
-  test("the same account email replaces its subscription and keeps its hold", () => {
+  test("connecting an account the owner already has is refused, and reconnecting it by name keeps its hold", () => {
     const { store, credentials } = connected("one@example.com");
     store.markUnavailable(credentials[0]!.id, later(60), "usage_limit", now);
-    const replaced = store.connect(tokens({ accessToken: "fresh" }), null, later(1))!;
-    expect(replaced.id).toBe(credentials[0]!.id);
-    expect(replaced.accessToken).toBe("fresh");
-    expect(replaced.unavailableUntil).toEqual(later(60));
+    expect(() => store.connect(tokens({ accessToken: "fresh" }), null, later(1))).toThrow(
+      "This Claude account is already connected on This Computer as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN. Move it with `dari accounts subscription move ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN --on dari`, or disconnect it first.",
+    );
     expect(store.list()).toHaveLength(1);
+    expect(store.get(credentials[0]!.id)?.accessToken).toBe("access-0");
+
+    const reconnected = store.connect(tokens({ accessToken: "fresh" }), credentials[0]!.name, later(1))!;
+    expect(reconnected.id).toBe(credentials[0]!.id);
+    expect(reconnected.accessToken).toBe("fresh");
+    expect(reconnected.unavailableUntil).toEqual(later(60));
+    expect(store.list()).toHaveLength(1);
+  });
+
+  test("a second copy of a ChatGPT account is refused by account id, even under another email, and private plans count", () => {
+    const store = new SubscriptionStore(new Database(":memory:"));
+    const codex = (accountId: string, accountEmail: string | null) =>
+      tokens({ provider: "openai_codex", accountId, accountEmail });
+    const first = store.connect(codex("acct_1", "a@example.com"), null, now, null, true)!;
+    expect(() => store.connect(codex("acct_1", "other@example.com"), null, later(1))).toThrow(
+      `This ChatGPT account is already connected Private on This Computer as ${first.name}. Move it with \`dari accounts subscription move ${first.name} --on dari\` or \`--on computer\`, or disconnect it first.`,
+    );
+    // Another workspace under the same email is another account.
+    expect(store.connect(codex("acct_2", "a@example.com"), null, later(2))!.name).toBe("OPENAI_CODEX_OAUTH_TOKEN_2");
+  });
+
+  test("reconnecting a plan to an account another plan already holds is refused; to a new account it is allowed", () => {
+    const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
+    expect(() => store.connect(tokens({ accountEmail: "b@example.com" }), a!.name, later(1))).toThrow(
+      "This Claude account is already connected on This Computer as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN_2. Move it with `dari accounts subscription move ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN_2 --on dari`, or disconnect it first.",
+    );
+    expect(store.get(a!.id)?.accountEmail).toBe("a@example.com");
+    const moved = store.connect(tokens({ accountEmail: "c@example.com" }), a!.name, later(2))!;
+    expect(moved).toMatchObject({ id: a!.id, accountEmail: "c@example.com" });
+    expect(store.get(b!.id)?.accountEmail).toBe("b@example.com");
+  });
+
+  test("another Dari Link user's plan of the same account does not block the gateway owner", () => {
+    const store = new SubscriptionStore(new Database(":memory:"));
+    store.connect(tokens({ accountEmail: "shared@example.com" }), null, now, "link-user");
+    expect(store.connect(tokens({ accountEmail: "shared@example.com" }), null, later(1))!.owner).toBeNull();
+    expect(() => store.connect(tokens({ accountEmail: "shared@example.com" }), null, later(2), "link-user")).toThrow(
+      SubscriptionAccountConnectedError,
+    );
+  });
+
+  test("an account the owner holds on Dari or on another computer is refused, naming where it lives", () => {
+    const store = new SubscriptionStore(new Database(":memory:"));
+    const dari = [{
+      provider: "anthropic_claude_code" as const,
+      accountId: null,
+      accountEmail: "one@example.com",
+      place: "dari" as const,
+      name: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN",
+      gatewayName: null,
+    }];
+    expect(() => store.connect(tokens(), null, now, null, false, dari)).toThrow(
+      "This Claude account is already connected on Dari as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN. Move it with `dari accounts subscription move ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN --on computer`, or disconnect it first.",
+    );
+    const laptop = [{ ...dari[0]!, place: "other_computer" as const, name: null, gatewayName: "Laptop" }];
+    expect(() => store.connect(tokens(), null, now, null, false, laptop)).toThrow(
+      "This Claude account is already connected on another computer (Laptop). Disconnect it there, or move it to Dari there with `dari accounts subscription move`.",
+    );
+    // A different account on Dari or another computer does not block.
+    expect(store.connect(tokens({ accountEmail: "two@example.com" }), null, now, null, false, laptop)).not.toBeNull();
   });
 
   test("reconnect replaces the named subscription in place", () => {
@@ -154,8 +213,8 @@ describe("holds", () => {
     ]);
     expect(store.activeCredential("anthropic_claude_code", now)?.id).toBe(id);
     expect(held(later(31))).toEqual([["anthropic/claude-opus-5-5", later(600)]]);
-    // The same account reconnecting keeps them; mark available clears them.
-    store.connect(tokens({ accessToken: "fresh" }), null, later(1));
+    // The same account reconnecting by name keeps them; mark available clears them.
+    store.connect(tokens({ accessToken: "fresh" }), "anthropic_claude_code_oauth_token", later(1));
     expect(held(now)).toHaveLength(2);
     store.markAvailable("anthropic_claude_code_oauth_token", now);
     expect(held(now)).toEqual([]);
@@ -175,11 +234,11 @@ test("rename trims, clears on empty, and caps the length", () => {
 test("pending sessions round-trip and expired ones are pruned on create", () => {
   const store = new SubscriptionStore(new Database(":memory:"));
   const old = store.createSession(
-    { provider: "openai_codex", flow: { device_auth_id: "d" }, credentialName: null, owner: null, expiresAt: later(1) },
+    { provider: "openai_codex", flow: { device_auth_id: "d" }, credentialName: null, owner: null, private: false, expiresAt: later(1) },
     now,
   );
   const fresh = store.createSession(
-    { provider: "anthropic_claude_code", flow: { state: "s" }, credentialName: "NAME", owner: "lu_1", expiresAt: later(20) },
+    { provider: "anthropic_claude_code", flow: { state: "s" }, credentialName: "NAME", owner: "lu_1", private: true, expiresAt: later(20) },
     later(5),
   );
   expect(store.getSession(old.token)).toBeNull();

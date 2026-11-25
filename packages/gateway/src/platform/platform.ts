@@ -241,6 +241,12 @@ export type LinkApprovalPage = {
   addKey(subject: string | null, provider: string, apiKey: string): Promise<LinkPlanAdded>;
   /** The plans this user connected and the API keys they added, which an approval chooses among. */
   subscriptions(subject: string): Promise<LinkSubscription[]>;
+  /**
+   * The user's plans that live on one of their computers rather than on the
+   * platform, which apps cannot use; the page says where each is. Absent on
+   * a platform where every plan is its own.
+   */
+  plansOnComputers?(subject: string): Promise<LinkPlanOnComputer[]>;
   /** Start the provider's sign-in for a plan of this kind. */
   startConnect(kind: SubscriptionKind): Promise<LinkConnect>;
   /**
@@ -288,6 +294,9 @@ export type LinkSignIn = {
   /** Who a ticket signed in, for which state, and when (epoch ms); null for no ticket. */
   redeem(ticket: string): Promise<{ subject: string; state: string; issuedAt: number } | null>;
 };
+
+/** A plan kept on one of the user's computers: its kind and the computer's name. */
+export type LinkPlanOnComputer = { provider: SubscriptionKind; computer: string };
 
 /** A plan or API key the user added, and who they are now. */
 export type LinkPlanAdded = { subject: string; credentialId: string };

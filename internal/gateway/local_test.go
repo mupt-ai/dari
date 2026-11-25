@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -162,5 +163,46 @@ func TestStartFailureIsTheGatewaysOwnLastWord(t *testing.T) {
 	}
 	if got := startFailure(filepath.Join(t.TempDir(), "missing.log")); got != "" {
 		t.Fatalf("missing log = %q", got)
+	}
+}
+
+func TestConnectedCommandSyncsToHostedAndRestartsOnChange(t *testing.T) {
+	t.Setenv("DARI_CONFIG_DIR", t.TempDir())
+	settings := Settings{Mode: ModeHosted, LocalKey: "dgw_local", ProviderKeys: map[string]string{"ANTHROPIC_API_KEY": "local-only"}}
+	if err := EnsureIdentity(&settings); err != nil {
+		t.Fatal(err)
+	}
+	local, err := command(settings, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connected := settings
+	connected.Hosted = &Hosted{URL: "https://routing.example", Key: "dari_routing"}
+	cmd, err := command(connected, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := strings.Join(cmd.Env, "\n")
+	for _, want := range []string{
+		"DARI_HOSTED_URL=https://routing.example", "DARI_HOSTED_API_KEY=dari_routing",
+		"DARI_GATEWAY_ID=" + settings.GatewayID, "DARI_GATEWAY_ENCRYPTION_KEY=" + settings.EncryptionKey,
+	} {
+		if !strings.Contains(env, want) {
+			t.Fatalf("connected env lacks %s", want)
+		}
+	}
+	// A connected gateway serves hosted keys, never the local mode's.
+	if strings.Contains(env, "local-only") || strings.Contains(strings.Join(local.Env, "\n"), "DARI_HOSTED_URL") {
+		t.Fatal("local and connected environments mixed")
+	}
+	if !strings.Contains(strings.Join(local.Env, "\n"), "DARI_GATEWAY_ENCRYPTION_KEY=") {
+		t.Fatal("local gateway does not encrypt its tokens")
+	}
+	if fingerprint(settings) == fingerprint(connected) || strings.Contains(fingerprint(connected), "dari_routing") {
+		t.Fatalf("fingerprints: %q %q", fingerprint(settings), fingerprint(connected))
+	}
+	saved, _, err := Load()
+	if err != nil || saved.GatewayID != settings.GatewayID || saved.EncryptionKey != settings.EncryptionKey {
+		t.Fatalf("identity not saved: %+v %v", saved, err)
 	}
 }

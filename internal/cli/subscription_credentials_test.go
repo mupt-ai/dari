@@ -66,6 +66,8 @@ func multipleSubscriptionsHandler(t *testing.T, seen map[string]map[string]any) 
 			"DELETE /v1/organizations/current/credentials/META_MUSE_OAUTH_TOKEN",
 			"PUT /v1/organizations/current/credentials/META_MUSE_OAUTH_TOKEN/label":
 			_ = json.NewEncoder(w).Encode(map[string]any{"name": "ok"})
+		case "GET /v1/organizations/current/credentials/ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN/resets":
+			_ = json.NewEncoder(w).Encode(map[string]any{"resets": []any{}, "read_at": nil})
 		case "POST /v1/organizations/current/credentials/oauth/sessions":
 			_ = json.NewEncoder(w).Encode(agentSubscriptionOAuthStart{
 				SessionToken: "session", AuthorizationURL: "https://auth.openai.com/codex/device", UserCode: "ABCD-EFGH",
@@ -139,7 +141,7 @@ func TestSubscriptionCommandsNeedANameWhenSeveralAreConnected(t *testing.T) {
 	ambiguous := newRootCmd("dev")
 	ambiguous.SetArgs([]string{"--api-url", srv.URL, "accounts", "subscription", "mark-available", "codex"})
 	err := captureStdout(t, ambiguous.Execute)
-	if err == nil || !strings.Contains(err.Error(), "3 ChatGPT subscriptions are connected; pass one of: "+
+	if err == nil || !strings.Contains(err.Error(), "pass one of: "+
 		"OPENAI_CODEX_OAUTH_TOKEN, OPENAI_CODEX_OAUTH_TOKEN_2, OPENAI_CODEX_OAUTH_TOKEN_3") {
 		t.Fatalf("err = %v", err)
 	}
@@ -182,7 +184,8 @@ func TestSubscriptionConnectAddsAnotherOrReconnectsOne(t *testing.T) {
 		want map[string]any
 	}{
 		{[]string{"codex"}, map[string]any{"provider": "openai_codex"}},
-		{[]string{"muse-code"}, map[string]any{"provider": "meta_muse"}},
+		// Muse Code lives on this computer by default; --on dari keeps it hosted.
+		{[]string{"muse-code", "--on", "dari"}, map[string]any{"provider": "meta_muse"}},
 		{
 			[]string{"muse-code", "--reconnect", "meta_muse_oauth_token"},
 			map[string]any{"provider": "meta_muse", "credential_name": "META_MUSE_OAUTH_TOKEN"},

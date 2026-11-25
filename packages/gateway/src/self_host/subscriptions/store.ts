@@ -50,6 +50,12 @@ export type SubscriptionCredential = {
   // The Dari Link user who connected the plan on the approval page; null for
   // the gateway owner's own plans, which alone serve the gateway's keys.
   owner: string | null;
+  // Kept off hosted Dari: a gateway connected to it neither serves nor
+  // reports the plan.
+  private: boolean;
+  // Whether routing may spend the plan's banked limit resets once every plan
+  // of its provider is held (ChatGPT and Claude Code).
+  autoRedeemResets: boolean;
   accessToken: string;
   refreshToken: string;
   expiresAt: Date;
@@ -79,8 +85,68 @@ export type PendingOAuthSession = {
   credentialName: string | null;
   // The Dari Link user connecting the plan; null for the gateway owner.
   owner: string | null;
+  // Whether the plan connects as private (see SubscriptionCredential).
+  private: boolean;
   expiresAt: Date;
 };
+
+/** The parts of a plan that say which provider account it is. */
+export type AccountRef = {
+  provider: SubscriptionProvider;
+  accountId: string | null;
+  accountEmail: string | null;
+};
+
+/**
+ * A plan of the same user that already holds an account, wherever it lives.
+ * `name` is the plan's handle where it is known; `gatewayName` names the other
+ * computer for an `other_computer` plan.
+ */
+export type ConnectedAccount = AccountRef & {
+  place: "dari" | "this_computer" | "private" | "other_computer";
+  name: string | null;
+  gatewayName: string | null;
+};
+
+/** Connecting an account the same user already has connected; the message says where it lives and how to move it. */
+export class SubscriptionAccountConnectedError extends Error {}
+
+/**
+ * Whether two plans are the same provider account: by account id when both
+ * carry one, otherwise by email (Claude Code sign-ins carry only an email).
+ */
+export function sameConnectedAccount(a: AccountRef, b: AccountRef): boolean {
+  if (a.provider !== b.provider) return false;
+  if (a.accountId !== null && b.accountId !== null) return a.accountId === b.accountId;
+  return a.accountEmail !== null && b.accountEmail !== null
+    && a.accountEmail.toLowerCase() === b.accountEmail.toLowerCase();
+}
+
+const PROVIDER_LABELS: Record<SubscriptionProvider, string> = {
+  anthropic_claude_code: "Claude",
+  openai_codex: "ChatGPT",
+  meta_muse: "Muse Code",
+  opencode_go: "OpenCode Go",
+  github_copilot: "GitHub Copilot",
+  xai_grok: "Grok",
+  vercel_token_pass: "Vercel Token Pass",
+};
+
+function connectedAccountMessage(account: ConnectedAccount): string {
+  const label = PROVIDER_LABELS[account.provider];
+  const handle = account.name ?? "NAME";
+  const asName = account.name === null ? "" : ` as ${handle}`;
+  switch (account.place) {
+    case "dari":
+      return `This ${label} account is already connected on Dari${asName}. Move it with \`dari accounts subscription move ${handle} --on computer\`, or disconnect it first.`;
+    case "this_computer":
+      return `This ${label} account is already connected on This Computer${asName}. Move it with \`dari accounts subscription move ${handle} --on dari\`, or disconnect it first.`;
+    case "private":
+      return `This ${label} account is already connected Private on This Computer${asName}. Move it with \`dari accounts subscription move ${handle} --on dari\` or \`--on computer\`, or disconnect it first.`;
+    case "other_computer":
+      return `This ${label} account is already connected on another computer${account.gatewayName ? ` (${account.gatewayName})` : ""}. Disconnect it there, or move it to Dari there with \`dari accounts subscription move\`.`;
+  }
+}
 
 const BASE_NAMES: Record<SubscriptionProvider, string> = {
   anthropic_claude_code: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN",
@@ -100,6 +166,8 @@ type CredentialRow = {
   account_email: string | null;
   account_id: string | null;
   owner: string | null;
+  private: number | null;
+  auto_redeem_resets: number | null;
   access_token: string;
   refresh_token: string;
   expires_at: number;
@@ -125,6 +193,8 @@ const ADDED_COLUMNS = {
   usage_windows: "TEXT",
   model_holds: "TEXT",
   owner: "TEXT",
+  private: "INTEGER",
+  auto_redeem_resets: "INTEGER",
 } as const;
 
 type SessionRow = {
@@ -133,11 +203,28 @@ type SessionRow = {
   flow_json: string;
   credential_name: string | null;
   owner: string | null;
+  private: number | null;
   expires_at: number;
 };
 
 export class SubscriptionStore {
-  constructor(private readonly db: Database, private readonly box: SecretBox | null = null) {
+  /**
+   * Told of each change hosted Dari's copy of the plans would show: `plans`
+   * for a plan connected, removed, renamed, moved, held, or released, and
+   * `usage` for reported usage or use.
+   */
+  onChange: ((change: "plans" | "usage") => void) | undefined;
+
+  /**
+   * `privatePlansServe: false` (a gateway connected to hosted Dari) leaves
+   * private plans out of routing and `list`; `list(provider, true)` still
+   * shows them.
+   */
+  constructor(
+    private readonly db: Database,
+    private readonly box: SecretBox | null = null,
+    private readonly options: { privatePlansServe?: boolean } = {},
+  ) {
     db.run(`CREATE TABLE IF NOT EXISTS subscription_credentials (
       id TEXT PRIMARY KEY,
       provider TEXT NOT NULL,
@@ -156,6 +243,8 @@ export class SubscriptionStore {
       usage_windows TEXT,
       model_holds TEXT,
       owner TEXT,
+      private INTEGER,
+      auto_redeem_resets INTEGER,
       position INTEGER NOT NULL,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -180,11 +269,14 @@ export class SubscriptionStore {
       flow_json TEXT NOT NULL,
       credential_name TEXT,
       owner TEXT,
+      private INTEGER,
       expires_at INTEGER NOT NULL
     )`);
-    const sessionColumns = db.query<{ name: string }, []>("PRAGMA table_info(subscription_oauth_sessions)").all();
-    if (!sessionColumns.some((column) => column.name === "owner")) {
-      db.run("ALTER TABLE subscription_oauth_sessions ADD COLUMN owner TEXT");
+    const sessionColumns = new Set(
+      db.query<{ name: string }, []>("PRAGMA table_info(subscription_oauth_sessions)").all().map((column) => column.name),
+    );
+    for (const [column, type] of [["owner", "TEXT"], ["private", "INTEGER"]] as const) {
+      if (!sessionColumns.has(column)) db.run(`ALTER TABLE subscription_oauth_sessions ADD COLUMN ${column} ${type}`);
     }
     this.encryptStored();
   }
@@ -242,9 +334,14 @@ export class SubscriptionStore {
     });
   }
 
-  /** The gateway owner's subscriptions, grouped by provider, in connection order. */
-  list(provider?: SubscriptionProvider): SubscriptionCredential[] {
-    return this.every(provider).filter((credential) => credential.owner === null);
+  /**
+   * The gateway owner's subscriptions that serve, grouped by provider, in
+   * connection order; with `includePrivate`, private ones too even where they
+   * do not serve.
+   */
+  list(provider?: SubscriptionProvider, includePrivate = false): SubscriptionCredential[] {
+    const privateShown = includePrivate || this.options.privatePlansServe !== false;
+    return this.every(provider).filter((credential) => credential.owner === null && (privateShown || !credential.private));
   }
 
   /** The subscriptions a Dari Link user connected. */
@@ -345,6 +442,7 @@ export class SubscriptionStore {
          usage_windows = ? WHERE id = ?`,
       [usage.utilization, usage.resetsAt.getTime(), now.getTime(), windowsJson(usage), id],
     );
+    this.onChange?.("usage");
   }
 
   // A pin idle past CONVERSATION_PIN_TTL_MS is forgotten: the conversation is
@@ -375,36 +473,38 @@ export class SubscriptionStore {
 
   /**
    * Store tokens from a completed OAuth flow. `reconnectName` replaces that
-   * subscription (null when it is not connected). Otherwise the same owner's
-   * subscription for the same account email is replaced, and anything else is
-   * connected last in order under the first free name. `owner` is the Dari
-   * Link user connecting it; null is the gateway owner.
+   * subscription (null when it is not connected) and keeps its place, as long
+   * as it is still the same account. Otherwise the sign-in is connected last
+   * in order under the first free name. A sign-in refused as a second copy
+   * throws `SubscriptionAccountConnectedError`: the same account is already
+   * connected for this owner (`owner` is the Dari Link user connecting it;
+   * null is the gateway owner), or `elsewhere` (the owner's plans on hosted
+   * Dari and other computers) holds it.
    */
   connect(
     tokens: OAuthTokens,
     reconnectName: string | null,
     now = new Date(),
     owner: string | null = null,
+    isPrivate = false,
+    elsewhere: ConnectedAccount[] = [],
   ): SubscriptionCredential | null {
-    return this.db.transaction(() => {
-      const existing = reconnectName !== null
-        ? this.getByName(reconnectName, owner ?? null)
-        : this.every(tokens.provider).filter((credential) => credential.owner === owner).find(
-          (credential) => tokens.accountEmail !== null && credential.accountEmail === tokens.accountEmail,
-        ) ?? null;
+    const connected = this.db.transaction(() => {
+      const existing = reconnectName !== null ? this.getByName(reconnectName, owner ?? null) : null;
       if (reconnectName !== null && existing?.provider !== tokens.provider) return null;
 
       if (existing !== null) {
-        // Another (or an unidentified) account must not inherit the previous
-        // account's holds, reported usage, or conversations (whose cache is
-        // the previous account's).
-        const sameAccount = tokens.accountEmail !== null && tokens.accountEmail === existing.accountEmail;
+        // Another account must not inherit the previous account's holds,
+        // reported usage, or conversations (whose cache is the previous
+        // account's). Reconnecting the same account keeps them.
+        const sameAccount = sameConnectedAccount(existing, tokens);
+        if (!sameAccount) this.refuseSecondCopy(tokens, owner ?? null, existing.id, elsewhere);
         const usage = sameAccount ? existing.usage : null;
         this.db.run(
           `UPDATE subscription_credentials SET access_token = ?, refresh_token = ?, expires_at = ?,
              account_id = ?, account_email = ?, unavailable_until = ?, unavailable_reason = ?,
              usage_utilization = ?, usage_resets_at = ?, usage_observed_at = ?, usage_windows = ?, model_holds = ?,
-             updated_at = ?
+             private = ?, updated_at = ?
            WHERE id = ?`,
           [
             this.seal(tokens.accessToken, tokenPlace(existing.id, "access_token")),
@@ -419,6 +519,7 @@ export class SubscriptionStore {
             usage?.observedAt.getTime() ?? null,
             usage === null ? null : windowsJson(usage),
             sameAccount ? modelHoldsJson(existing.modelHolds) : null,
+            isPrivate ? 1 : 0,
             now.getTime(),
             existing.id,
           ],
@@ -429,14 +530,15 @@ export class SubscriptionStore {
         return this.get(existing.id);
       }
 
+      this.refuseSecondCopy(tokens, owner ?? null, null, elsewhere);
       const id = `cred_${randomUUID().replaceAll("-", "")}`;
       const position = this.db
         .query<{ next: number }, []>("SELECT COALESCE(MAX(position), 0) + 1 AS next FROM subscription_credentials")
         .get()!.next;
       this.db.run(
-        `INSERT INTO subscription_credentials (id, provider, name, account_email, account_id, owner, access_token,
-           refresh_token, expires_at, position, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO subscription_credentials (id, provider, name, account_email, account_id, owner, private,
+           access_token, refresh_token, expires_at, position, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           tokens.provider,
@@ -444,6 +546,7 @@ export class SubscriptionStore {
           tokens.accountEmail,
           tokens.accountId,
           owner,
+          isPrivate ? 1 : 0,
           this.seal(tokens.accessToken, tokenPlace(id, "access_token")),
           this.seal(tokens.refreshToken, tokenPlace(id, "refresh_token")),
           tokens.expiresAt.getTime(),
@@ -454,6 +557,27 @@ export class SubscriptionStore {
       );
       return this.get(id);
     })();
+    if (connected !== null) this.onChange?.("plans");
+    return connected;
+  }
+
+  // Throws when the owner's other plans, or `elsewhere`, already hold this
+  // account. `exceptId` is the plan being reconnected, which may not be a copy.
+  private refuseSecondCopy(tokens: AccountRef, owner: string | null, exceptId: string | null, elsewhere: ConnectedAccount[]): void {
+    const local = this.every(tokens.provider).find((credential) =>
+      credential.owner === owner && credential.id !== exceptId && sameConnectedAccount(credential, tokens));
+    if (local !== undefined) {
+      throw new SubscriptionAccountConnectedError(connectedAccountMessage({
+        provider: local.provider,
+        accountId: local.accountId,
+        accountEmail: local.accountEmail,
+        place: local.private ? "private" : "this_computer",
+        name: local.name,
+        gatewayName: null,
+      }));
+    }
+    const other = elsewhere.find((account) => sameConnectedAccount(account, tokens));
+    if (other !== undefined) throw new SubscriptionAccountConnectedError(connectedAccountMessage(other));
   }
 
   /** Persist refreshed tokens. Keeps the stored account id when the refresh carries none. */
@@ -474,6 +598,7 @@ export class SubscriptionStore {
 
   touch(id: string, now = new Date()): void {
     this.db.run("UPDATE subscription_credentials SET last_used_at = ? WHERE id = ?", [now.getTime(), id]);
+    this.onChange?.("usage");
   }
 
   /** An empty label clears it. Null when the subscription is not connected. */
@@ -489,6 +614,32 @@ export class SubscriptionStore {
       now.getTime(),
       credential.id,
     ]);
+    this.onChange?.("plans");
+    return this.get(credential.id);
+  }
+
+  /** Make the gateway owner's subscription private, or not. Null when it is not connected. */
+  setPrivate(name: string, isPrivate: boolean, now = new Date()): SubscriptionCredential | null {
+    const credential = this.getByName(name);
+    if (credential === null) return null;
+    this.db.run("UPDATE subscription_credentials SET private = ?, updated_at = ? WHERE id = ?", [
+      isPrivate ? 1 : 0,
+      now.getTime(),
+      credential.id,
+    ]);
+    this.onChange?.("plans");
+    return this.get(credential.id);
+  }
+
+  /** Let routing spend the plan's banked resets, or not. Null when it is not connected. */
+  setAutoRedeemResets(name: string, enabled: boolean, now = new Date()): SubscriptionCredential | null {
+    const credential = this.getByName(name);
+    if (credential === null) return null;
+    this.db.run("UPDATE subscription_credentials SET auto_redeem_resets = ?, updated_at = ? WHERE id = ?", [
+      enabled ? 1 : 0,
+      now.getTime(),
+      credential.id,
+    ]);
     return this.get(credential.id);
   }
 
@@ -498,6 +649,7 @@ export class SubscriptionStore {
     if (credential === null) return null;
     this.db.run("DELETE FROM subscription_credentials WHERE id = ?", [credential.id]);
     this.db.run("DELETE FROM subscription_conversation_pins WHERE credential_id = ?", [credential.id]);
+    this.onChange?.("plans");
     return credential;
   }
 
@@ -514,6 +666,7 @@ export class SubscriptionStore {
         "UPDATE subscription_credentials SET unavailable_until = ?, unavailable_reason = ?, updated_at = ? WHERE id = ?",
         [until.getTime(), reason, now.getTime(), id],
       );
+      this.onChange?.("plans");
     }
     return this.activeCredential(credential.provider, now) !== null;
   }
@@ -535,6 +688,7 @@ export class SubscriptionStore {
         now.getTime(),
         id,
       ]);
+      this.onChange?.("plans");
     }
     return true;
   }
@@ -548,6 +702,7 @@ export class SubscriptionStore {
          updated_at = ? WHERE id = ?`,
       [now.getTime(), credential.id],
     );
+    this.onChange?.("plans");
     return this.get(credential.id);
   }
 
@@ -558,13 +713,15 @@ export class SubscriptionStore {
     const token = randomBytes(32).toString("base64url");
     this.db.run("DELETE FROM subscription_oauth_sessions WHERE expires_at <= ?", [now.getTime()]);
     this.db.run(
-      "INSERT INTO subscription_oauth_sessions (token, provider, flow_json, credential_name, owner, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+      `INSERT INTO subscription_oauth_sessions (token, provider, flow_json, credential_name, owner, private, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [
         token,
         session.provider,
         this.seal(JSON.stringify(session.flow), flowPlace(token)),
         session.credentialName,
         session.owner,
+        session.private ? 1 : 0,
         session.expiresAt.getTime(),
       ],
     );
@@ -583,6 +740,7 @@ export class SubscriptionStore {
       flow: JSON.parse(this.open(row.flow_json, flowPlace(row.token))) as Record<string, string>,
       credentialName: row.credential_name,
       owner: row.owner,
+      private: row.private === 1,
       expiresAt: new Date(row.expires_at),
     };
   }
@@ -695,6 +853,8 @@ function credentialFromRow(row: CredentialRow): SubscriptionCredential {
     accountEmail: row.account_email,
     accountId: row.account_id,
     owner: row.owner,
+    private: row.private === 1,
+    autoRedeemResets: row.auto_redeem_resets === 1,
     accessToken: row.access_token,
     refreshToken: row.refresh_token,
     expiresAt: new Date(row.expires_at),

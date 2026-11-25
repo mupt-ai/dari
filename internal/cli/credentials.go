@@ -281,6 +281,11 @@ type subscriptionCredential struct {
 	// Usage is how much of its quota the plan last reported used.
 	Usage            *subscriptionUsage `json:"usage"`
 	AutoRedeemResets bool               `json:"auto_redeem_resets"`
+	// Private is a local gateway's plan that never syncs to hosted Dari.
+	Private bool `json:"private"`
+	// place is where the plan lives when the page shows plans from both
+	// hosted Dari and this computer; empty for a listing from one API.
+	place subscriptionPlace
 }
 
 // subscriptionUsage is the tightest window's share used and reset, and every
@@ -355,14 +360,15 @@ func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
 	cmd.AddCommand(
 		newSubscriptionListCmd(gf),
 		newSubscriptionConnectCmd(gf),
-		newSubscriptionCredentialCmd(gf, "mark-available", "Clear a subscription's usage-limit holds, its own and its models', so routers can use it again",
-			http.MethodPost, func(name string) string { return url.PathEscape(name) + "/mark-available" }),
-		newSubscriptionCredentialCmd(gf, "disconnect", "Disconnect a subscription from Dari",
-			http.MethodDelete, func(name string) string { return url.PathEscape(name) + "?scope=user" }),
+		newPlacedSubscriptionCmd(gf, "mark-available", "Clear a subscription's usage-limit holds, its own and its models', so routers can use it again",
+			http.MethodPost, func(name string) string { return url.PathEscape(name) + "/mark-available" }, nil),
+		newPlacedSubscriptionCmd(gf, "disconnect", "Disconnect a subscription, on Dari or on this computer",
+			http.MethodDelete, func(name string) string { return url.PathEscape(name) + "?scope=user" }, nil),
 		newSubscriptionAutoResetCmd(gf),
 		newSubscriptionResetsCmd(gf),
 		newSubscriptionUseResetCmd(gf),
 		newSubscriptionRenameCmd(gf),
+		newSubscriptionMoveCmd(gf),
 	)
 	return cmd
 }
@@ -370,18 +376,32 @@ func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
 func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 	return &cobra.Command{
 		Use:   "list",
-		Short: "List your subscriptions in connection order, with which is active and which are held",
+		Short: "List your subscriptions in connection order, with where each lives, which is active, and which are held",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			subscriptions, err := listSubscriptionCredentials(cmd, gf)
+			selfHosted, err := selfHostedGateway()
 			if err != nil {
 				return err
 			}
-			rows := make([]map[string]any, 0, len(subscriptions))
-			for _, subscription := range subscriptions {
+			var placed []placedSubscription
+			if selfHosted {
+				subscriptions, err := listSubscriptionCredentials(cmd, gf)
+				if err != nil {
+					return err
+				}
+				for _, subscription := range subscriptions {
+					placed = append(placed, placedSubscription{subscription, "", "Gateway"})
+				}
+			} else if placed, err = listPlacedSubscriptions(cmd.Context(), gf, cmd.ErrOrStderr(), true); err != nil {
+				return err
+			}
+			rows := make([]map[string]any, 0, len(placed))
+			for _, p := range placed {
+				subscription := p.subscriptionCredential
 				rows = append(rows, map[string]any{
 					"name":               subscription.Name,
 					"provider":           subscriptionAlias(subscription.OAuthProvider),
+					"where":              p.where,
 					"label":              subscription.Label,
 					"account_email":      subscription.SafeMetadata["account_email"],
 					"plan":               subscription.SafeMetadata["plan"],
@@ -404,7 +424,7 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 }
 
 func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
-	var reconnect string
+	var reconnect, on string
 	cmd := &cobra.Command{
 		Use:   "connect <codex|claude-code|github-copilot|grok|muse-code|opencode-go|vercel-token-pass>",
 		Short: "Connect another subscription, or reconnect one with --reconnect",
@@ -413,6 +433,29 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 			provider, ok := subscriptionProviders[strings.ToLower(strings.TrimSpace(args[0]))]
 			if !ok {
 				return fmt.Errorf("unknown subscription %q: expected codex, claude-code, github-copilot, grok, muse-code, opencode-go, or vercel-token-pass", args[0])
+			}
+			viaGateway, err := routesThroughGateway()
+			if err != nil {
+				return err
+			}
+			if !viaGateway && reconnect == "" {
+				place, err := chooseSubscriptionPlace(cmd.InOrStdin(), cmd.ErrOrStderr(), provider, on, "")
+				if err != nil {
+					return err
+				}
+				return connectSubscriptionAt(cmd.Context(), gf, provider, place, cmd.InOrStdin(), cmd.ErrOrStderr())
+			}
+			if !viaGateway {
+				// A plan reconnects where it lives; --on picks between Dari
+				// and this computer when the name is in both.
+				client, name, err := placedSubscriptionClient(cmd, gf, reconnect, on)
+				if err != nil {
+					return err
+				}
+				return connectAgentPersonalSubscription(cmd.Context(), provider, client, cmd.InOrStdin(), cmd.ErrOrStderr(), name)
+			}
+			if on != "" {
+				return errNoPlaces
 			}
 			client, err := subscriptionClient(cmd.Context(), gf, cmd.ErrOrStderr())
 			if err != nil {
@@ -423,85 +466,127 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&reconnect, "reconnect", "", "credential name of the subscription to reconnect (see `subscription list`)")
+	cmd.Flags().StringVar(&on, "on", "", "where the plan lives: dari, computer (synced to Dari), or private; omit for the menu. With --reconnect: dari or computer, when the name is in both")
 	return cmd
 }
 
-func newSubscriptionCredentialCmd(gf *globalFlags, use, short, method string, path func(name string) string) *cobra.Command {
-	return &cobra.Command{
+func newSubscriptionAutoResetCmd(gf *globalFlags) *cobra.Command {
+	cmd := newPlacedSubscriptionCmd(gf, "auto-reset",
+		"Let Dari spend a ChatGPT or Claude Code subscription's banked limit resets when every subscription for that provider is exhausted",
+		http.MethodPut, func(name string) string { return url.PathEscape(name) + "/auto-reset" },
+		func(args []string) any {
+			return map[string]bool{"enabled": strings.EqualFold(strings.TrimSpace(args[1]), "on")}
+		})
+	cmd.Use = "auto-reset <codex|claude-code|NAME> <on|off>"
+	cmd.Args = func(cmd *cobra.Command, args []string) error {
+		if err := cobra.ExactArgs(2)(cmd, args); err != nil {
+			return err
+		}
+		if state := strings.ToLower(strings.TrimSpace(args[1])); state != "on" && state != "off" {
+			return fmt.Errorf("expected on or off, got %q", args[1])
+		}
+		return nil
+	}
+	return cmd
+}
+
+func newSubscriptionRenameCmd(gf *globalFlags) *cobra.Command {
+	cmd := newPlacedSubscriptionCmd(gf, "rename", "Give a subscription your own name; an empty label clears it",
+		http.MethodPut, func(name string) string { return url.PathEscape(name) + "/label" },
+		func(args []string) any { return map[string]string{"label": strings.TrimSpace(args[1])} })
+	cmd.Use = "rename <claude-code|codex|NAME> <label>"
+	cmd.Args = cobra.ExactArgs(2)
+	return cmd
+}
+
+// newPlacedSubscriptionCmd acts on one plan where it lives: on hosted Dari, on
+// this computer's gateway, or on a self-hosted gateway.
+func newPlacedSubscriptionCmd(gf *globalFlags, use, short, method string, path func(name string) string, body func(args []string) any) *cobra.Command {
+	var on string
+	cmd := &cobra.Command{
 		Use:   use + " <claude-code|codex|NAME>",
 		Short: short,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := resolveSubscriptionName(cmd, gf, args[0])
+			var payload any
+			if body != nil {
+				payload = body(args)
+			}
+			client, name, err := placedSubscriptionClient(cmd, gf, args[0], on)
 			if err != nil {
 				return err
 			}
 			var resp map[string]any
-			if err := subscriptionRequest(cmd, gf, method,
-				"/v1/organizations/current/credentials/"+path(name), nil, &resp); err != nil {
-				return err
+			if err := client.Do(cmd.Context(), method, "/v1/organizations/current/credentials/"+path(name), payload, &resp); err != nil {
+				return api.HumanError(err)
 			}
 			return printJSON(resp)
 		},
 	}
+	cmd.Flags().StringVar(&on, "on", "", "dari or computer, when the name is connected in both")
+	return cmd
 }
 
-func newSubscriptionAutoResetCmd(gf *globalFlags) *cobra.Command {
-	return &cobra.Command{
-		Use:   "auto-reset <codex|claude-code|NAME> <on|off>",
-		Short: "Let Dari spend a ChatGPT or Claude Code subscription's banked limit resets when every subscription for that provider is exhausted",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			var enabled bool
-			switch strings.ToLower(strings.TrimSpace(args[1])) {
-			case "on":
-				enabled = true
-			case "off":
-			default:
-				return fmt.Errorf("expected on or off, got %q", args[1])
-			}
-			// Banked resets are a hosted-billing feature the gateway does not serve.
-			gateway, err := currentGateway()
-			if err != nil {
-				return err
-			}
-			if gateway != nil {
-				return fmt.Errorf("auto-reset is only available on the hosted Dari API; it is not supported with a gateway")
-			}
-			name, err := resolveSubscriptionName(cmd, gf, args[0])
-			if err != nil {
-				return err
-			}
-			var resp map[string]any
-			if err := subscriptionRequest(cmd, gf, http.MethodPut,
-				"/v1/organizations/current/credentials/"+url.PathEscape(name)+"/auto-reset",
-				map[string]bool{"enabled": enabled}, &resp); err != nil {
-				return err
-			}
-			return printJSON(resp)
-		},
+// placedSubscriptionClient finds the plan an argument names wherever it
+// lives, and the API that manages it there.
+func placedSubscriptionClient(cmd *cobra.Command, gf *globalFlags, arg, on string) (*api.Client, string, error) {
+	selfHosted, err := selfHostedGateway()
+	if err != nil {
+		return nil, "", err
 	}
+	if selfHosted {
+		name, err := resolveSubscriptionName(cmd, gf, arg)
+		if err != nil {
+			return nil, "", err
+		}
+		client, err := subscriptionClient(cmd.Context(), gf, cmd.ErrOrStderr())
+		return client, name, err
+	}
+	all, err := listPlacedSubscriptions(cmd.Context(), gf, cmd.ErrOrStderr(), false)
+	if err != nil {
+		return nil, "", err
+	}
+	found, err := findPlacedSubscription(all, arg, on)
+	if err != nil {
+		return nil, "", err
+	}
+	client, err := placedClient(cmd.Context(), gf, found, cmd.ErrOrStderr())
+	return client, found.Name, err
 }
 
-func newSubscriptionRenameCmd(gf *globalFlags) *cobra.Command {
-	return &cobra.Command{
-		Use:   "rename <claude-code|codex|NAME> <label>",
-		Short: "Give a subscription your own name; an empty label clears it",
-		Args:  cobra.ExactArgs(2),
+func newSubscriptionMoveCmd(gf *globalFlags) *cobra.Command {
+	var on, from string
+	cmd := &cobra.Command{
+		Use:   "move <claude-code|codex|NAME>",
+		Short: "Move a subscription between Dari, this computer, and private on this computer",
+		Long: "Moving between Dari and this computer signs in again where the plan goes, then disconnects it\n" +
+			"where it was. Moving between this computer and private changes only whether it syncs to Dari.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			name, err := resolveSubscriptionName(cmd, gf, args[0])
+			if selfHosted, err := selfHostedGateway(); err != nil || selfHosted {
+				return cmpErr(err, errNoPlaces)
+			}
+			all, err := listPlacedSubscriptions(cmd.Context(), gf, cmd.ErrOrStderr(), false)
 			if err != nil {
 				return err
 			}
-			var resp map[string]any
-			if err := subscriptionRequest(cmd, gf, http.MethodPut,
-				"/v1/organizations/current/credentials/"+url.PathEscape(name)+"/label",
-				map[string]string{"label": strings.TrimSpace(args[1])}, &resp); err != nil {
+			found, err := findPlacedSubscription(all, args[0], from)
+			if err != nil {
 				return err
 			}
-			return printJSON(resp)
+			if on == "" && !agentInputIsTerminal(cmd.InOrStdin()) {
+				return errors.New("pass --on dari, computer, or private to move without a terminal")
+			}
+			to, err := chooseSubscriptionPlace(cmd.InOrStdin(), cmd.ErrOrStderr(), subscriptionProviderFor(found.OAuthProvider), on, found.place)
+			if err != nil {
+				return err
+			}
+			return moveSubscription(cmd.Context(), gf, found, to, cmd.InOrStdin(), cmd.ErrOrStderr())
 		},
 	}
+	cmd.Flags().StringVar(&on, "on", "", "where it goes: dari, computer (synced to Dari), or private; omit for the menu")
+	cmd.Flags().StringVar(&from, "from", "", "dari or computer, when the name is connected in both")
+	return cmd
 }
 
 // resolveSubscriptionName maps a provider alias to its only connected
@@ -633,44 +718,14 @@ func resolveCredentialValue(name string, explicit *string, useStdin bool) (strin
 	}
 }
 
-// requireHostedResets refuses the banked-reset commands on a gateway, which
-// does not serve them.
-func requireHostedResets() error {
-	gateway, err := currentGateway()
-	if err != nil {
-		return err
-	}
-	if gateway != nil {
-		return errors.New("banked resets are only available on the hosted Dari API; they are not supported with a gateway")
-	}
-	return nil
-}
-
 func newSubscriptionResetsCmd(gf *globalFlags) *cobra.Command {
-	return &cobra.Command{
-		Use:   "resets <codex|claude-code|NAME>",
-		Short: "List a ChatGPT or Claude Code subscription's banked limit resets, the soonest to expire first",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireHostedResets(); err != nil {
-				return err
-			}
-			name, err := resolveSubscriptionName(cmd, gf, args[0])
-			if err != nil {
-				return err
-			}
-			var resp map[string]any
-			if err := subscriptionRequest(cmd, gf, http.MethodGet,
-				"/v1/organizations/current/credentials/"+url.PathEscape(name)+"/resets", nil, &resp); err != nil {
-				return err
-			}
-			return printJSON(resp)
-		},
-	}
+	return newPlacedSubscriptionCmd(gf, "resets", "List a ChatGPT or Claude Code subscription's banked limit resets, the soonest to expire first",
+		http.MethodGet, func(name string) string { return url.PathEscape(name) + "/resets" }, nil)
 }
 
 func newSubscriptionUseResetCmd(gf *globalFlags) *cobra.Command {
-	return &cobra.Command{
+	var on string
+	cmd := &cobra.Command{
 		Use:   "use-reset <codex|claude-code|NAME> [RESET_ID]",
 		Short: "Spend one banked limit reset now; without RESET_ID, the usable one that expires first",
 		Long: "Spend one banked limit reset now, clearing the subscription's usage limits. " +
@@ -678,10 +733,7 @@ func newSubscriptionUseResetCmd(gf *globalFlags) *cobra.Command {
 			"usually kept (for example \"nothing_to_reset\" when the plan is not at a limit).",
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := requireHostedResets(); err != nil {
-				return err
-			}
-			name, err := resolveSubscriptionName(cmd, gf, args[0])
+			client, name, err := placedSubscriptionClient(cmd, gf, args[0], on)
 			if err != nil {
 				return err
 			}
@@ -689,25 +741,23 @@ func newSubscriptionUseResetCmd(gf *globalFlags) *cobra.Command {
 			if len(args) == 2 {
 				resetID = strings.TrimSpace(args[1])
 			} else {
-				var listed struct {
-					Resets []subscriptionReset `json:"resets"`
-				}
-				if err := subscriptionRequest(cmd, gf, http.MethodGet,
-					"/v1/organizations/current/credentials/"+url.PathEscape(name)+"/resets", nil, &listed); err != nil {
+				resets, _, err := listSubscriptionResets(cmd.Context(), client, name)
+				if err != nil {
 					return err
 				}
-				usable := slices.IndexFunc(listed.Resets, func(r subscriptionReset) bool { return r.Usable })
+				usable := slices.IndexFunc(resets, func(r subscriptionReset) bool { return r.Usable })
 				if usable < 0 {
 					return fmt.Errorf("%s has no banked reset it can use now", name)
 				}
-				resetID = listed.Resets[usable].ID
+				resetID = resets[usable].ID
 			}
-			var resp map[string]any
-			if err := subscriptionRequest(cmd, gf, http.MethodPost,
-				"/v1/organizations/current/credentials/"+url.PathEscape(name)+"/resets/"+url.PathEscape(resetID)+"/use", nil, &resp); err != nil {
+			result, err := useSubscriptionReset(cmd.Context(), client, name, resetID)
+			if err != nil {
 				return err
 			}
-			return printJSON(resp)
+			return printJSON(map[string]string{"result": result})
 		},
 	}
+	cmd.Flags().StringVar(&on, "on", "", "dari or computer, when the name is connected in both")
+	return cmd
 }

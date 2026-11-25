@@ -46,10 +46,14 @@ export {
   type SubscriptionProvider,
 } from "./oauth.js";
 export {
+  SubscriptionAccountConnectedError,
   SubscriptionStore,
   activeModelHolds,
   currentUsage,
   isHeld,
+  sameConnectedAccount,
+  type AccountRef,
+  type ConnectedAccount,
   type PendingOAuthSession,
   type SubscriptionCredential,
   type SubscriptionModelHold,

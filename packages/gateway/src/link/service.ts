@@ -22,6 +22,7 @@ import type {
   LinkLimit,
   LinkManagedGrant,
   LinkPlanAdded,
+  LinkPlanOnComputer,
   LinkPlatform,
   LinkSignIn,
   LinkSpend,
@@ -149,6 +150,8 @@ export type LinkUsers = {
   completeThrough(grantId: string): string | null;
   /** A user's plans and API keys, oldest first. */
   plans(subject: string): Promise<LinkSubscription[]>;
+  /** See `LinkApprovalPage.plansOnComputers`. */
+  plansOnComputers?(subject: string): Promise<LinkPlanOnComputer[]>;
   /** The plans and API keys with these ids, whoever added them. */
   plansWithIds(ids: readonly string[]): Promise<LinkSubscription[]>;
   /** See `LinkApprovalPage.addKey`; the provider is one of `keyProviders`. */
@@ -238,6 +241,7 @@ export function linkPlatform(store: LinkStore, users: LinkUsers): LinkPlatform {
       connectable: users.connectable,
       keyProviders: users.keyProviders,
       subscriptions: (subject) => users.plans(subject),
+      ...(users.plansOnComputers === undefined ? {} : { plansOnComputers: users.plansOnComputers }),
       async addKey(subject, provider, apiKey) {
         if (!users.keyProviders.some((candidate) => candidate.id === provider)) {
           throw new HttpError(400, "Choose a provider to add a key for.", "invalid_request");

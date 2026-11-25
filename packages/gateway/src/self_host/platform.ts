@@ -16,6 +16,7 @@ import {
 } from "./resolve.js";
 import { type SubscriptionStore } from "./subscriptions/index.js";
 import { refreshedAccessToken } from "./subscriptions/access.js";
+import { hasBankedResets, providerBaseUrls, recoverHeldPlans } from "./subscriptions/resets.js";
 
 /**
  * The self-hosted platform: routers from the config file and router specs,
@@ -68,7 +69,18 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
         return deps.subscriptions.holdModel(credentialId, limit.model, limit.resetsAt, limit.reason);
       }
       const another = deps.subscriptions.markUnavailable(credentialId, limit.resetsAt, limit.reason);
-      if (linkGrantId === undefined) return another;
+      if (linkGrantId === undefined) {
+        // The owner's plans may come back early: from the provider's own
+        // report, or by spending a banked reset (resets.ts).
+        const held = deps.subscriptions.get(credentialId);
+        if (held === null || held.owner !== null || !hasBankedResets(held)) return another;
+        if (held.provider === "anthropic_claude_code" && another) return another;
+        return await recoverHeldPlans({
+          store: deps.subscriptions,
+          fetch: deps.fetch,
+          baseUrls: providerBaseUrls(deps.config.providers),
+        }, held);
+      }
       // A grant's retry may use only its own subscriptions.
       const provider = deps.subscriptions.get(credentialId)?.provider;
       return provider !== undefined && deps.subscriptions.activeCredential(

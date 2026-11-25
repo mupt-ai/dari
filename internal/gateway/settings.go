@@ -4,6 +4,7 @@ package gateway
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,6 +43,56 @@ type Settings struct {
 	// AgentRouters are the gateway routers `dari setup <agent> --router
 	// <name> --default` made agents' own, by agent name.
 	AgentRouters map[string]string `json:"agent_routers,omitempty"`
+	// GatewayID names this machine's gateway to hosted Dari, and
+	// EncryptionKey encrypts the plan tokens in its database; both are
+	// generated once (EnsureIdentity) and kept across modes.
+	GatewayID     string `json:"gateway_id,omitempty"`
+	EncryptionKey string `json:"encryption_key,omitempty"`
+	// Hosted connects the local gateway to hosted Dari for this start only:
+	// it syncs its plans and Activity there and forwards what it cannot
+	// serve. Never saved; nil starts it unconnected.
+	Hosted *Hosted `json:"-"`
+}
+
+// Hosted is the hosted Dari routing service a connected gateway syncs with,
+// and the user's key there.
+type Hosted struct {
+	URL, Key string
+}
+
+// EnsureIdentity gives the settings a gateway ID and encryption key, saving
+// them when either is new.
+func EnsureIdentity(settings *Settings) error {
+	if settings.GatewayID != "" && settings.EncryptionKey != "" {
+		return nil
+	}
+	if settings.GatewayID == "" {
+		raw := make([]byte, 16)
+		if _, err := rand.Read(raw); err != nil {
+			return err
+		}
+		settings.GatewayID = "gw_" + hex.EncodeToString(raw)
+	}
+	if settings.EncryptionKey == "" {
+		raw := make([]byte, 32)
+		if _, err := rand.Read(raw); err != nil {
+			return err
+		}
+		settings.EncryptionKey = base64.StdEncoding.EncodeToString(raw)
+	}
+	if settings.Mode == "" {
+		settings.Mode = ModeHosted
+	}
+	saved, ok, err := Load()
+	if err != nil {
+		return err
+	}
+	if ok {
+		// Only the identity is new; the rest stays as saved.
+		saved.GatewayID, saved.EncryptionKey = settings.GatewayID, settings.EncryptionKey
+		return Save(saved)
+	}
+	return Save(Settings{Mode: settings.Mode, GatewayID: settings.GatewayID, EncryptionKey: settings.EncryptionKey, LocalKey: settings.LocalKey})
 }
 
 // Dir is the gateway's directory beside the CLI state: settings, and a local

@@ -15,6 +15,7 @@ import {
   OPENCODE_APPROVAL_PENDING,
   XAI_APPROVAL_PENDING,
   SUBSCRIPTION_PROVIDERS,
+  SubscriptionAccountConnectedError,
   SubscriptionOAuthInputError,
   SubscriptionOAuthProviderError,
   completeOAuth,
@@ -120,6 +121,7 @@ export function selfHostedLink(
         flow: authorization.flow,
         credentialName: null,
         owner: newSubject(),
+        private: false,
         expiresAt: authorization.expiresAt,
       });
       return { session: session.token, authorizationUrl: authorization.authorizationUrl, userCode: authorization.userCode };
@@ -149,7 +151,13 @@ export function selfHostedLink(
         throw error;
       }
       const owner = subject ?? session.owner;
-      const credentialId = deps.subscriptions.connect(tokens, null, new Date(), owner)!.id;
+      let credentialId: string;
+      try {
+        credentialId = deps.subscriptions.connect(tokens, null, new Date(), owner)!.id;
+      } catch (error) {
+        if (error instanceof SubscriptionAccountConnectedError) throw new HttpError(409, error.message, "conflict_error");
+        throw error;
+      }
       deps.subscriptions.deleteSession(token);
       return { subject: owner, credentialId };
     },

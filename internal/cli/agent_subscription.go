@@ -140,13 +140,24 @@ func subscriptionLabel(subscription subscriptionCredential, showProvider bool, c
 		if plan := subscriptionPlan(subscription); plan != "" {
 			label += " " + ansiGray + plan + ansiReset
 		}
-		return label
+		return label + subscriptionWhere(subscription)
 	}
 	kind := padRight(subscriptionProviderFor(subscription.OAuthProvider).name, columns.provider)
 	if columns.plan > 0 {
 		kind += " " + padRight(subscriptionPlan(subscription), columns.plan)
 	}
-	return padRight(kind, columns.name) + subscriptionName(subscription)
+	return padRight(kind, columns.name) + subscriptionName(subscription) + subscriptionWhere(subscription)
+}
+
+// subscriptionWhere tags a plan on this computer where hosted plans list too.
+func subscriptionWhere(subscription subscriptionCredential) string {
+	switch subscription.place {
+	case placeComputer:
+		return " " + ansiGray + "This Computer" + ansiReset
+	case placePrivate:
+		return " " + ansiGray + "Private" + ansiReset
+	}
+	return ""
 }
 
 func padRight(text string, width int) string {

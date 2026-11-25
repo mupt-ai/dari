@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -26,9 +27,9 @@ import (
 	"github.com/mupt-ai/dari/internal/state"
 )
 
-const (
-	routingBaseURL = "https://routing.dari.dev"
-)
+// routingBaseURL is hosted Dari's routing service; DARI_ROUTING_URL points
+// the CLI at another deployment's, as DARI_API_URL does for the API.
+var routingBaseURL = strings.TrimRight(cmp.Or(strings.TrimSpace(os.Getenv("DARI_ROUTING_URL")), "https://routing.dari.dev"), "/")
 
 // agentLaunchers maps each agent subcommand to its help text. Execute
 // dispatches them before Cobra parses anything, so every following argument
@@ -68,6 +69,9 @@ type agentLaunch struct {
 	// reconfigure opens the models picker on a router set up earlier, as
 	// `dari setup <agent>` does.
 	reconfigure bool
+	// onComputer routes a hosted launch through this computer's gateway,
+	// which serves the user's plan here and syncs Activity to Dari.
+	onComputer bool
 }
 
 func (l agentLaunch) setup() bool { return l.setupCLI || l.setupDesktop }
@@ -153,7 +157,7 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 	// Status lines render in the agent and in this launcher (Codex, Muse); both
 	// read this, and a hosted launch clears one inherited from a gateway session.
 	noActivityLink := ""
-	if !hostedRouting(baseURL) {
+	if !hostedRouting(baseURL) && !launch.onComputer {
 		noActivityLink = "1"
 	}
 	if err := os.Setenv(agents.NoActivityLinkEnv, noActivityLink); err != nil {
@@ -314,6 +318,12 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 	// leaves that setup on the organization it was made in.
 	if !launch.setup() && choice.org == "" && (launch.reconfigure || choice.makeDefault || (choice.name != "" && agentUsesRouter(ctx, client, launch.name, routerID, stderr))) {
 		syncAgentSetup(ctx, launch.name, access.key, baseURL, models, stderr)
+	}
+	// A plan the agent uses on this computer serves there; the gateway sends
+	// what it cannot serve on to the same router here.
+	if gw := computerPlanGateway(ctx, client, launch.name, access.key, stderr); gw != nil {
+		launch.onComputer = true
+		return gw.key, gw.url + strings.TrimPrefix(baseURL, routingBaseURL), models, nil
 	}
 	return access.key, baseURL, models, nil
 }

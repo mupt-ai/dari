@@ -202,6 +202,24 @@ type accountsPage struct {
 	// onboarding pages leave with Dari managed billing while nothing is
 	// connected.
 	onboarding bool
+	// computer manages the plans on this computer's gateway beside hosted
+	// ones; nil when it has none.
+	computer *api.Client
+}
+
+// clientFor is the API that manages a subscription: this computer's gateway
+// for a plan on it, and otherwise the page's.
+func (page accountsPage) clientFor(subscription subscriptionCredential) *api.Client {
+	if subscription.place != "" && subscription.place != placeDari {
+		return page.computer
+	}
+	return page.client
+}
+
+// subscriptionKey tells apart a hosted plan and one on this computer that
+// share a credential name.
+func subscriptionKey(subscription subscriptionCredential) string {
+	return string(subscription.place) + ":" + subscription.Name
 }
 
 type accountsResult struct {
@@ -223,6 +241,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 	// The page reloads only after something may have changed; going back
 	// shows the last listing at once.
 	var raw json.RawMessage
+	var computerPlans []subscriptionCredential
 	stale, routing := true, true
 	resets := map[string]*resetsFetch{}
 	showAgentLoading(stderr, "Loading accounts")
@@ -237,6 +256,9 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				if routing, err = autoroutingAllowed(ctx, page.client); err != nil {
 					return result, err
 				}
+				if computerPlans, page.computer, err = computerSubscriptions(ctx, raw, stderr); err != nil {
+					return result, err
+				}
 			}
 			resets = map[string]*resetsFetch{}
 			stale = false
@@ -247,19 +269,17 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 		if err := json.Unmarshal(raw, &listed); err != nil {
 			return result, err
 		}
-		subscriptions := slices.DeleteFunc(personalSubscriptions(listed.Credentials), func(c subscriptionCredential) bool {
+		subscriptions := slices.DeleteFunc(append(personalSubscriptions(listed.Credentials), computerPlans...), func(c subscriptionCredential) bool {
 			return !slices.ContainsFunc(page.providers, func(p agentSubscriptionProvider) bool { return p.id == c.OAuthProvider })
 		})
 		// Each subscription's banked resets load while the list shows, so its
 		// page opens without waiting.
-		if page.hosted {
-			for _, subscription := range subscriptions {
-				if p := subscriptionProviderFor(subscription.OAuthProvider); (p == codexSubscription || p == claudeSubscription) && resets[subscription.Name] == nil {
-					resets[subscription.Name] = fetchSubscriptionResets(ctx, page.client, subscription.Name)
-				}
+		for _, subscription := range subscriptions {
+			if hasBankedResets(subscription) && resets[subscriptionKey(subscription)] == nil {
+				resets[subscriptionKey(subscription)] = fetchSubscriptionResets(ctx, page.clientFor(subscription), subscription.Name)
 			}
 		}
-		if i := slices.IndexFunc(subscriptions, func(c subscriptionCredential) bool { return c.Name == reopen }); i >= 0 {
+		if i := slices.IndexFunc(subscriptions, func(c subscriptionCredential) bool { return subscriptionKey(c) == reopen }); i >= 0 {
 			outcome, err := page.manageSubscription(ctx, subscriptions[i], subscriptions, resets[reopen], stdin, stderr)
 			if err != nil {
 				return result, err
@@ -338,10 +358,10 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				option.heading = "Subscriptions"
 			}
 			add(option, func() (bool, error) {
-				outcome, err := page.manageSubscription(ctx, subscription, subscriptions, resets[subscription.Name], stdin, stderr)
+				outcome, err := page.manageSubscription(ctx, subscription, subscriptions, resets[subscriptionKey(subscription)], stdin, stderr)
 				changed = outcome != subscriptionPageBack
 				if outcome == subscriptionPageActed {
-					reopen = subscription.Name
+					reopen = subscriptionKey(subscription)
 				}
 				return false, err
 			})
@@ -481,7 +501,23 @@ func (page accountsPage) addSubscription(ctx context.Context, subscriptions []su
 			return agentSubscriptionProvider{}, false, err
 		}
 	}
-	if err := connectAgentPersonalSubscription(ctx, selected.provider, page.client, stdin, stderr, ""); err != nil {
+	// On hosted Dari a plan can live there or on this computer, as with
+	// `dari accounts subscription connect`.
+	place := placeDari
+	if page.hosted {
+		if place, err = chooseSubscriptionPlace(stdin, stderr, selected.provider, "", ""); err != nil {
+			if errors.Is(err, errAgentChoiceCanceled) {
+				err = nil
+			}
+			return agentSubscriptionProvider{}, false, err
+		}
+	}
+	if place == placeDari {
+		err = connectAgentPersonalSubscription(ctx, selected.provider, page.client, stdin, stderr, "")
+	} else {
+		err = connectOnComputer(ctx, selected.provider, place, stdin, stderr)
+	}
+	if err != nil {
 		return agentSubscriptionProvider{}, false, err
 	}
 	return selected.provider, true, nil
@@ -494,13 +530,14 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 	name := subscriptionName(subscription)
 	provider := subscriptionProviderFor(subscription.OAuthProvider)
 	path := "/v1/organizations/current/credentials/" + url.PathEscape(subscription.Name)
-	resettable := page.hosted && (provider == codexSubscription || provider == claudeSubscription)
+	client := page.clientFor(subscription)
+	resettable := hasBankedResets(subscription)
 	var resets []subscriptionReset
 	var resetsErr error
 	readAt := ""
 	if resettable {
 		if prefetched == nil {
-			prefetched = fetchSubscriptionResets(ctx, page.client, subscription.Name)
+			prefetched = fetchSubscriptionResets(ctx, client, subscription.Name)
 		}
 		resets, resetsErr = prefetched.wait()
 		readAt = prefetched.readAt
@@ -558,7 +595,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 				}
 			}
 			add(option, func() (bool, error) {
-				return page.useReset(ctx, subscription, reset, stdin, stderr)
+				return useResetPage(ctx, client, subscription, reset, stdin, stderr)
 			})
 		}
 		if resettable {
@@ -582,7 +619,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 					return false, err
 				}
 				var updated map[string]any
-				return true, api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
+				return true, api.HumanError(client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
 			})
 		}
 		settings := len(options)
@@ -599,18 +636,18 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 		add(agentChoiceOption{label: "Rename"}, func() (bool, error) {
 			return runAgentTextInputTUI(stdin, stderr, "Rename "+name, []string{"Empty shows the account email."}, name, func(label string) error {
 				var updated map[string]any
-				return api.HumanError(page.client.Do(ctx, http.MethodPut, path+"/label", map[string]string{"label": strings.TrimSpace(label)}, &updated))
+				return api.HumanError(client.Do(ctx, http.MethodPut, path+"/label", map[string]string{"label": strings.TrimSpace(label)}, &updated))
 			})
 		})
 		if subscriptionStatus(subscription) == "held" || len(activeModelHolds(subscription, time.Now())) > 0 {
 			add(agentChoiceOption{label: "Mark Available"}, func() (bool, error) {
 				var updated map[string]any
-				return true, api.HumanError(page.client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
+				return true, api.HumanError(client.Do(ctx, http.MethodPost, path+"/mark-available", nil, &updated))
 			})
 		}
 		// Reconnect and Disconnect, the connection's own actions, sit together.
 		add(agentChoiceOption{label: "Reconnect"}, func() (bool, error) {
-			err := connectAgentPersonalSubscription(ctx, provider, page.client, stdin, stderr, subscription.Name)
+			err := connectAgentPersonalSubscription(ctx, provider, client, stdin, stderr, subscription.Name)
 			return err == nil, err
 		})
 		disconnected := false
@@ -621,7 +658,7 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 				return false, err
 			}
 			disconnected = true
-			return true, api.HumanError(page.client.Do(ctx, http.MethodDelete, path+"?scope=user", nil, nil))
+			return true, api.HumanError(client.Do(ctx, http.MethodDelete, path+"?scope=user", nil, nil))
 		})
 		options[settings].heading = "Settings"
 		options = append(options, agentChoiceOption{label: "Back", gap: true})
@@ -806,7 +843,7 @@ func usageResetTime(resets time.Time) string {
 
 // useReset spends one banked reset after the user confirms, then shows
 // what the provider answered. It reports whether it asked the provider.
-func (page accountsPage) useReset(ctx context.Context, subscription subscriptionCredential, reset subscriptionReset, stdin io.Reader, stderr io.Writer) (bool, error) {
+func useResetPage(ctx context.Context, client *api.Client, subscription subscriptionCredential, reset subscriptionReset, stdin io.Reader, stderr io.Writer) (bool, error) {
 	name := subscriptionName(subscription)
 	expiry := strings.TrimPrefix(resetExpiry(reset), " · ")
 	if !reset.Usable {
@@ -822,7 +859,7 @@ func (page accountsPage) useReset(ctx context.Context, subscription subscription
 		return false, err
 	}
 	// Whatever happened, the answer shows here and the page reloads after it.
-	result, err := useSubscriptionReset(ctx, page.client, subscription.Name, reset.ID)
+	result, err := useSubscriptionReset(ctx, client, subscription.Name, reset.ID)
 	text := resetResultText(result)
 	if err != nil {
 		text = "Couldn't use that reset: " + err.Error()

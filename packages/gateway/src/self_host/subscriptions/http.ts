@@ -19,21 +19,31 @@ import {
   activeModelHolds,
   currentUsage,
   isHeld,
+  sameConnectedAccount,
+  SubscriptionAccountConnectedError,
+  type ConnectedAccount,
   type SubscriptionCredential,
   type SubscriptionStore,
 } from "./store.js";
+import { hasBankedResets, listResets, useReset, type ProviderBaseUrls } from "./resets.js";
 import { refreshStaleUsage } from "./usage.js";
 
 export type SubscriptionHttpDeps = {
   store: SubscriptionStore;
   fetch: OAuthFetch;
+  // Where Claude and ChatGPT are reached for usage and banked resets.
+  baseUrls?: ProviderBaseUrls;
   now?: () => Date;
+  // The user's plans hosted Dari holds (on Dari and on other computers), read
+  // before a sign-in connects a new account. Set when this gateway is
+  // connected to hosted Dari.
+  hostedAccounts?: () => Promise<ConnectedAccount[]>;
 };
 
 const BASE = "/v1/organizations/current/credentials";
 // Subscription names are env-var-style, which keeps other credential routes
 // such as `provider-credentials/...` out of these matches.
-const NAMED = /^\/([A-Za-z_][A-Za-z0-9_]*)(\/label|\/mark-available|\/auto-reset)?$/;
+const NAMED = /^\/([A-Za-z_][A-Za-z0-9_]*)(\/label|\/mark-available|\/auto-reset|\/private|\/resets|\/resets\/[^/]+\/use)?$/;
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -52,9 +62,9 @@ export async function handleSubscriptionRequest(
   const now = deps.now?.() ?? new Date();
   try {
     if (path === "" && request.method === "GET") {
-      // OpenCode Go reports usage only when asked.
+      // Plans whose usage is read only when asked, or idle since their last response.
       if (url.searchParams.get("refresh_usage") === "true") {
-        await refreshStaleUsage(deps.store, { fetch: deps.fetch, now });
+        await refreshStaleUsage(deps.store, { fetch: deps.fetch, now, ...(deps.baseUrls ? { baseUrls: deps.baseUrls } : {}) });
       }
       return json(200, listBody(deps.store, now));
     }
@@ -88,15 +98,45 @@ export async function handleSubscriptionRequest(
       }
       return json(200, summary(deps.store, found(renamed, name), now));
     }
+    if (action === "/private" && request.method === "PUT") {
+      // Private plans stay off hosted Dari: a connected gateway neither
+      // serves nor reports them.
+      const body = await readBody(request);
+      if (typeof body.private !== "boolean") throw new HttpError(400, "private must be true or false.");
+      return json(200, summary(deps.store, found(deps.store.setPrivate(name, body.private, now), name), now));
+    }
     if (action === "/mark-available" && request.method === "POST") {
       return json(200, summary(deps.store, found(deps.store.markAvailable(name, now), name), now));
     }
-    if (action === "/auto-reset" && request.method === "POST") {
-      throw new HttpError(400, "Spending banked limit resets is not supported by this gateway.");
+    if (action === "/auto-reset" && request.method === "PUT") {
+      const body = await readBody(request);
+      if (typeof body.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false.");
+      const credential = resettable(found(deps.store.getByName(name), name));
+      return json(200, summary(deps.store, found(deps.store.setAutoRedeemResets(credential.name, body.enabled, now), name), now));
+    }
+    if (action === "/resets" && request.method === "GET") {
+      const credential = resettable(found(deps.store.getByName(name), name));
+      const resets = await fromProvider(() => listResets({ ...deps, now }, credential));
+      return json(200, {
+        resets: resets.map((reset) => ({
+          id: reset.id,
+          label: reset.label,
+          expires_at: reset.expiresAt?.toISOString() ?? null,
+          usable: reset.usable,
+        })),
+        // Always read live here; hosted Dari may show an earlier list.
+        read_at: null,
+      });
+    }
+    if (action?.startsWith("/resets/") && request.method === "POST") {
+      const credential = resettable(found(deps.store.getByName(name), name));
+      const resetId = decodeURIComponent(action.slice("/resets/".length, -"/use".length));
+      return json(200, { result: await fromProvider(() => useReset({ ...deps, now }, credential, resetId)) });
     }
     return null;
   } catch (error) {
     if (error instanceof HttpError) return json(error.status, { detail: error.message });
+    if (error instanceof SubscriptionAccountConnectedError) return json(409, { detail: error.message });
     if (error instanceof SubscriptionOAuthInputError) return json(400, { detail: error.message });
     if (error instanceof SubscriptionOAuthProviderError) return json(502, { detail: error.message });
     throw error;
@@ -108,7 +148,7 @@ function listBody(store: SubscriptionStore, now: Date) {
     SUBSCRIPTION_PROVIDERS.map((provider) => store.activeCredential(provider, now)?.id),
   );
   return {
-    credentials: store.list().map((credential) => credentialBody(credential, active.has(credential.id), now)),
+    credentials: store.list(undefined, true).map((credential) => credentialBody(credential, active.has(credential.id), now)),
     // Plan gating is hosted-only; a self-hosted gateway always allows routing.
     autorouting_allowed: true,
   };
@@ -123,9 +163,13 @@ async function startSession(deps: SubscriptionHttpDeps, body: Record<string, unk
   if (credentialName !== null && (typeof credentialName !== "string" || !credentialName.trim())) {
     throw new HttpError(400, "credential_name must be a non-empty string.");
   }
-  if (credentialName !== null && deps.store.getByName(credentialName)?.provider !== provider) {
+  const reconnecting = credentialName === null ? null : deps.store.getByName(credentialName);
+  if (credentialName !== null && reconnecting?.provider !== provider) {
     throw new HttpError(404, `Unknown subscription credential ${JSON.stringify(credentialName)}.`);
   }
+  // A reconnected plan stays where it was unless the caller says otherwise.
+  const isPrivate = body.private ?? reconnecting?.private ?? false;
+  if (typeof isPrivate !== "boolean") throw new HttpError(400, "private must be true or false.");
   const authorization = await startOAuth(provider as SubscriptionProvider, { fetch: deps.fetch, now });
   const session = deps.store.createSession(
     {
@@ -133,6 +177,7 @@ async function startSession(deps: SubscriptionHttpDeps, body: Record<string, unk
       flow: authorization.flow,
       credentialName,
       owner: null,
+      private: isPrivate,
       expiresAt: authorization.expiresAt,
     },
     now,
@@ -164,7 +209,21 @@ async function completeSession(deps: SubscriptionHttpDeps, body: Record<string, 
     now,
   });
   deps.store.deleteSession(token);
-  const stored = deps.store.connect(tokens, session.credentialName, now);
+  // Reconnecting a plan to the account it already holds needs no check, so it
+  // works even when hosted Dari cannot be read.
+  const target = session.credentialName === null ? null : deps.store.getByName(session.credentialName);
+  const reconnectsSameAccount = target !== null && sameConnectedAccount(target, tokens);
+  let elsewhere: ConnectedAccount[] = [];
+  if (deps.hostedAccounts !== undefined && !reconnectsSameAccount) {
+    try {
+      elsewhere = await deps.hostedAccounts();
+    } catch (error) {
+      // The provider code is spent: keep the sign-in, checked against this
+      // gateway's own plans only, rather than make the user start over.
+      console.error("hosted account check failed", error instanceof Error ? error.message : String(error));
+    }
+  }
+  const stored = deps.store.connect(tokens, session.credentialName, now, null, session.private, elsewhere);
   if (stored === null) {
     throw new HttpError(404, `Unknown subscription credential ${JSON.stringify(session.credentialName)}.`);
   }
@@ -248,6 +307,8 @@ function credentialBody(credential: SubscriptionCredential, active: boolean, now
     // subscription here belongs to the gateway's one user.
     credential_scope: "user",
     oauth_provider: credential.provider,
+    // Kept off hosted Dari (`dari accounts subscription connect --on private`).
+    private: credential.private,
     created_at: credential.createdAt.toISOString(),
     last_used_at: credential.lastUsedAt?.toISOString() ?? null,
     unavailable_until: held ? credential.unavailableUntil!.toISOString() : null,
@@ -263,9 +324,23 @@ function credentialBody(credential: SubscriptionCredential, active: boolean, now
     // The share of its tightest window the plan last reported used, and
     // every window as shown; null when it reports none and is not held.
     usage: usageBody(credential, now),
-    // Spending banked limit resets is hosted-only.
-    auto_redeem_resets: false,
+    auto_redeem_resets: credential.autoRedeemResets,
   };
+}
+
+function resettable(credential: SubscriptionCredential): SubscriptionCredential {
+  if (!hasBankedResets(credential)) throw new HttpError(400, "Only ChatGPT and Claude Code plans have banked resets.");
+  return credential;
+}
+
+// A provider that fails to answer is a bad gateway, as on hosted Dari.
+async function fromProvider<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call();
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(502, error instanceof Error ? error.message : String(error));
+  }
 }
 
 function found(credential: SubscriptionCredential | null, name: string): SubscriptionCredential {

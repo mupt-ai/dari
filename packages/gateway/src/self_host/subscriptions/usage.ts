@@ -1,14 +1,18 @@
 import { openCodeGoUsageFromReport, tokenPassUsageFromCredits } from "../../providers/subscription_limits.js";
+import { claudeUsageFromReport, claudeUsageReport } from "../../providers/subscription_resets.js";
 import { refreshedAccessToken } from "./access.js";
 import type { OAuthFetch } from "./oauth.js";
+import type { ProviderBaseUrls } from "./resets.js";
 import type { SubscriptionCredential, SubscriptionStore } from "./store.js";
 
 /**
  * Claude Code, ChatGPT, and Muse Code report usage on the responses the
  * gateway serves. OpenCode Go and Vercel Token Pass do not: Go reports it from
  * a usage endpoint that takes the plan's workspace, and Token Pass its
- * remaining credit from AI Gateway's credits endpoint. The accounts view reads
- * these again when the last reading is stale.
+ * remaining credit from AI Gateway's credits endpoint. A Claude Code plan
+ * that served nothing lately reports it from Claude Code's usage endpoint, as
+ * hosted Dari reads it. The accounts view reads these again when the last
+ * reading is stale.
  */
 // A read, failed or not, is not repeated within this interval.
 const READ_INTERVAL_MS = 60_000;
@@ -21,14 +25,14 @@ const TOKEN_PASS_CREDITS_URL = "https://ai-gateway.vercel.sh/v1/credits";
 // itself, which a reconnect clears.
 const unrecordedAt = new Map<string, number>();
 
-/** Read every stale OpenCode Go and Token Pass plan again; a failed read keeps the last one. */
+/** Read every stale Claude Code, OpenCode Go, and Token Pass plan again; a failed read keeps the last one. */
 export async function refreshStaleUsage(
   store: SubscriptionStore,
-  options: { fetch: OAuthFetch; now?: Date },
+  options: { fetch: OAuthFetch; now?: Date; baseUrls?: ProviderBaseUrls },
 ): Promise<void> {
   const now = options.now ?? new Date();
   const due = (at: number | undefined) => now.getTime() - (at ?? 0) >= READ_INTERVAL_MS;
-  const stale = [...store.list("opencode_go"), ...store.list("vercel_token_pass")].filter((credential) =>
+  const stale = [...store.list("anthropic_claude_code"), ...store.list("opencode_go"), ...store.list("vercel_token_pass")].filter((credential) =>
     due(credential.usage?.observedAt.getTime()) && due(unrecordedAt.get(credential.id))
   );
   await Promise.all(stale.map(async (credential) => {
@@ -44,10 +48,12 @@ export async function refreshStaleUsage(
 async function readUsage(
   store: SubscriptionStore,
   credential: SubscriptionCredential,
-  options: { fetch: OAuthFetch; now: Date },
+  options: { fetch: OAuthFetch; now: Date; baseUrls?: ProviderBaseUrls },
 ): Promise<void> {
   const token = await refreshedAccessToken(store, credential, options);
-  const usage = credential.provider === "vercel_token_pass"
+  const usage = credential.provider === "anthropic_claude_code"
+    ? claudeUsageFromReport(await claudeUsageReport(options.fetch, token, options.baseUrls?.claude), options.now)
+    : credential.provider === "vercel_token_pass"
     ? await readTokenPassUsage(token, options)
     : await readOpenCodeGoUsage(credential, token, options);
   if (usage === null) return;

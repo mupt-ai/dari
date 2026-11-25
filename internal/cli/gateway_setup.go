@@ -69,6 +69,7 @@ func saveGatewayMode(ctx context.Context, settings gateway.Settings) error {
 	// The local key outlives mode switches, so agents set up with it, such
 	// as OpenClaw and Hermes, keep working after a round trip.
 	settings.LocalKey = previous.LocalKey
+	settings.GatewayID, settings.EncryptionKey = previous.GatewayID, previous.EncryptionKey
 	// A self-hosted gateway is remembered, so switching back is one choice.
 	if settings.Mode != gateway.ModeSelfHosted {
 		settings.URL, settings.Key = previous.URL, previous.Key

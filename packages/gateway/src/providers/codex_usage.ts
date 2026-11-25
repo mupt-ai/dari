@@ -75,7 +75,8 @@ function limitWindows(limit: unknown): Array<{ used: number; resetAt: Date | nul
   });
 }
 
-async function fetchCodexUsageReport(args: {
+/** Codex's usage report, the endpoint behind the Codex CLI's /status. */
+export async function fetchCodexUsageReport(args: {
   accessToken: string;
   baseUrl?: string;
   fetch?: typeof fetch;

@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -158,6 +160,17 @@ func ensureInstalled(ctx context.Context, cliVersion string, progress func(strin
 	return true, nil
 }
 
+// HasDatabase reports whether this computer's gateway has stored anything,
+// so plans may be on it even while it is not running.
+func HasDatabase() bool {
+	p, err := paths()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(p.db)
+	return err == nil
+}
+
 // Healthy reports whether a gateway answers at the local URL.
 func Healthy(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
@@ -182,15 +195,19 @@ func EnsureRunning(ctx context.Context, settings Settings, cliVersion string, pr
 	if err != nil {
 		return err
 	}
+	if err := EnsureIdentity(&settings); err != nil {
+		return err
+	}
 	if _, err := ensureInstalled(ctx, cliVersion, progress); err != nil {
 		return err
 	}
 	if Healthy(ctx) {
 		// The installed binary may be newer than the running process: an
 		// update here, or an earlier command that installed without
-		// restarting. Restart the gateway this CLI runs on it.
+		// restarting; or it was started connected and is now wanted
+		// unconnected, or the other way. Restart the gateway this CLI runs.
 		installed := InstalledVersion()
-		if !runsOldBinary(installed, RunningVersion()) {
+		if !runsOldBinary(installed, RunningVersion()) && runningFingerprint() == fingerprint(settings) {
 			return nil
 		}
 		stopped, err := Stop(ctx)
@@ -271,11 +288,24 @@ func command(settings Settings, out io.Writer) (*exec.Cmd, error) {
 	if _, err := os.Stat(p.config); err == nil {
 		env["DARI_GATEWAY_CONFIG"] = p.config
 	}
-	if settings.AutoRoutingKey != "" {
-		env["DARI_AUTO_ROUTING_API_KEY"] = settings.AutoRoutingKey
+	if settings.EncryptionKey != "" {
+		env["DARI_GATEWAY_ENCRYPTION_KEY"] = settings.EncryptionKey
 	}
-	for name, value := range settings.ProviderKeys {
-		env[name] = value
+	if settings.Hosted != nil {
+		// A connected gateway serves the user's hosted routers on its plans
+		// and hosted keys; local-mode routing settings do not apply.
+		hostname, _ := os.Hostname()
+		env["DARI_HOSTED_URL"] = settings.Hosted.URL
+		env["DARI_HOSTED_API_KEY"] = settings.Hosted.Key
+		env["DARI_GATEWAY_ID"] = settings.GatewayID
+		env["DARI_GATEWAY_NAME"] = hostname
+	} else {
+		if settings.AutoRoutingKey != "" {
+			env["DARI_AUTO_ROUTING_API_KEY"] = settings.AutoRoutingKey
+		}
+		for name, value := range settings.ProviderKeys {
+			env[name] = value
+		}
 	}
 	cmd := exec.Command(p.binary)
 	cmd.Env = []string{}
@@ -324,6 +354,9 @@ func Start(settings Settings) error {
 	if err := markRunning(); err != nil {
 		return err
 	}
+	if err := os.WriteFile(fingerprintPath(p), []byte(fingerprint(settings)), 0o600); err != nil {
+		return err
+	}
 	return cmd.Process.Release()
 }
 
@@ -349,7 +382,37 @@ func markRunning() error {
 func clearRunning() {
 	if p, err := paths(); err == nil {
 		_ = os.Remove(runningVersionPath(p))
+		_ = os.Remove(fingerprintPath(p))
 	}
+}
+
+// fingerprint is what a gateway start depends on beyond its binary: whether
+// it is connected, and to which account and gateway ID. A hash, so the
+// hosted key is never written down again.
+func fingerprint(settings Settings) string {
+	if settings.Hosted == nil {
+		return "local"
+	}
+	sum := sha256.Sum256([]byte(settings.Hosted.URL + "\n" + settings.Hosted.Key + "\n" + settings.GatewayID))
+	return "connected:" + hex.EncodeToString(sum[:8])
+}
+
+func fingerprintPath(p localPaths) string {
+	return p.pid + ".mode"
+}
+
+// runningFingerprint is the serving gateway's fingerprint; one started before
+// it was recorded ran unconnected.
+func runningFingerprint() string {
+	p, err := paths()
+	if err != nil {
+		return ""
+	}
+	raw, err := os.ReadFile(fingerprintPath(p))
+	if err != nil {
+		return "local"
+	}
+	return strings.TrimSpace(string(raw))
 }
 
 // RunningVersion is the version of the gateway serving now, as recorded when

@@ -11,6 +11,8 @@ import { createAutoRoutingSelectorBackend } from "../strategies/auto_routing_sel
 import { createPrioritySelectorBackend } from "../strategies/priority_selector.js";
 import type { SelectorBackend } from "../strategies/routing.js";
 import { ActivityStore } from "./activity_store.js";
+import { connectedHandler, createConnectedPlatform, hostedConnectionFromEnv } from "./connected.js";
+import { HostedSync, readHostedAccounts } from "./hosted_sync.js";
 import { createSelfHostedPlatform } from "./platform.js";
 import { checkProviderKey } from "../providers/key_check.js";
 import { CANONICAL_MODELS } from "../models/canonical.js";
@@ -36,10 +38,15 @@ import {
 } from "./router_specs.js";
 import { SessionPinStore } from "./session_pin_store.js";
 import { handleSubscriptionRequest, SubscriptionStore } from "./subscriptions/index.js";
+import { providerBaseUrls } from "./subscriptions/resets.js";
+import { refreshStaleUsage } from "./subscriptions/usage.js";
 
 const SUBSCRIPTION_ROUTES = "/v1/organizations/current/credentials";
 // The models Dari serves, which the Dari CLI's model picker offers.
 const CANONICAL_MODELS_ROUTE = "/v1/canonical-models";
+// How often a connected gateway reads idle plans' usage, so hosted Dari's
+// meters move without a request here.
+const IDLE_USAGE_INTERVAL_MS = 5 * 60_000;
 
 /**
  * Start a self-hosted Dari Gateway from environment variables:
@@ -66,8 +73,14 @@ const CANONICAL_MODELS_ROUTE = "/v1/canonical-models";
  *   Auto Routing; without it, `dari/routing` serves the first listed model.
  * - `PORT` (default 8080), `DARI_GATEWAY_HOST` (default 127.0.0.1; the container
  *   image sets 0.0.0.0), and each provider's standard API key variable.
+ * - `DARI_HOSTED_URL` and `DARI_HOSTED_API_KEY`: connect the gateway to hosted
+ *   Dari (connected.ts), with `DARI_GATEWAY_ID`, `DARI_GATEWAY_NAME`, and
+ *   `DARI_GATEWAY_ENCRYPTION_KEY`. It then serves the user's hosted routers on
+ *   its own plans, hands hosted every request they cannot serve, and syncs its
+ *   plans and requests there; Dari Link and Activity are hosted's.
  */
 export async function startSelfHostedGateway(env: Record<string, string> = process.env as Record<string, string>) {
+  const hosted = hostedConnectionFromEnv(env);
   const gatewayKeys = (env.DARI_GATEWAY_KEYS ?? "")
     .split(",")
     .map((key) => key.trim())
@@ -89,7 +102,8 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
       "dari-gateway stores subscription tokens unencrypted; set DARI_GATEWAY_ENCRYPTION_KEY (openssl rand -base64 32) to encrypt them",
     );
   }
-  const subscriptions = new SubscriptionStore(db, secrets);
+  // Private plans stay off hosted Dari, so a connected gateway never serves them.
+  const subscriptions = new SubscriptionStore(db, secrets, { privatePlansServe: hosted === null });
   const prefixes = new PrefixStore(db);
   const sessionPins = new SessionPinStore(db);
   const routerModels = new RouterModelStore(db);
@@ -111,8 +125,13 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   });
 
   const providerApiKey = async (provider: string) => (await piModels.getAuth(provider))?.auth.apiKey;
-  const autoRoutingKey = env.DARI_AUTO_ROUTING_API_KEY?.trim();
-  const platform = createSelfHostedPlatform({
+  const autoRoutingKey = hosted?.apiKey ?? env.DARI_AUTO_ROUTING_API_KEY?.trim();
+  const sync = hosted === null ? null : new HostedSync(db, subscriptions, hosted, fetch);
+  const baseUrls = providerBaseUrls(config.providers);
+  if (sync !== null) {
+    subscriptions.onChange = (change) => change === "usage" ? sync.usageChanged() : sync.plansChanged();
+  }
+  const platformDeps = {
     activity,
     config,
     routerModels,
@@ -126,7 +145,10 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     autoRouting: Boolean(autoRoutingKey),
     env,
     fetch,
-  });
+  };
+  const platform = hosted === null || sync === null
+    ? createSelfHostedPlatform(platformDeps)
+    : createConnectedPlatform({ ...platformDeps, hosted, sync });
   // A model without a credential is dropped at request time, so a missing key
   // would otherwise surface only as a 424 on the first request.
   const warnWithoutCredentials = async (routerId: string, router: RouterConfig) => {
@@ -139,7 +161,8 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     }
   };
   const served = servedRouterIds(routers).map((routerId) => [routerId, servedRouter(routers, routerId)!] as const);
-  for (const [routerId, router] of served) await warnWithoutCredentials(routerId, router);
+  // A connected gateway serves hosted routers, not these.
+  if (hosted === null) for (const [routerId, router] of served) await warnWithoutCredentials(routerId, router);
   await checkConfiguredProviderKeys(config, served.map(([, router]) => router), (provider) =>
     configuredProviderApiKey({ config, providerApiKey, env }, provider));
   // A saved or removed spec changes what is served at once.
@@ -151,10 +174,15 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   const selectorBackend: SelectorBackend = autoRoutingKey
     ? createAutoRoutingSelectorBackend({
         apiKey: autoRoutingKey,
-        ...(env.DARI_AUTO_ROUTING_URL ? { endpoint: env.DARI_AUTO_ROUTING_URL } : {}),
+        ...(hosted !== null
+          ? { endpoint: `${hosted.url}/v1/auto-router` }
+          : env.DARI_AUTO_ROUTING_URL ? { endpoint: env.DARI_AUTO_ROUTING_URL } : {}),
       })
     : createPrioritySelectorBackend();
-  const gateway = createRequestHandler({ platform, selectorBackend });
+  const routed = createRequestHandler({ platform, selectorBackend });
+  const gateway = hosted === null || sync === null
+    ? routed
+    : connectedHandler({ gateway: routed, gatewayKeys, hosted, sync, fetch });
 
   // Subscriptions, model lists, and router specs are managed with any gateway
   // key; every other path is the gateway's own.
@@ -176,7 +204,12 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     if (pathname === CANONICAL_MODELS_ROUTE && request.method === "GET") {
       return Response.json({ data: CANONICAL_MODELS }, { headers: { "Cache-Control": "no-store" } });
     }
-    return (await handleSubscriptionRequest(request, { store: subscriptions, fetch }))
+    return (await handleSubscriptionRequest(request, {
+      store: subscriptions,
+      fetch,
+      baseUrls,
+      ...(hosted === null ? {} : { hostedAccounts: () => readHostedAccounts(hosted, fetch) }),
+    }))
       ?? (await handleRouterModelsRequest(request, routers))
       ?? (await handleRouterSpecsRequest(request, { ...routers, changed: routersChanged }))
       ?? errorResponse(new HttpError(404, "Not found", "not_found"));
@@ -198,9 +231,22 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
       // These serve router specs saved through the API.
       saved_routers: routerSpecs.savedIds(),
       auto_routing: autoRoutingKey ? "dari" : "priority",
+      ...(hosted === null ? {} : { connected: { hosted_url: hosted.url, gateway_id: hosted.gatewayId } }),
     }),
   );
-  return { server, close: () => db.close() };
+  sync?.start();
+  const idleUsage = sync === null ? null : setInterval(() => {
+    void refreshStaleUsage(subscriptions, { fetch, baseUrls });
+  }, IDLE_USAGE_INTERVAL_MS);
+  idleUsage?.unref?.();
+  return {
+    server,
+    close: () => {
+      if (idleUsage !== null) clearInterval(idleUsage);
+      sync?.stop();
+      db.close();
+    },
+  };
 }
 
 /**

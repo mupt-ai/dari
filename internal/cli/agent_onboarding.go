@@ -16,6 +16,7 @@ import (
 
 	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/auth"
+	"github.com/mupt-ai/dari/internal/gateway"
 )
 
 // agentSetup is how dari sets up one coding agent's routing.
@@ -709,9 +710,16 @@ func connectedAgentSubscriptions(ctx context.Context, client *api.Client, provid
 	if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &listed); err != nil {
 		return nil, api.HumanError(err)
 	}
+	// A plan on this computer's gateway is connected too.
+	gatewayID := ""
+	if settings, ok, _ := gateway.Load(); ok {
+		gatewayID = settings.GatewayID
+	}
 	return slices.DeleteFunc(slices.Clone(providers), func(provider agentSubscriptionProvider) bool {
 		return !slices.ContainsFunc(listed.Credentials, func(credential agentCredential) bool {
 			return credential.OAuthProvider == provider.id
+		}) && !slices.ContainsFunc(listed.LocalSubscriptions, func(local localSubscription) bool {
+			return gatewayID != "" && local.GatewayID == gatewayID && local.Provider == provider.id
 		})
 	}), nil
 }
@@ -800,9 +808,28 @@ func connectAgentPersonalSubscription(
 	stderr io.Writer,
 	credentialName string,
 ) error {
-	body := map[string]string{"provider": provider.id}
+	return connectSubscription(ctx, provider, client, stdin, stderr, credentialName, false, provider.name+" subscription connected")
+}
+
+// connectSubscription is connectAgentPersonalSubscription on a client that
+// may be a local gateway: private keeps the plan off hosted Dari there, and
+// done is the line printed once it is connected.
+func connectSubscription(
+	ctx context.Context,
+	provider agentSubscriptionProvider,
+	client *api.Client,
+	stdin io.Reader,
+	stderr io.Writer,
+	credentialName string,
+	private bool,
+	done string,
+) error {
+	body := map[string]any{"provider": provider.id}
 	if credentialName != "" {
 		body["credential_name"] = credentialName
+	}
+	if private {
+		body["private"] = true
 	}
 	var started agentSubscriptionOAuthStart
 	if err := client.Do(
@@ -822,7 +849,7 @@ func connectAgentPersonalSubscription(
 		if strings.TrimSpace(started.UserCode) == "" {
 			return fmt.Errorf("Dari returned a %s authorization session without a device code", provider.name)
 		}
-		return connectAgentDeviceCodeSubscription(ctx, provider, client, stdin, stderr, started)
+		return connectAgentDeviceCodeSubscription(ctx, provider, client, stdin, stderr, started, done)
 	}
 
 	opened := openAgentBrowser(started.AuthorizationURL)
@@ -831,7 +858,7 @@ func connectAgentPersonalSubscription(
 		if err != nil {
 			return err
 		}
-		return completeAgentPersonalSubscription(ctx, provider, client, stderr, started.SessionToken, authorizationResponse)
+		return completeAgentPersonalSubscription(ctx, provider, client, stderr, started.SessionToken, authorizationResponse, done)
 	}
 
 	writeAgentOAuthInstructions(provider, stderr, started.AuthorizationURL, opened)
@@ -844,7 +871,7 @@ func connectAgentPersonalSubscription(
 	if err != nil {
 		return fmt.Errorf("read %s authorization code: %w", provider.name, err)
 	}
-	return completeAgentPersonalSubscription(ctx, provider, client, stderr, started.SessionToken, authorizationResponse)
+	return completeAgentPersonalSubscription(ctx, provider, client, stderr, started.SessionToken, authorizationResponse, done)
 }
 
 func connectAgentDeviceCodeSubscription(
@@ -854,10 +881,11 @@ func connectAgentDeviceCodeSubscription(
 	stdin io.Reader,
 	stderr io.Writer,
 	started agentSubscriptionOAuthStart,
+	done string,
 ) error {
 	opened := openAgentBrowser(started.AuthorizationURL)
 	complete := func() error {
-		return completeAgentPersonalSubscription(ctx, provider, client, stderr, started.SessionToken, "")
+		return completeAgentPersonalSubscription(ctx, provider, client, stderr, started.SessionToken, "", done)
 	}
 	pending := func(err error) bool {
 		return err != nil && strings.HasPrefix(err.Error(), provider.vendor+" approval is still pending.")
@@ -871,7 +899,7 @@ func connectAgentDeviceCodeSubscription(
 		if err != nil {
 			return err
 		}
-		agentStep(stderr, provider.name+" subscription connected")
+		agentStep(stderr, done)
 		return nil
 	}
 	writeAgentOAuthInstructions(provider, stderr, started.AuthorizationURL, opened)
@@ -917,6 +945,7 @@ func completeAgentPersonalSubscription(
 	stderr io.Writer,
 	sessionToken string,
 	authorizationResponse string,
+	done string,
 ) error {
 	if strings.TrimSpace(authorizationResponse) == "" && !provider.deviceCode {
 		return fmt.Errorf("%s authorization was not completed", provider.name)
@@ -924,7 +953,7 @@ func completeAgentPersonalSubscription(
 	if err := completeAgentPersonalSubscriptionQuietly(ctx, client, sessionToken, authorizationResponse); err != nil {
 		return err
 	}
-	agentStep(stderr, provider.name+" subscription connected")
+	agentStep(stderr, done)
 	return nil
 }
 

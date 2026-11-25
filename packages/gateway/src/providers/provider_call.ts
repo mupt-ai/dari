@@ -36,7 +36,6 @@ import type {
   ServedDecision,
 } from "../types.js";
 import { awsRoleCredentials } from "./aws_assume_role.js";
-import { copilotEndpoint } from "./github_copilot.js";
 import {
   attachProviderResponseCapture,
   createProviderResponseCapture,
@@ -167,10 +166,7 @@ export function prepareProviderExecution(args: {
     ...(args.systemPromptSuffix ? { systemPromptSuffix: args.systemPromptSuffix } : {}),
     ...(supplied?.baseUrl || supplied?.headers
       ? { endpoint: { baseUrl: supplied.baseUrl, headers: supplied.headers } }
-      // A Copilot token names its account's own API origin.
-      : provider === "github-copilot" && auth.type === "bearer"
-        ? { endpoint: copilotEndpoint(auth.apiKey) }
-        : {}),
+      : {}),
     provider,
     providerKeySource,
     // Only resolved personal subscriptions are held at their usage limit;

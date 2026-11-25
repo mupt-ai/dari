@@ -18,7 +18,6 @@ const SUBSCRIPTION_MODEL_PROVIDERS: Record<SubscriptionKind, readonly string[]> 
   xai_grok: ["xai"],
   meta_muse: ["meta"],
   opencode_go: ["opencode-go"],
-  github_copilot: ["github-copilot"],
   vercel_token_pass: ["vercel-token-pass"],
 };
 

@@ -10,7 +10,6 @@ import { checkProviderKey } from "../providers/key_check.js";
 import { gatewayKeyIndex, type SelfHostedResolverDeps } from "../self_host/resolve.js";
 import {
   CODEX_APPROVAL_PENDING,
-  GITHUB_APPROVAL_PENDING,
   META_APPROVAL_PENDING,
   OPENCODE_APPROVAL_PENDING,
   XAI_APPROVAL_PENDING,
@@ -140,7 +139,6 @@ export function selfHostedLink(
             CODEX_APPROVAL_PENDING,
             META_APPROVAL_PENDING,
             OPENCODE_APPROVAL_PENDING,
-            GITHUB_APPROVAL_PENDING,
             XAI_APPROVAL_PENDING,
           ].includes(error.message)) return null;
           throw new HttpError(400, error.message, "invalid_request");

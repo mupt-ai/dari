@@ -185,7 +185,6 @@ func (source agentModelSource) native() bool {
 // subscriptionOnlyProviders serve models only through a personal
 // subscription: no API key or Dari credits pay for them.
 var subscriptionOnlyProviders = map[string]bool{
-	"github-copilot":    true,
 	"opencode-go":       true,
 	"vercel-token-pass": true,
 }

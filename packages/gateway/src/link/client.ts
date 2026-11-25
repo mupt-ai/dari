@@ -181,7 +181,7 @@ export async function registerClient(
  * The approval URL to send the user to, with a fresh PKCE verifier and state.
  * `clients` names the clients the app runs, such as `claude_code`, so the
  * user can grant plans that serve only those. `plans` limits the page to
- * those plan kinds, such as `openai_codex`. `purposes` says what the app does
+ * those plan kinds, such as `openai_codex`, or `"supported"`. `purposes` says what the app does
  * with each audience's plans, shown beside them. `grantId` (update mode)
  * opens the page on that existing grant: the user changes its plans in place,
  * its id and tokens stay, and the new code redeems for more tokens of it.
@@ -226,7 +226,9 @@ export type AuthorizeOptions = {
   redirectUri: string;
   state?: string;
   clients?: string[];
-  plans?: string[];
+  // Plan kinds to offer, such as ["openai_codex", "api_key"], or "supported"
+  // for ChatGPT, Grok, OpenCode Go, Vercel Token Pass and every API key; omit to offer every kind.
+  plans?: string[] | "supported";
   // The providers and gateways whose API keys the app can use, such as
   // ["anthropic", "openrouter"]; omit to offer every one.
   keyProviders?: string[];
@@ -260,7 +262,7 @@ function authorizationUrl(args: AuthorizeOptions & { codeChallenge: string; stat
     scope: "route",
     ...(args.responseMode === "web_message" ? { response_mode: "web_message" } : {}),
     ...(args.clients?.length ? { client: args.clients.join(" ") } : {}),
-    ...(args.plans?.length ? { plans: args.plans.join(" ") } : {}),
+    ...(args.plans?.length ? { plans: [args.plans].flat().join(" ") } : {}),
     ...(args.keyProviders?.length ? { key_providers: args.keyProviders.join(" ") } : {}),
     ...(args.grantId ? { grant_id: args.grantId } : {}),
     ...Object.fromEntries(

@@ -50,7 +50,6 @@ import {
 import type { NextSubscription } from "../platform/platform.js";
 import { providerResponseCaptureFromError, type ProviderResponseCapture } from "./response_capture.js";
 import { createStreamFinalizer } from "./stream_finalization.js";
-import { copilotEndpoint } from "./github_copilot.js";
 import { readCodexModelLimitReset, readCodexUsage } from "./codex_usage.js";
 import {
   detectSubscriptionUsageLimit,
@@ -937,8 +936,6 @@ function onNextSubscription(choice: ProviderChoice, next: NextSubscription): Pro
       apiKey: next.apiKey,
       auth: { type: "bearer", apiKey: next.apiKey },
       subscriptionCredentialId: next.credentialId,
-      // A Copilot token names its own account's API origin.
-      ...(choice.execution.provider === "github-copilot" ? { endpoint: copilotEndpoint(next.apiKey) } : {}),
     },
   };
 }

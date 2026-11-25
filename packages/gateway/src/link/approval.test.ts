@@ -23,8 +23,13 @@ const REDIRECT_URI = "http://127.0.0.1:9999/callback";
 // A gateway whose provider sign-ins answer from `responses`, and a browser
 // that keeps the approval page's cookies; with `signIn`, a platform whose
 // users sign in with an account; with `plansOnComputers`, one whose users
-// also keep plans on their computers.
-function gateway(responses: Array<() => Response>, signIn?: LinkSignIn, plansOnComputers?: LinkPlanOnComputer[]) {
+// also keep plans on their computers. `request` adds to the authorize request.
+function gateway(
+  responses: Array<() => Response>,
+  signIn?: LinkSignIn,
+  plansOnComputers?: LinkPlanOnComputer[],
+  request: Record<string, string> = {},
+) {
   const db = new Database(":memory:");
   const secrets = new SecretBox([randomBytes(32)]);
   const subscriptions = new SubscriptionStore(db, secrets);
@@ -59,6 +64,7 @@ function gateway(responses: Array<() => Response>, signIn?: LinkSignIn, plansOnC
     code_challenge: pkceChallenge("v".repeat(43)),
     code_challenge_method: "S256",
     client: "claude_code codex",
+    ...request,
   };
   const cookies = new Map<string, string>();
   const send = async (request: Request): Promise<Response> => {
@@ -92,6 +98,17 @@ function gateway(responses: Array<() => Response>, signIn?: LinkSignIn, plansOnC
       await send(new Request(`${BASE}/v1/link/connections`, { method: "POST", body: new URLSearchParams(form) })),
   };
 }
+
+// `plans=supported` offers only the plans whose providers clearly allow
+// other apps, and every API key.
+test("an app that asks for supported plans offers ChatGPT, Grok, OpenCode Go, Vercel Token Pass and API keys", async () => {
+  const browser = gateway([], undefined, undefined, { plans: "supported" });
+  expect(await browser.page()).toContain("Use what you already pay for: ChatGPT, OpenCode Go, Grok, Vercel Token Pass or an API key.");
+  const select = await (await browser.submit({ decision: "select" })).text();
+  const offered = [...select.matchAll(/name="connect" value="([a-z_]+)"/g)].map((match) => match[1]);
+  expect(offered.sort()).toEqual(["openai_codex", "opencode_go", "vercel_token_pass", "xai_grok"]);
+  expect(select).toContain('name="key" value="openai"');
+});
 
 // A self-hosted gateway needs no account: the user picks a plan, signs in to its provider,
 // and allows the app; the cookie that remembers them makes the next app one click.
@@ -163,27 +180,12 @@ test("a new user connects plans by signing in to their providers, then allows th
   expect(await browser.page()).toContain("Uses Dari To Connect");
 });
 
-// GitHub answers a sign-in still awaiting approval with HTTP 200, and a Token
-// Pass is a key the user creates at Vercel: both connect from the page.
-test("a user connects GitHub Copilot by its device code and Vercel Token Pass by a pasted key", async () => {
-  const browser = gateway([
-    jsonResponse({ device_code: "gh-dev", user_code: "WXYZ-0001", verification_uri: "https://github.com/login/device", expires_in: 900 }),
-    jsonResponse({ error: "authorization_pending" }),
-    jsonResponse({ access_token: "gho_github" }),
-    jsonResponse({ token: "tid=1;proxy-ep=proxy.individual.githubcopilot.com", expires_at: Math.floor(Date.now() / 1000) + 1800 }),
-    jsonResponse({ login: "octocat" }),
-  ]);
+// A Token Pass is a key the user creates at Vercel, pasted on the page.
+test("a user connects Vercel Token Pass by a pasted key", async () => {
+  const browser = gateway([]);
   await browser.page();
   const select = await (await browser.submit({ decision: "select" })).text();
-  expect(select).toContain('name="connect" value="github_copilot"');
   expect(select).toContain('name="connect" value="vercel_token_pass"');
-
-  expect((await browser.submit({ connect: "github_copilot" })).status).toBe(303);
-  // The page asks GitHub on each load until the user approves.
-  const waiting = await browser.page();
-  expect(waiting).toContain("WXYZ-0001");
-  expect(waiting).toContain("Waiting for your approval");
-  expect(await browser.page()).toContain("octocat");
 
   expect((await browser.submit({ connect: "vercel_token_pass" })).status).toBe(303);
   const vercel = await browser.page();
@@ -193,13 +195,10 @@ test("a user connects GitHub Copilot by its device code and Vercel Token Pass by
     .toContain("Paste the Token Pass key you created at Vercel.");
   expect((await browser.submit({ decision: "complete", authorization_response: "vck_pass" })).status).toBe(303);
   const plans = await browser.page();
-  expect([...plans.matchAll(/name="credential_id" value="[^"]+" checked/g)]).toHaveLength(2);
+  expect([...plans.matchAll(/name="credential_id" value="[^"]+" checked/g)]).toHaveLength(1);
   expect(browser.subscriptions.withIds(new Set(
     [...plans.matchAll(/name="credential_id" value="([^"]+)"/g)].map((match) => match[1]!),
-  )).map((plan) => [plan.provider, plan.accessToken])).toEqual([
-    ["github_copilot", "tid=1;proxy-ep=proxy.individual.githubcopilot.com"],
-    ["vercel_token_pass", "vck_pass"],
-  ]);
+  )).map((plan) => [plan.provider, plan.accessToken])).toEqual([["vercel_token_pass", "vck_pass"]]);
 });
 
 // Another site's form arrives without the user's cookie; it must not replace

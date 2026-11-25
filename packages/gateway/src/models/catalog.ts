@@ -69,7 +69,6 @@ export const DEFAULT_CATALOG_PROVIDERS: readonly string[] = [
   "google",
   "fireworks",
   "opencode-go",
-  "github-copilot",
   "openrouter",
   "vercel-ai-gateway",
 ];

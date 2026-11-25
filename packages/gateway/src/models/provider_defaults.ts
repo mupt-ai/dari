@@ -12,7 +12,6 @@ const PROVIDER_LABELS: Record<string, string> = {
   xai: "xAI",
   google: "Google",
   "opencode-go": "OpenCode Go",
-  "github-copilot": "GitHub Copilot",
   "vercel-token-pass": "Vercel Token Pass",
   dari: "Dari",
   "amazon-bedrock": "Amazon Bedrock",
@@ -41,10 +40,6 @@ const PROVIDER_BASE_URLS: Record<string, string> = {
   // A flat-rate plan for open models; each model keeps its own API path
   // under https://opencode.ai/inference/go/, and this is chat completions.
   "opencode-go": "https://opencode.ai/inference/go/openai/v1",
-  // Flat plans served only by personal subscriptions. Each Copilot account
-  // has its own API origin, named in its token (see github_copilot.ts); this
-  // one is the individual plans'.
-  "github-copilot": "https://api.individual.githubcopilot.com",
   // A Token Pass key on Vercel AI Gateway, which serves only the gateway's
   // featured models, over Anthropic Messages.
   "vercel-token-pass": "https://ai-gateway.vercel.sh",

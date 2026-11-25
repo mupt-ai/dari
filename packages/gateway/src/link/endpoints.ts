@@ -163,6 +163,10 @@ const PLAN_KINDS = Object.keys(SUBSCRIPTION_PLAN_LABELS) as SubscriptionKind[];
 const API_KEY = "api_key";
 type OfferKind = SubscriptionKind | typeof API_KEY;
 const OFFER_KINDS: readonly OfferKind[] = [...PLAN_KINDS, API_KEY];
+// `plans=supported` offers the plans whose providers clearly allow use in
+// other apps, and every API key.
+const SUPPORTED = "supported";
+const SUPPORTED_KINDS: readonly OfferKind[] = ["openai_codex", "xai_grok", "opencode_go", "vercel_token_pass", API_KEY];
 // Who a plan serves, as `serves` on a grant and as `purpose_<audience>` on
 // the authorize request.
 type PlanAudience = "any_app" | "claude_code" | "muse_code";
@@ -1265,9 +1269,9 @@ async function authorizeRequest(link: LinkPlatform, params: URLSearchParams): Pr
   if (!clients.every((client) => (CLIENTS as readonly string[]).includes(client))) {
     return badRequest(`client lists the clients the app runs: ${CLIENTS.join(", ")}.`);
   }
-  const plans = listParam(params.get("plans"));
+  const plans = [...new Set(listParam(params.get("plans")).flatMap((plan): string[] => plan === SUPPORTED ? [...SUPPORTED_KINDS] : [plan]))];
   if (!plans.every((plan) => (OFFER_KINDS as readonly string[]).includes(plan))) {
-    return badRequest(`plans lists the kinds to offer: ${OFFER_KINDS.join(", ")}.`);
+    return badRequest(`plans lists the kinds to offer: ${SUPPORTED}, or any of ${OFFER_KINDS.join(", ")}.`);
   }
   const keyProviders = listParam(params.get("key_providers"));
   if (!keyProviders.every((provider) => /^[a-z0-9-]{1,64}$/.test(provider))) {
@@ -1878,7 +1882,6 @@ const KINDS: Record<SubscriptionKind, { name: string; plan: string; at: string; 
   openai_codex: { name: "ChatGPT", plan: "Plus or Pro plan", at: "OpenAI" },
   meta_muse: { name: "Meta Muse", plan: "Muse Code plan", at: "Meta" },
   opencode_go: { name: "OpenCode Go", plan: "Go plan", at: "OpenCode" },
-  github_copilot: { name: "GitHub Copilot", plan: "Copilot plan", at: "GitHub" },
   xai_grok: { name: "Grok", plan: "SuperGrok plan", at: "xAI" },
   vercel_token_pass: { name: "Vercel Token Pass", plan: "Token Pass", at: "Vercel", pastedKey: true },
 };

@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 
 import {
   CODEX_APPROVAL_PENDING,
-  GITHUB_APPROVAL_PENDING,
   META_APPROVAL_PENDING,
   XAI_APPROVAL_PENDING,
   SubscriptionOAuthInputError,
@@ -390,66 +389,6 @@ test("an OpenCode Go plan signs in with OpenCode's console device flow", async (
     grant_type: "refresh_token",
     refresh_token: "oc-refresh",
     client_id: "opencode-cli",
-  });
-});
-
-describe("GitHub Copilot device sign-in", () => {
-  const COPILOT_TOKEN = "tid=t1;exp=1797000000;proxy-ep=proxy.individual.githubcopilot.com;sku=pro";
-  const mintedAt = Math.floor(now.getTime() / 1000) + 1800;
-
-  test("polls GitHub, whose unfinished sign-in answers HTTP 200, then mints the Copilot token", async () => {
-    const fetch = fakeFetch([
-      jsonResponse({ device_code: "gh-dev", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 }),
-      jsonResponse({ error: "authorization_pending", error_description: "pending" }),
-      jsonResponse({ access_token: "gho_github", token_type: "bearer", scope: "read:user" }),
-      jsonResponse({ token: COPILOT_TOKEN, expires_at: mintedAt }),
-      jsonResponse({ login: "octocat", email: null }),
-    ]);
-    const started = await startOAuth("github_copilot", { fetch, now });
-    expect(started).toMatchObject({
-      authorizationUrl: "https://github.com/login/device",
-      userCode: "ABCD-1234",
-      flow: { device_code: "gh-dev" },
-    });
-    expect(fetch.calls[0]!.url).toBe("https://github.com/login/device/code");
-    expect(Object.fromEntries(new URLSearchParams(fetch.calls[0]!.body))).toEqual({
-      client_id: "Iv1.b507a08c87ecfe98",
-      scope: "read:user",
-    });
-
-    await expect(completeOAuth("github_copilot", started.flow, "", { fetch, now }))
-      .rejects.toThrow(new SubscriptionOAuthInputError(GITHUB_APPROVAL_PENDING));
-    const tokens = await completeOAuth("github_copilot", started.flow, "", { fetch, now });
-    expect(tokens).toEqual({
-      provider: "github_copilot",
-      accessToken: COPILOT_TOKEN,
-      refreshToken: "gho_github",
-      expiresAt: new Date((mintedAt - 300) * 1000),
-      accountId: null,
-      accountEmail: "octocat",
-    });
-    const mint = fetch.calls[3]!;
-    expect(mint.url).toBe("https://api.github.com/copilot_internal/v2/token");
-    expect(mint.init.method).toBe("GET");
-    const headers = new Headers(mint.init.headers);
-    expect(headers.get("authorization")).toBe("Bearer gho_github");
-    expect(headers.get("copilot-integration-id")).toBe("vscode-chat");
-    expect(headers.get("editor-version")).toBe("vscode/1.107.0");
-  });
-
-  test("refresh mints a new Copilot token from the GitHub token", async () => {
-    const fetch = fakeFetch([jsonResponse({ token: "tid=t2;proxy-ep=proxy.individual.githubcopilot.com", expires_at: mintedAt })]);
-    const refreshed = await refreshOAuth({ provider: "github_copilot", refreshToken: "gho_github", accountId: null }, { fetch, now });
-    expect(refreshed).toMatchObject({ accessToken: "tid=t2;proxy-ep=proxy.individual.githubcopilot.com", refreshToken: "gho_github" });
-  });
-
-  test("an account without Copilot cannot connect", async () => {
-    const fetch = fakeFetch([
-      jsonResponse({ access_token: "gho_github" }),
-      jsonResponse({ message: "Not Found" }, 404),
-    ]);
-    await expect(completeOAuth("github_copilot", { device_code: "gh-dev" }, "", { fetch, now }))
-      .rejects.toThrow("This GitHub account has no active Copilot plan.");
   });
 });
 

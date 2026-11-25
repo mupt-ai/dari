@@ -13,10 +13,10 @@ import (
 
 func TestSubscriptionPlacesOfferEachProvidersDefaultFirst(t *testing.T) {
 	for provider, want := range map[agentSubscriptionProvider]string{
-		claudeSubscription:  "computer dari private",
-		museSubscription:    "computer dari private",
-		codexSubscription:   "dari computer private",
-		copilotSubscription: "dari computer private",
+		claudeSubscription: "computer dari private",
+		museSubscription:   "computer dari private",
+		codexSubscription:  "dari computer private",
+		grokSubscription:   "dari computer private",
 	} {
 		places := []string{}
 		for _, place := range subscriptionPlaces(provider) {

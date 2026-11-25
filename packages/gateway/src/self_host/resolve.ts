@@ -442,7 +442,6 @@ const SUBSCRIPTION_PLAN_NAMES: Record<SubscriptionProvider, string> = {
   openai_codex: "ChatGPT",
   meta_muse: "Muse Code",
   opencode_go: "OpenCode Go",
-  github_copilot: "GitHub Copilot",
   xai_grok: "Grok",
   vercel_token_pass: "Vercel Token Pass",
 };

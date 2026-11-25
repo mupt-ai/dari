@@ -308,45 +308,28 @@ describe("resolveSelfHostedRouter", () => {
     });
   });
 
-  // Maker plans first, then other plans that serve the model, then the API
-  // key; a plan limited to another client is skipped.
-  test("a model is served by its plans in order, then by the API key", async () => {
+  // Plans serve a model in a fixed order, not the order they were connected.
+  test("a model is served by its plans in order", async () => {
     const resolver = deps({
-      apiKeys: { anthropic: "sk-ant" },
-      config: { routers: { default: { models: ["anthropic/claude-opus-5-5"] } } },
+      config: { routers: { default: { models: ["moonshotai/Kimi-K3"] } } },
     });
-    const claudePlan = resolver.subscriptions.connect(tokens({ expiresAt: FUTURE }), null)!;
-    const copilotPlan = resolver.subscriptions.connect(
-      tokens({ provider: "github_copilot", accessToken: "tid=1;proxy-ep=proxy.individual.githubcopilot.com", expiresAt: FUTURE }),
+    resolver.subscriptions.connect(
+      tokens({ provider: "vercel_token_pass", accessToken: "vck_pass", refreshToken: "vck_pass", expiresAt: FUTURE }),
+      null,
+    );
+    const goPlan = resolver.subscriptions.connect(
+      tokens({ provider: "opencode_go", accessToken: "go-key", expiresAt: FUTURE }),
       null,
     )!;
-    const copilotConfig = {
-      provider: "github-copilot",
-      native_model_id: "claude-opus-5.5",
-      api: "anthropic-messages",
-      base_url: "https://api.individual.githubcopilot.com",
-    };
 
-    const claudeCode = await resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code" }));
-    expect(claudeCode.provider_credentials?.["anthropic/claude-opus-5-5"]).toMatchObject({
-      subscription: "anthropic_claude_code",
-      credentialId: claudePlan.id,
+    const resolved = await resolveSelfHostedRouter(resolver, request());
+    expect(resolved.provider_credentials?.["moonshotai/Kimi-K3"]).toMatchObject({
+      subscription: "opencode_go",
+      credentialId: goPlan.id,
     });
-    expect(claudeCode.model_configs?.["anthropic/claude-opus-5-5"]).toBeUndefined();
-    expect(claudeCode.model_fallbacks?.["anthropic/claude-opus-5-5"]).toEqual([
-      { config: expect.objectContaining(copilotConfig), subscription: "github_copilot" },
-      { config: expect.objectContaining({ provider: "anthropic", native_model_id: "claude-opus-5-5" }) },
-    ]);
-    expect(claudeCode.provider_keys).toEqual({ anthropic: "sk-ant" });
-
-    const otherClient = await resolveSelfHostedRouter(resolver, request());
-    expect(otherClient.provider_credentials?.["anthropic/claude-opus-5-5"]).toMatchObject({
-      subscription: "github_copilot",
-      credentialId: copilotPlan.id,
-    });
-    expect(otherClient.model_configs?.["anthropic/claude-opus-5-5"]).toMatchObject(copilotConfig);
-    expect(otherClient.model_fallbacks?.["anthropic/claude-opus-5-5"]).toEqual([
-      { config: expect.objectContaining({ provider: "anthropic" }) },
+    expect(resolved.model_configs?.["moonshotai/Kimi-K3"]).toMatchObject({ provider: "opencode-go" });
+    expect(resolved.model_fallbacks?.["moonshotai/Kimi-K3"]).toEqual([
+      { config: expect.objectContaining({ provider: "vercel-token-pass" }), subscription: "vercel_token_pass" },
     ]);
   });
 
@@ -380,8 +363,8 @@ describe("providersWithoutCredentials", () => {
   });
 
   test("counts a plan that serves the provider's model though another provider", async () => {
-    const resolverDeps = deps({ config: { routers: { default: { models: ["anthropic/claude-opus-5-5"] } } } });
-    resolverDeps.subscriptions.connect(tokens({ provider: "github_copilot", accessToken: "tid=1", expiresAt: FUTURE }), null);
+    const resolverDeps = deps({ config: { routers: { default: { models: ["moonshotai/Kimi-K3"] } } } });
+    resolverDeps.subscriptions.connect(tokens({ provider: "opencode_go", accessToken: "go-key", expiresAt: FUTURE }), null);
     expect(await providersWithoutCredentials(resolverDeps, resolverDeps.config.routers.default!)).toEqual([]);
   });
 });

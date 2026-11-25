@@ -189,9 +189,8 @@ describe("detectSubscriptionUsageLimit", () => {
     expect(subscriptionUsageLimitFromFailure(failureWithSubscriptionUsageLimit({}, bare!))).toEqual(bare);
   });
 
-  test("holds a Copilot, Grok, or Token Pass plan on a 429, but not an API key", () => {
+  test("holds a Grok or Token Pass plan on a 429, but not an API key", () => {
     for (const [provider, oauthProvider, label] of [
-      ["github-copilot", "github_copilot", "GitHub Copilot"],
       ["xai", "xai_grok", "Grok"],
       ["vercel-token-pass", "vercel_token_pass", "Vercel Token Pass"],
     ] as const) {

@@ -1,15 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 
-import { COPILOT_HEADERS } from "../../providers/github_copilot.js";
-
 /**
  * OAuth protocols for personal subscriptions: Claude Code (PKCE, the user
  * pastes back the `code#state` Anthropic shows), ChatGPT/Codex (device code,
  * the gateway polls for approval), Muse Code (Meta's device code, then the
  * subscription's Model API key minted from the sign-in token), OpenCode Go
  * (the OpenCode Console device sign-in `opencode auth login` runs, scoped to
- * the workspace that holds the plan), GitHub Copilot, and Grok
- * (each vendor's device sign-in, as its own coding agent runs it), and Vercel
+ * the workspace that holds the plan), Grok (xAI's device sign-in, as its
+ * own coding agent runs it), and Vercel
  * Token Pass (no protocol: the plan is a Token Pass key the user pastes).
  * Every network call goes through the injected `fetch`.
  */
@@ -19,7 +17,6 @@ export type SubscriptionProvider =
   | "openai_codex"
   | "meta_muse"
   | "opencode_go"
-  | "github_copilot"
   | "xai_grok"
   | "vercel_token_pass";
 
@@ -28,7 +25,6 @@ export const SUBSCRIPTION_PROVIDERS: readonly SubscriptionProvider[] = [
   "openai_codex",
   "meta_muse",
   "opencode_go",
-  "github_copilot",
   "xai_grok",
   "vercel_token_pass",
 ];
@@ -131,30 +127,12 @@ type DeviceSignIn = {
   deviceCodeUrl: string;
   tokenUrl: string;
   scope?: string;
-  headers?: Record<string, string>;
 };
-
-// GitHub Copilot's sign-in, as VS Code's Copilot Chat runs it, for github.com
-// accounts. The GitHub token it grants is the refresh token: it mints the
-// short-lived Copilot token that serves requests.
-const GITHUB_COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98";
-const COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token";
-const GITHUB_USER_URL = "https://api.github.com/user";
-// Copilot tokens live about half an hour; mint the next one before then.
-const COPILOT_TOKEN_SKEW_MS = 5 * 60_000;
 
 // SuperGrok and X Premium sign in as xAI's Grok CLI does.
 const XAI_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828";
 
 const DEVICE_SIGN_INS = {
-  github_copilot: {
-    vendor: "GitHub",
-    clientId: GITHUB_COPILOT_CLIENT_ID,
-    deviceCodeUrl: "https://github.com/login/device/code",
-    tokenUrl: "https://github.com/login/oauth/access_token",
-    scope: "read:user",
-    headers: { "User-Agent": COPILOT_HEADERS["User-Agent"]! },
-  },
   xai_grok: {
     vendor: "xAI",
     clientId: XAI_CLIENT_ID,
@@ -170,7 +148,6 @@ function isDeviceProvider(provider: SubscriptionProvider): provider is DevicePro
   return provider in DEVICE_SIGN_INS;
 }
 
-export const GITHUB_APPROVAL_PENDING = approvalPending("GitHub");
 export const XAI_APPROVAL_PENDING = approvalPending("xAI");
 
 function approvalPending(vendor: string): string {
@@ -201,7 +178,6 @@ export async function startOAuth(
       signIn.deviceCodeUrl,
       { client_id: signIn.clientId, ...(signIn.scope === undefined ? {} : { scope: signIn.scope }) },
       `${signIn.vendor} device code request`,
-      signIn.headers,
     );
     const complete = device.verification_uri_complete;
     return {
@@ -296,19 +272,6 @@ export async function completeOAuth(
   if (provider === "vercel_token_pass") return vercelTokenPassTokens(authorizationResponse, now);
   if (isDeviceProvider(provider)) {
     const token = await deviceApproval(provider, requiredString(flow, "device_code"), options.fetch);
-    if (provider === "github_copilot") {
-      const githubToken = requiredString(token, "access_token");
-      const tokens = await copilotTokens(githubToken, options.fetch, now).catch((error: unknown) => {
-        // GitHub mints no Copilot token for an account without a plan.
-        if (error instanceof SubscriptionOAuthProviderError && [401, 403, 404].includes(error.status ?? 0)) {
-          throw new SubscriptionOAuthInputError(
-            "This GitHub account has no active Copilot plan. Subscribe at https://github.com/features/copilot/plans, then connect again.",
-          );
-        }
-        throw error;
-      });
-      return { ...tokens, accountEmail: await githubAccount(options.fetch, githubToken) };
-    }
     return deviceTokens(provider, token, now, null);
   }
   if (provider === "opencode_go") {
@@ -434,7 +397,6 @@ export async function refreshOAuth(
 ): Promise<OAuthTokens> {
   const now = options.now ?? new Date();
   if (credential.provider === "vercel_token_pass") return vercelTokenPassTokens(credential.refreshToken, now);
-  if (credential.provider === "github_copilot") return await copilotTokens(credential.refreshToken, options.fetch, now);
   if (isDeviceProvider(credential.provider)) {
     const signIn: DeviceSignIn = DEVICE_SIGN_INS[credential.provider];
     const token = await postForm(
@@ -442,7 +404,6 @@ export async function refreshOAuth(
       signIn.tokenUrl,
       { grant_type: "refresh_token", client_id: signIn.clientId, refresh_token: credential.refreshToken },
       `${signIn.vendor} sign-in refresh`,
-      signIn.headers,
     );
     return deviceTokens(credential.provider, token, now, credential.refreshToken);
   }
@@ -664,16 +625,14 @@ function postForm(
   url: string,
   payload: Record<string, string>,
   operation: string,
-  headers: Record<string, string> = {},
 ): Promise<Record<string, unknown>> {
-  return requestJson(fetch, url, new URLSearchParams(payload).toString(), "application/x-www-form-urlencoded", operation, headers);
+  return requestJson(fetch, url, new URLSearchParams(payload).toString(), "application/x-www-form-urlencoded", operation);
 }
 
-// A null body is a GET.
 async function requestJson(
   fetch: OAuthFetch,
   url: string,
-  body: string | null,
+  body: string,
   contentType: string,
   operation: string,
   headers: Record<string, string> = {},
@@ -681,14 +640,14 @@ async function requestJson(
   let response: Response;
   try {
     response = await fetch(url, {
-      method: body === null ? "GET" : "POST",
+      method: "POST",
       headers: {
         Accept: "application/json",
-        ...(body === null ? {} : { "Content-Type": contentType }),
+        "Content-Type": contentType,
         "User-Agent": "Dari/1.0",
         ...headers,
       },
-      ...(body === null ? {} : { body }),
+      body,
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
   } catch {
@@ -762,8 +721,7 @@ async function opencodeEmail(fetch: OAuthFetch, accessToken: string): Promise<st
   }
 }
 
-// Ask a device sign-in whether the user approved its code. GitHub answers an
-// unfinished sign-in with HTTP 200 and an `error`; the others with HTTP 400.
+// Ask a device sign-in whether the user approved its code.
 async function deviceApproval(
   provider: DeviceProvider,
   deviceCode: string,
@@ -782,7 +740,6 @@ async function deviceApproval(
         client_id: signIn.clientId,
       },
       `${signIn.vendor} device approval check`,
-      signIn.headers,
     );
     errorCode = typeof token.error === "string" ? token.error : undefined;
   } catch (error) {
@@ -822,46 +779,6 @@ function deviceTokens(
     accountId: null,
     accountEmail: typeof email === "string" && email ? email : null,
   };
-}
-
-// Mints the Copilot token that serves requests from the GitHub token.
-async function copilotTokens(githubToken: string, fetch: OAuthFetch, now: Date): Promise<OAuthTokens> {
-  const minted = await requestJson(
-    fetch,
-    COPILOT_TOKEN_URL,
-    null,
-    "",
-    "GitHub Copilot token request",
-    { ...COPILOT_HEADERS, Authorization: `Bearer ${githubToken}` },
-  );
-  const expiresAt = minted.expires_at;
-  if (typeof expiresAt !== "number" || !Number.isFinite(expiresAt)) {
-    throw new SubscriptionOAuthProviderError(INCOMPLETE);
-  }
-  return {
-    provider: "github_copilot",
-    accessToken: requiredString(minted, "token"),
-    refreshToken: githubToken,
-    expiresAt: new Date(Math.max(now.getTime(), expiresAt * 1000 - COPILOT_TOKEN_SKEW_MS)),
-    accountId: null,
-    accountEmail: null,
-  };
-}
-
-// The signed-in GitHub account's email, else its login; best effort.
-async function githubAccount(fetch: OAuthFetch, githubToken: string): Promise<string | null> {
-  try {
-    const user = await requestJson(fetch, GITHUB_USER_URL, null, "", "GitHub account lookup", {
-      Authorization: `Bearer ${githubToken}`,
-    });
-    for (const field of ["email", "login"]) {
-      const value = user[field];
-      if (typeof value === "string" && value) return value;
-    }
-    return null;
-  } catch {
-    return null;
-  }
 }
 
 // The pasted key is both tokens; refreshing hands the same key back.

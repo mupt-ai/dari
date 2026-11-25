@@ -33,10 +33,8 @@ var (
 	// OpenCode Go signs in with the OpenCode Console device flow that
 	// `opencode auth login` runs.
 	opencodeGoSubscription = agentSubscriptionProvider{"opencode_go", "OpenCode Go", "opencode-go", "OpenCode", true, "https://opencode.ai/go", "https://opencode.ai/console", false}
-	// GitHub Copilot and Grok sign in with their vendors' device
-	// flows and serve any client.
-	copilotSubscription = agentSubscriptionProvider{"github_copilot", "GitHub Copilot", "github-copilot", "GitHub", true, "https://github.com/features/copilot/plans", "https://github.com/settings/copilot", false}
-	grokSubscription    = agentSubscriptionProvider{"xai_grok", "Grok", "xai", "xAI", true, "https://grok.com/plans", "https://grok.com/plans", false}
+	// Grok signs in with xAI's device flow and serves any client.
+	grokSubscription = agentSubscriptionProvider{"xai_grok", "Grok", "xai", "xAI", true, "https://grok.com/plans", "https://grok.com/plans", false}
 	// Vercel Token Pass connects with a Token Pass key, created with
 	// `vercel token-pass`, and serves only Vercel's featured models.
 	vercelTokenPassSubscription = agentSubscriptionProvider{"vercel_token_pass", "Vercel Token Pass", "vercel-token-pass", "Vercel", false, "https://vercel.com/get/token-pass", "https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway%2Ftoken-pass", true}

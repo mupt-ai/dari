@@ -104,7 +104,7 @@ test("a plan lists the models it runs for other makers", async () => {
       subscriptions: [
         subscription("sub_go", "opencode_go"),
         subscription("sub_codex", "openai_codex"),
-        subscription("sub_copilot", "github_copilot"),
+        subscription("sub_pass", "vercel_token_pass"),
         subscription("sub_claude", "anthropic_claude_code"),
         { ...subscription("key_fw", "fireworks"), apiKeyProvider: "fireworks" },
       ],
@@ -130,8 +130,8 @@ test("a plan lists the models it runs for other makers", async () => {
   expect(models("sub_go")).toEqual(["dari/model/zai-org/GLM-5.3", "dari/model/moonshotai/Kimi-K3"]);
   expect(plan("sub_go").serves).toBe("any_app");
   expect(models("sub_codex")).toEqual(["dari/model/openai/gpt-5.6-sol"]);
-  // Copilot runs the OpenAI model and Kimi K3 too: each is listed under every plan that runs it.
-  expect(models("sub_copilot")).toEqual(["dari/model/openai/gpt-5.6-sol", "dari/model/moonshotai/Kimi-K3"]);
+  // Token Pass runs GLM and Kimi K3 too: each is listed under every plan that runs it.
+  expect(models("sub_pass")).toEqual(["dari/model/zai-org/GLM-5.3", "dari/model/moonshotai/Kimi-K3"]);
   // A Claude plan lists Claude only for its own client.
   expect(models("sub_claude")).toEqual(["dari/model/anthropic/claude-opus-5"]);
   // A key lists its own provider's models, none of which Fireworks makes.

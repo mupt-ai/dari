@@ -52,8 +52,6 @@ export type ResolvedProviderAuth = BearerProviderAuth | AwsSigV4ProviderAuth;
 // - "meta_muse": a Meta (Muse) sign-in; the token is the Model API key the
 //   sign-in mints (Pi's Meta OAuth `access`).
 // - "opencode_go": an OpenCode Go plan; the token is the plan's API key.
-// - "github_copilot": a GitHub Copilot plan; the token is the short-lived
-//   Copilot token, which names the account's own API origin.
 // - "xai_grok": a SuperGrok or X Premium sign-in; the token is its OAuth
 //   access token.
 // - "vercel_token_pass": a Vercel Token Pass; the token is its AI Gateway key.
@@ -62,7 +60,6 @@ export type SubscriptionKind =
   | "anthropic_claude_code"
   | "meta_muse"
   | "opencode_go"
-  | "github_copilot"
   | "xai_grok"
   | "vercel_token_pass";
 

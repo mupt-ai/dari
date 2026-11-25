@@ -1,6 +1,6 @@
 /**
  * Personal subscriptions for a self-hosted, single-tenant gateway: Claude Code,
- * ChatGPT, Muse Code, OpenCode Go, GitHub Copilot, and Grok plans
+ * ChatGPT, Muse Code, OpenCode Go, and Grok plans
  * connected over OAuth, and Vercel Token Pass keys, used in place of API keys.
  *
  * - `oauth.ts`: the providers' OAuth protocols (Claude Code PKCE with a
@@ -28,7 +28,6 @@ export { freshAccessToken } from "./access.js";
 export { handleSubscriptionRequest, type SubscriptionHttpDeps } from "./http.js";
 export {
   CODEX_APPROVAL_PENDING,
-  GITHUB_APPROVAL_PENDING,
   META_APPROVAL_PENDING,
   OPENCODE_APPROVAL_PENDING,
   XAI_APPROVAL_PENDING,

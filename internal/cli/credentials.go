@@ -257,7 +257,6 @@ func newCredentialsListCmd(gf *globalFlags) *cobra.Command {
 var subscriptionProviders = map[string]agentSubscriptionProvider{
 	"claude-code":       claudeSubscription,
 	"codex":             codexSubscription,
-	"github-copilot":    copilotSubscription,
 	"grok":              grokSubscription,
 	"muse-code":         museSubscription,
 	"opencode-go":       opencodeGoSubscription,
@@ -351,7 +350,7 @@ type subscriptionUsageWindow struct {
 func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "subscription",
-		Short: "Manage your personal ChatGPT, Claude Code, GitHub Copilot, Grok, Muse Code, OpenCode Go, and Vercel Token Pass subscriptions",
+		Short: "Manage your personal ChatGPT, Claude Code, Grok, Muse Code, OpenCode Go, and Vercel Token Pass subscriptions",
 		Long: "Connect one or more personal subscriptions per provider. A model tries its maker's plan " +
 			"first, then the user's other plans that serve it. Of each kind, routing uses the active one " +
 			"until it reaches its usage limit, then holds it until its reset and switches to the next " +
@@ -426,13 +425,13 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 	var reconnect, on string
 	cmd := &cobra.Command{
-		Use:   "connect <codex|claude-code|github-copilot|grok|muse-code|opencode-go|vercel-token-pass>",
+		Use:   "connect <codex|claude-code|grok|muse-code|opencode-go|vercel-token-pass>",
 		Short: "Connect another subscription, or reconnect one with --reconnect",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			provider, ok := subscriptionProviders[strings.ToLower(strings.TrimSpace(args[0]))]
 			if !ok {
-				return fmt.Errorf("unknown subscription %q: expected codex, claude-code, github-copilot, grok, muse-code, opencode-go, or vercel-token-pass", args[0])
+				return fmt.Errorf("unknown subscription %q: expected codex, claude-code, grok, muse-code, opencode-go, or vercel-token-pass", args[0])
 			}
 			viaGateway, err := routesThroughGateway()
 			if err != nil {

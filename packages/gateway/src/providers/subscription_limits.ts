@@ -186,7 +186,6 @@ const SUBSCRIPTION_LABEL: Record<SubscriptionOAuthProvider, string> = {
   openai_codex: "ChatGPT",
   meta_muse: "Muse Code",
   opencode_go: "OpenCode Go",
-  github_copilot: "GitHub Copilot",
   xai_grok: "Grok",
   vercel_token_pass: "Vercel Token Pass",
 };
@@ -203,7 +202,6 @@ export function subscriptionOAuthProviderFor(
   if (provider === "openai" || provider === "openai-codex") return "openai_codex";
   if (provider === "meta") return "meta_muse";
   if (provider === "opencode-go") return "opencode_go";
-  if (provider === "github-copilot") return "github_copilot";
   if (provider === "xai") return "xai_grok";
   if (provider === "vercel-token-pass") return "vercel_token_pass";
   return null;
@@ -212,7 +210,7 @@ export function subscriptionOAuthProviderFor(
 /**
  * Recognize a personal subscription that has run out of quota. Claude Code
  * answers 429 with the unified rate-limit headers; the ChatGPT backend answers
- * 429 with a structured `error.code` and `resets_at`. Meta, GitHub Copilot,
+ * 429 with a structured `error.code` and `resets_at`. Meta,
  * xAI, Kimi, and Vercel Token Pass document no usage-limit signature for their
  * plans, so any 429 on one holds it until the reset it gives, if any. OpenCode
  * Go names its refusal

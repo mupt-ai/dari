@@ -1,0 +1,3 @@
+# Benchmark and quality reference; not imported by the independent model.
+mlx-lm @ git+https://github.com/ml-explore/mlx-lm@e2b5bbd3bd9d186dea895e60802aa765e70b9d93
+mlx==0.32.4

@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(dari_native LANGUAGES CXX)
+set(CMAKE_CXX_STANDARD 17)
+find_package(Python REQUIRED COMPONENTS Interpreter Development.Module)
+find_package(nanobind CONFIG REQUIRED)
+find_package(MLX CONFIG REQUIRED)
+nanobind_add_module(_native NB_DOMAIN mlx gate.cpp)
+target_link_libraries(_native PRIVATE mlx)

@@ -1,0 +1,8 @@
+[
+  ["A tide gauge reads −0.4 m at dawn and +0.7 m at noon. How much did the water level rise?", " The level rose by 1.1 metres."],
+  ["Em português: uma estante tem quatro prateleiras e cada prateleira tem seis livros. Quantos livros há?", " Há vinte e quatro livros na estante."],
+  ["A log viewer displays the literal characters backslash and n, not a line break. Explain the distinction to a programmer.", " The displayed string contains two characters; a newline is a single control character."],
+  ["A stage manager wrote: ‘Amber before curtain; blue after the final bow.’ Which cue follows the bow?", " The blue lighting cue follows the final bow."],
+  ["Coordinate notes: P=(−3, 4), Q=(2, 4). Describe the movement from P to Q without giving a distance formula.", " Move five units to the right and do not move vertically."],
+  ["A museum revised label B from ‘circa 1880’ to ‘after 1895’. Label A was left alone. Summarize only what changed.", " Label B now dates the object to after 1895 rather than around 1880."]
+]

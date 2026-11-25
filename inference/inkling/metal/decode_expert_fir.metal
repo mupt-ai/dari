@@ -1,0 +1,14 @@
+uint channel = thread_position_in_grid.x;
+float acc = 0;
+for (uint j = 0; j < 8; j++)
+    acc = fma(float(expert[j * D + channel]), coeff[j], acc);
+bfloat mixture = bfloat(acc);
+float filtered = 0;
+for (uint j = 0; j < 3; j++)
+    filtered = fma(float(prior[j * D + channel]), float(w[channel * 4 + j]), filtered);
+filtered = fma(float(mixture), float(w[channel * 4 + 3]), filtered);
+bfloat residual_update = bfloat((float(bfloat(filtered)) + float(mixture)) * .4472135955f);
+out[channel] = bfloat(res[channel] + float(residual_update));
+history[channel] = prior[D + channel];
+history[D + channel] = prior[2 * D + channel];
+history[2 * D + channel] = mixture;

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dari-inference"
+version = "0.1.0"
+requires-python = ">=3.11,<3.14"
+
+dependencies = [
+    "mlx==0.32.4",
+    "mlx-lm @ git+https://github.com/ml-explore/mlx-lm@e2b5bbd3bd9d186dea895e60802aa765e70b9d93",
+]
+
+[project.scripts]
+dari-inference = "dari_engine.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["dari_engine*", "inkling*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+inkling = ["metal/*.metal"]

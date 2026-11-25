@@ -1,0 +1,16 @@
+#!/bin/sh
+# Checkout entry point. Only explicit install/pull commands may create the runtime.
+set -eu
+root=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+case "${2:-}" in -*) model_arg=false ;; *) model_arg=true ;; esac
+if $model_arg && { { [ "${1:-}" = install ] && [ "$#" -le 2 ]; } || { [ "${1:-}" = pull ] && [ "$#" -eq 2 ]; }; }; then
+    if [ ! -x "$root/.venv/bin/python" ]; then
+        uv venv --python 3.12 "$root/.venv"
+    fi
+    uv pip install --python "$root/.venv/bin/python" "$root"
+elif [ ! -x "$root/.venv/bin/python" ]; then
+    echo 'Runtime not installed. Run: ./dari-inference install' >&2
+    exit 1
+fi
+export PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}"
+exec "$root/.venv/bin/python" -P -m dari_engine.cli "$@"

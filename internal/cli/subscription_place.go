@@ -171,16 +171,9 @@ func computerGateway(ctx context.Context, stdin io.Reader, stderr io.Writer, nee
 		gw := &gatewayConfig{url: gateway.LocalURL(), key: settings.LocalKey, local: true, settings: settings}
 		return gw, gw.ensure(ctx, stderr)
 	}
-	if !ok {
-		settings = gateway.Settings{Mode: gateway.ModeHosted}
-	}
-	if settings.LocalKey == "" {
-		if settings.LocalKey, err = gateway.NewKey(); err != nil {
-			return nil, err
-		}
-		if err := gateway.Save(settings); err != nil {
-			return nil, err
-		}
+	settings, err = hostedGatewaySettings()
+	if err != nil {
+		return nil, err
 	}
 	hostedKey := ""
 	if needHosted || signedIn() {
@@ -193,6 +186,25 @@ func computerGateway(ctx context.Context, stdin io.Reader, stderr io.Writer, nee
 	return connectedGateway(ctx, settings, hostedKey, stderr)
 }
 
+// hostedGatewaySettings loads this computer's gateway settings, or new
+// hosted-mode ones, with a local key saved when missing.
+func hostedGatewaySettings() (gateway.Settings, error) {
+	settings, ok, err := gateway.Load()
+	if err != nil {
+		return settings, err
+	}
+	if !ok {
+		settings = gateway.Settings{Mode: gateway.ModeHosted}
+	}
+	if settings.LocalKey != "" {
+		return settings, nil
+	}
+	if settings.LocalKey, err = gateway.NewKey(); err != nil {
+		return settings, err
+	}
+	return settings, gateway.Save(settings)
+}
+
 // connectedGateway starts this computer's gateway connected to hosted Dari
 // with the user's routing key ("" starts it unconnected).
 func connectedGateway(ctx context.Context, settings gateway.Settings, hostedKey string, stderr io.Writer) (*gatewayConfig, error) {
@@ -203,45 +215,19 @@ func connectedGateway(ctx context.Context, settings gateway.Settings, hostedKey 
 	return gw, gw.ensure(ctx, stderr)
 }
 
-// computerPlanGateway is this computer's gateway, connected and running,
-// when the user has a plan the agent uses on it; nil routes the launch
-// through hosted Dari as before. A gateway that does not start only warns.
-func computerPlanGateway(ctx context.Context, client *api.Client, agent, hostedKey string, stderr io.Writer) *gatewayConfig {
-	settings, ok, err := gateway.Load()
-	if err != nil || !ok || settings.GatewayID == "" || settings.LocalKey == "" {
-		return nil
+// launchGateway is this computer's gateway, connected with the launch's
+// routing key and running; nil routes the launch straight to Dari. A gateway
+// that does not start only warns.
+var launchGateway = func(ctx context.Context, hostedKey string, stderr io.Writer) *gatewayConfig {
+	settings, err := hostedGatewaySettings()
+	if err == nil {
+		var gw *gatewayConfig
+		if gw, err = connectedGateway(ctx, settings, hostedKey, stderr); err == nil {
+			return gw
+		}
 	}
-	var listed agentSubscriptionStatus
-	if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &listed); err != nil {
-		return nil
-	}
-	usedBy := func(provider string) bool {
-		return slices.ContainsFunc(agentSubscriptionProviders(agent), func(p agentSubscriptionProvider) bool { return p.id == provider })
-	}
-	synced := slices.ContainsFunc(listed.LocalSubscriptions, func(local localSubscription) bool {
-		return local.GatewayID == settings.GatewayID && usedBy(local.Provider)
-	})
-	// A plan just connected here may not have reached hosted yet; a running
-	// gateway answers for itself.
-	if !synced && !(gateway.Healthy(ctx) && localPlanFor(ctx, settings, usedBy)) {
-		return nil
-	}
-	gw, err := connectedGateway(ctx, settings, hostedKey, stderr)
-	if err != nil {
-		agentStep(stderr, fmt.Sprintf("Could not start the gateway for your plan on this computer (%v); routing through Dari", err))
-		return nil
-	}
-	return gw
-}
-
-// localPlanFor reports whether the running local gateway has a plan, not
-// private, of a provider the agent uses.
-func localPlanFor(ctx context.Context, settings gateway.Settings, usedBy func(string) bool) bool {
-	gw := &gatewayConfig{url: gateway.LocalURL(), key: settings.LocalKey, local: true, settings: settings}
-	plans, err := localPlacedSubscriptions(ctx, gw)
-	return err == nil && slices.ContainsFunc(plans, func(p placedSubscription) bool {
-		return p.place == placeComputer && usedBy(p.OAuthProvider)
-	})
+	agentStep(stderr, fmt.Sprintf("Could not start the gateway on this computer (%v); routing through Dari", err))
+	return nil
 }
 
 func hostedSubscriptionClient(gf *globalFlags) (*api.Client, error) {

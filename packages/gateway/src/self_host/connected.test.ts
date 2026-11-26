@@ -5,17 +5,31 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { hostedConnectionFromEnv } from "./connected.js";
+import { hostedConnectionFromEnv, hostedRouters } from "./connected.js";
 import { HostedSync } from "./hosted_sync.js";
 import { secretBoxFromEnv } from "./secret_box.js";
-import { anthropicReply } from "./stub_gateway.js";
+import { anthropicReply, codexReply } from "./stub_gateway.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 
-// A connected gateway as its own process, against one stand-in for both
-// hosted Dari and Anthropic.
+// A connected gateway as its own process, against one stand-in for hosted
+// Dari, Anthropic, and the Codex backend.
 const HOSTED_KEY = "dari-user-key";
 const SESSION_ID = crypto.randomUUID();
-const hostedCalls: Array<{ method: string; path: string; authorization: string | null; gatewayId: string | null; body: string }> = [];
+const SONNET = "anthropic/claude-sonnet-5-5";
+const GPT = "openai/gpt-6.2-astra";
+const OPUS = "anthropic/claude-opus-5-5";
+type HostedCall = {
+  method: string;
+  path: string;
+  authorization: string | null;
+  apiKey: string | null;
+  harness: string | null;
+  userAgent: string | null;
+  app: string | null;
+  sessionId: string | null;
+  body: string;
+};
+const hostedCalls: HostedCall[] = [];
 const providerTokens: string[] = [];
 let stub: ReturnType<typeof Bun.serve>;
 let gateway: ReturnType<typeof Bun.spawn>;
@@ -31,22 +45,55 @@ beforeAll(async () => {
         providerTokens.push((request.headers.get("authorization") ?? "").replace(/^Bearer /, ""));
         return anthropicReply();
       }
+      if (pathname === "/backend-api/codex/responses") {
+        providerTokens.push((request.headers.get("authorization") ?? "").replace(/^Bearer /, ""));
+        return codexReply("gpt-6.2-astra");
+      }
+      // The plan's usage, which it reports none of.
+      if (pathname.startsWith("/backend-api/")) return Response.json({});
       hostedCalls.push({
         method: request.method,
         path: pathname,
         authorization: request.headers.get("authorization"),
-        gatewayId: request.headers.get("x-dari-gateway-id"),
+        apiKey: request.headers.get("x-api-key"),
+        harness: request.headers.get("x-dari-client-harness"),
+        userAgent: request.headers.get("user-agent"),
+        app: request.headers.get("x-app"),
+        sessionId: request.headers.get("x-claude-code-session-id"),
         body: await request.text(),
       });
-      if (pathname === "/rtr_1/v1/models") {
+      if (pathname === "/v1/gateway/routers/rtr_1") {
         return Response.json({
           models: [
-            { slug: "dari/routing" },
-            { slug: "dari/model/anthropic/claude-sonnet-5-5" },
-            { slug: "dari/model/openai/gpt-6.2-astra" },
+            { id: SONNET, thinking: null, sources: ["plan", "key"] },
+            { id: GPT, thinking: ["low", "high"], sources: ["plan", "key"] },
+            { id: OPUS, thinking: null, sources: ["managed"] },
           ],
+          reset_min_hours: 24,
+          native_compaction: true,
+          zdr: false,
+          session_pinning: false,
+          retries: 1,
+          role_models: {},
+          role_prompts: {},
+          custom_rules: false,
         });
       }
+      if (pathname === "/v1/gateway/routers/rtr_rules") {
+        return Response.json({
+          models: [{ id: SONNET, thinking: null, sources: ["plan"] }],
+          reset_min_hours: 24,
+          native_compaction: false,
+          zdr: false,
+          session_pinning: false,
+          retries: 1,
+          role_models: {},
+          role_prompts: {},
+          custom_rules: true,
+        });
+      }
+      // Hosted Dari serving a model it was asked for.
+      if (pathname === "/rtr_1/v1/messages") return anthropicReply();
       if (pathname === "/v1/gateway/subscriptions") return Response.json({ subscriptions: [] });
       if (pathname === "/v1/gateway/requests") return Response.json({ stored: ["x"], rejected: [] });
       return Response.json({ served_by: "hosted" });
@@ -65,10 +112,10 @@ beforeAll(async () => {
     accountId: null,
     accountEmail: "me@example.com",
   }, null)!.id;
-  // A private ChatGPT plan, which would serve GPT were the gateway not connected.
+  // A private ChatGPT plan: it serves GPT here, and stays off hosted Dari.
   store.connect({
     provider: "openai_codex",
-    accessToken: "codex-private",
+    accessToken: CODEX_PRIVATE_TOKEN,
     refreshToken: "r",
     expiresAt,
     accountId: "acct",
@@ -113,7 +160,7 @@ afterAll(async () => {
   await stub.stop(true);
 });
 
-const claudeCode = (model: string, key = "local-key") =>
+const claudeCode = (model: string, key = "local-key", fields: Record<string, unknown> = {}) =>
   fetch(`${baseUrl}/rtr_1/v1/messages`, {
     method: "POST",
     headers: {
@@ -124,10 +171,14 @@ const claudeCode = (model: string, key = "local-key") =>
       "x-app": "cli",
       "x-claude-code-session-id": SESSION_ID,
     },
-    body: JSON.stringify({ model, max_tokens: 64, stream: true, messages: [{ role: "user", content: "hi" }] }),
+    body: JSON.stringify({ model, max_tokens: 64, stream: true, messages: [{ role: "user", content: "hi" }], ...fields }),
   });
 
 const hosted = (path: string) => hostedCalls.filter((call) => call.path === path);
+
+const syncedModels = () => hosted("/v1/gateway/requests")
+  .flatMap((call) => JSON.parse(call.body).requests)
+  .map((request: { row: { selected_model: string } }) => request.row.selected_model);
 
 test("reports its plans, leaving private ones out, as soon as it starts", async () => {
   await waitFor(() => hosted("/v1/gateway/subscriptions").length > 0);
@@ -145,12 +196,12 @@ test("reports its plans, leaving private ones out, as soon as it starts", async 
 });
 
 test("serves a model its plan serves locally and sends the request to hosted Activity", async () => {
-  const response = await claudeCode("dari/model/anthropic/claude-sonnet-5-5");
+  const response = await claudeCode(`dari/model/${SONNET}`);
   expect(response.status).toBe(200);
   expect(await response.text()).toContain("hi");
   expect(providerTokens).toEqual(["sk-ant-oat01-local"]);
-  // Hosted lists the router's models this gateway's plans serve, though it holds none.
-  expect(hosted("/rtr_1/v1/models")[0]!.gatewayId).toBe("gw_test");
+  // The router comes from hosted Dari with the user's key.
+  expect(hosted("/v1/gateway/routers/rtr_1")[0]!.authorization).toBe(`Bearer ${HOSTED_KEY}`);
   expect(hosted("/rtr_1/v1/messages")).toEqual([]);
 
   await waitFor(() => hosted("/v1/gateway/requests").length > 0);
@@ -159,29 +210,93 @@ test("serves a model its plan serves locally and sends the request to hosted Act
   const body = JSON.parse(sync!.body);
   expect(body.gateway_id).toBe("gw_test");
   expect(body.requests).toHaveLength(1);
-  expect(body.requests[0].row).toMatchObject({ router_id: "rtr_1", selected_model: "anthropic/claude-sonnet-5-5" });
+  expect(body.requests[0].row).toMatchObject({ router_id: "rtr_1", selected_model: SONNET });
 });
 
-test("hands hosted a model no local plan serves, and every other call, with the user's Dari key", async () => {
-  const response = await claudeCode("dari/model/openai/gpt-6.2-astra");
-  expect(await response.json()).toEqual({ served_by: "hosted" });
-  const [forwarded] = hosted("/rtr_1/v1/messages");
-  expect(forwarded!.authorization).toBe(`Bearer ${HOSTED_KEY}`);
-  expect(JSON.parse(forwarded!.body).model).toBe("dari/model/openai/gpt-6.2-astra");
-  // The private ChatGPT plan never served.
-  expect(providerTokens).not.toContain("codex-private");
+test("sends a model only Dari serves to hosted Dari as that model, with the Dari key and the client's own headers", async () => {
+  const response = await claudeCode(`dari/model/${OPUS}`, "local-key", {
+    thinking: { type: "adaptive" },
+    output_config: { effort: "high" },
+  });
+  expect(response.status).toBe(200);
+  expect(await response.text()).toContain("hi");
+  const [served] = hosted("/rtr_1/v1/messages");
+  expect(served!.apiKey).toBe(HOSTED_KEY);
+  expect(served!.harness).toBe("claude_code");
+  // Hosted Dari tells Claude Code by its own headers, passed on unchanged.
+  expect(served!.userAgent).toBe("claude-cli/2.1.300 (external, cli)");
+  expect(served!.app).toBe("cli");
+  expect(served!.sessionId).toBe(SESSION_ID);
+  const body = JSON.parse(served!.body);
+  expect(body.model).toBe(`dari/model/${OPUS}`);
+  expect(body.output_config).toEqual({ effort: "high" });
+});
 
+test("serves a private plan, whose requests stay on this computer", async () => {
+  const response = await claudeCode(`dari/model/${GPT}`);
+  expect(response.status).toBe(200);
+  expect(await response.text()).toContain("hi");
+  expect(providerTokens).toContain(CODEX_PRIVATE_TOKEN);
+  // Neither this request nor the one hosted Dari served syncs.
+  await Bun.sleep(2_500);
+  expect(syncedModels()).toEqual([SONNET]);
+});
+
+test("lists every model of the router itself", async () => {
+  const response = await fetch(`${baseUrl}/rtr_1/v1/models`, { headers: { authorization: "Bearer local-key" } });
+  expect(response.status).toBe(200);
+  const list = await response.json() as { models: Array<{ slug: string }>; remote_compaction: string };
+  const slugs = list.models.map((model) => model.slug);
+  for (const id of [SONNET, GPT, OPUS]) expect(slugs).toContain(`dari/model/${id}`);
+  // The router lets Codex compact natively, as hosted Dari says.
+  expect(list.remote_compaction).toBe("v2");
+  expect(hosted("/rtr_1/v1/models")).toEqual([]);
+});
+
+test("hands hosted every other call with the user's Dari key", async () => {
   await fetch(`${baseUrl}/rtr_1/v1/dari/git-events`, {
     method: "POST",
     headers: { authorization: "Bearer local-key", "content-type": "application/json" },
     body: "{}",
   });
   expect(hosted("/rtr_1/v1/dari/git-events")[0]!.authorization).toBe(`Bearer ${HOSTED_KEY}`);
-  // Hosted logs the request it served; the local attempt's row never syncs.
-  await Bun.sleep(2_500);
-  const synced = hosted("/v1/gateway/requests").flatMap((call) => JSON.parse(call.body).requests);
-  expect(synced.map((request: { row: { selected_model: string } }) => request.row.selected_model))
-    .toEqual(["anthropic/claude-sonnet-5-5"]);
+});
+
+test("hands hosted Dari a router with custom rules whole, since only it runs them", async () => {
+  const response = await fetch(`${baseUrl}/rtr_rules/v1/messages`, {
+    method: "POST",
+    headers: { "x-api-key": "local-key", "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body: JSON.stringify({ model: "dari/routing", max_tokens: 16, messages: [{ role: "user", content: "hi" }] }),
+  });
+  expect(await response.json()).toEqual({ served_by: "hosted" });
+  expect(hosted("/rtr_rules/v1/messages")[0]!.authorization).toBe(`Bearer ${HOSTED_KEY}`);
+});
+
+test("applies the hosted router's settings: ZDR, session pinning, retries, roles", async () => {
+  const read = hostedRouters(
+    { url: "https://hosted.test", apiKey: "k", gatewayId: "gw", gatewayName: "mac" },
+    (async () => Response.json({
+      models: [{ id: SONNET, thinking: null, sources: ["plan"] }, { id: OPUS, thinking: null, sources: ["managed"] }],
+      reset_min_hours: 6,
+      native_compaction: false,
+      zdr: true,
+      session_pinning: true,
+      retries: 0,
+      role_models: { main: null, subagent: SONNET },
+      role_prompts: { main: "Delegate.", subagent: null },
+      custom_rules: false,
+    })) as unknown as typeof fetch,
+  );
+  const { config, customRules } = await read("rtr_x");
+  expect(customRules).toBe(false);
+  expect(config).toMatchObject({
+    zdr: true,
+    sessionPinning: true,
+    retries: 0,
+    resetMinHours: 6,
+    roleModels: { subagent: SONNET },
+    rolePrompts: { main: "Delegate." },
+  });
 });
 
 test("forwards nothing for a caller without the gateway key", async () => {
@@ -228,7 +343,6 @@ test("queued requests wait out a hosted failure and go in batches of 16", async 
     gatewayName: "mac",
   }, fetchStub, () => clock);
   for (let index = 0; index < 20; index += 1) sync.enqueue({ request_id: `r${index}` });
-  clock += 1_000;
   await sync.drain();
   const failed = posts.length;
   // Nothing is due again until the backoff passes.
@@ -250,6 +364,11 @@ test("a connected gateway needs its id and encryption key", () => {
   expect(() => hostedConnectionFromEnv(env)).toThrow("DARI_GATEWAY_ID");
   expect(() => hostedConnectionFromEnv({ ...env, DARI_GATEWAY_ID: "gw" })).toThrow("DARI_GATEWAY_ENCRYPTION_KEY");
 });
+
+// A ChatGPT access token is a JWT naming its account; the stand-in is unsigned.
+const CODEX_PRIVATE_TOKEN = ["e30", Buffer.from(JSON.stringify({
+  "https://api.openai.com/auth": { chatgpt_account_id: "acct" },
+})).toString("base64url"), "private"].join(".");
 
 async function freePort(): Promise<number> {
   const probe = Bun.serve({ port: 0, fetch: () => new Response() });

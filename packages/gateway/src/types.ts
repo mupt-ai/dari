@@ -119,6 +119,8 @@ export type ResolvedRouterModelConfig = {
   native_model_id: string;
   api: string;
   base_url?: string | null;
+  // Sent with every call to the endpoint.
+  headers?: Record<string, string>;
   context_window?: number | null;
   standard_context_limit?: number | null;
   allow_long_context?: boolean;

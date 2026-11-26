@@ -1,6 +1,6 @@
 import type { ClientHarness } from "../types.js";
 
-const CLIENT_HARNESS_HEADER = "x-dari-client-harness";
+export const CLIENT_HARNESS_HEADER = "x-dari-client-harness";
 
 export const CLIENT_HARNESSES: readonly string[] = [
   "claude_code",
@@ -11,6 +11,23 @@ export const CLIENT_HARNESSES: readonly string[] = [
   "openclaw",
   "hermes",
 ] satisfies ClientHarness[];
+
+// The headers a coding agent names itself with: Claude Code's user agent,
+// app, session, and betas, and Muse Code's client id.
+const CLIENT_HEADERS = ["user-agent", "x-app", "x-claude-code-session-id", "anthropic-beta", "x-client-id"];
+
+/**
+ * The headers of `CLIENT_HEADERS` the request carries, as the client sent
+ * them, so hosted Dari serving it for a connected gateway sees the same client.
+ */
+export function clientHeaders(headers: Headers): Record<string, string> {
+  const found: Record<string, string> = {};
+  for (const name of CLIENT_HEADERS) {
+    const value = headers.get(name);
+    if (value !== null) found[name] = value;
+  }
+  return found;
+}
 
 /**
  * The coding agent `x-dari-client-harness` names, as the Dari CLI does for a

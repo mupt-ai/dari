@@ -1,5 +1,6 @@
 import { canonicalModelId, isRecord } from "@mupt-ai/dari-router/policy-engine";
 
+import { HOSTED_DARI_PROVIDER } from "../platform/routing_contract.js";
 import { gatewayFor } from "./gateways.js";
 
 const MODEL_CONTEXT_OVERRIDES: Record<string, number> = {
@@ -231,6 +232,9 @@ export function inputModalitiesOverride(modelId: string): string[] | undefined {
 }
 
 export function runtimeCompat(provider: string, registered: Record<string, unknown> | undefined, modelId?: string): unknown {
+  // Hosted Dari reads the thinking level from Anthropic's adaptive effort and
+  // calls the provider itself, so no model's own wire settings apply.
+  if (provider === HOSTED_DARI_PROVIDER) return { forceAdaptiveThinking: true };
   const canonical = modelId ? canonicalModelId(modelId) : undefined;
   const compatOverride = canonical
     ? PROVIDER_MODEL_COMPAT_OVERRIDES[provider]?.[canonical] ?? MODEL_COMPAT_OVERRIDES[canonical]

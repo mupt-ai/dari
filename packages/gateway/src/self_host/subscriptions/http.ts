@@ -142,7 +142,7 @@ function listBody(store: SubscriptionStore, now: Date) {
     SUBSCRIPTION_PROVIDERS.map((provider) => store.activeCredential(provider, now)?.id),
   );
   return {
-    credentials: store.list(undefined, true).map((credential) => credentialBody(credential, active.has(credential.id), now)),
+    credentials: store.list().map((credential) => credentialBody(credential, active.has(credential.id), now)),
     // Plan gating is hosted-only; a self-hosted gateway always allows routing.
     autorouting_allowed: true,
   };

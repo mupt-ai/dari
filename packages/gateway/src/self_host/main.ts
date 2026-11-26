@@ -11,7 +11,7 @@ import { createAutoRoutingSelectorBackend } from "../strategies/auto_routing_sel
 import { createPrioritySelectorBackend } from "../strategies/priority_selector.js";
 import type { SelectorBackend } from "../strategies/routing.js";
 import { ActivityStore } from "./activity_store.js";
-import { connectedHandler, createConnectedPlatform, hostedConnectionFromEnv } from "./connected.js";
+import { connectedHandler, createConnectedPlatform, hostedConnectionFromEnv, hostedRouters } from "./connected.js";
 import { HostedSync, readHostedAccounts } from "./hosted_sync.js";
 import { createSelfHostedPlatform } from "./platform.js";
 import { checkProviderKey } from "../providers/key_check.js";
@@ -76,8 +76,8 @@ const IDLE_USAGE_INTERVAL_MS = 5 * 60_000;
  * - `DARI_HOSTED_URL` and `DARI_HOSTED_API_KEY`: connect the gateway to hosted
  *   Dari (connected.ts), with `DARI_GATEWAY_ID`, `DARI_GATEWAY_NAME`, and
  *   `DARI_GATEWAY_ENCRYPTION_KEY`. It then serves the user's hosted routers on
- *   its own plans, hands hosted every request they cannot serve, and syncs its
- *   plans and requests there; Dari Link and Activity are hosted's.
+ *   its own plans and then on hosted Dari, and syncs its plans and requests
+ *   there; Dari Link and Activity are hosted's.
  */
 export async function startSelfHostedGateway(env: Record<string, string> = process.env as Record<string, string>) {
   const hosted = hostedConnectionFromEnv(env);
@@ -102,8 +102,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
       "dari-gateway stores subscription tokens unencrypted; set DARI_GATEWAY_ENCRYPTION_KEY (openssl rand -base64 32) to encrypt them",
     );
   }
-  // Private plans stay off hosted Dari, so a connected gateway never serves them.
-  const subscriptions = new SubscriptionStore(db, secrets, { privatePlansServe: hosted === null });
+  const subscriptions = new SubscriptionStore(db, secrets);
   const prefixes = new PrefixStore(db);
   const sessionPins = new SessionPinStore(db);
   const routerModels = new RouterModelStore(db);
@@ -127,6 +126,8 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   const providerApiKey = async (provider: string) => (await piModels.getAuth(provider))?.auth.apiKey;
   const autoRoutingKey = hosted?.apiKey ?? env.DARI_AUTO_ROUTING_API_KEY?.trim();
   const sync = hosted === null ? null : new HostedSync(db, subscriptions, hosted, fetch);
+  // The hosted router, read once a minute, for both serving and routing calls.
+  const hostedRouter = hosted === null ? null : hostedRouters(hosted, fetch);
   const baseUrls = providerBaseUrls(config.providers);
   if (sync !== null) {
     subscriptions.onChange = (change) => change === "usage" ? sync.usageChanged() : sync.plansChanged();
@@ -146,9 +147,9 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     env,
     fetch,
   };
-  const platform = hosted === null || sync === null
+  const platform = hosted === null || sync === null || hostedRouter === null
     ? createSelfHostedPlatform(platformDeps)
-    : createConnectedPlatform({ ...platformDeps, hosted, sync });
+    : createConnectedPlatform({ ...platformDeps, hosted, sync, hostedRouter });
   // A model without a credential is dropped at request time, so a missing key
   // would otherwise surface only as a 424 on the first request.
   const warnWithoutCredentials = async (routerId: string, router: RouterConfig) => {
@@ -180,9 +181,9 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
       })
     : createPrioritySelectorBackend();
   const routed = createRequestHandler({ platform, selectorBackend });
-  const gateway = hosted === null || sync === null
+  const gateway = hosted === null || sync === null || hostedRouter === null
     ? routed
-    : connectedHandler({ gateway: routed, gatewayKeys, hosted, sync, fetch });
+    : connectedHandler({ gateway: routed, gatewayKeys, hosted, hostedRouter, fetch });
 
   // Subscriptions, model lists, and router specs are managed with any gateway
   // key; every other path is the gateway's own.

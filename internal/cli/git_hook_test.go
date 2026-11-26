@@ -24,6 +24,8 @@ func TestMain(m *testing.M) {
 	os.Setenv("GIT_CONFIG_COUNT", "1")
 	os.Setenv("GIT_CONFIG_KEY_0", linkCommitsConfig)
 	os.Setenv("GIT_CONFIG_VALUE_0", "false")
+	// No test reaches the real gateway on this computer.
+	launchGateway = func(context.Context, string, io.Writer) *gatewayConfig { return nil }
 	os.Exit(m.Run())
 }
 

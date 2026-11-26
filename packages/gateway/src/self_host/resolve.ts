@@ -10,7 +10,9 @@ import {
 } from "@mupt-ai/dari-router/policy-engine";
 import { HttpError } from "../http/errors.js";
 import type { ResolveRouterRequest } from "../platform/platform.js";
-import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
+import { DEFAULT_ROUTER_ALIAS, HOSTED_DARI_PROVIDER } from "../platform/routing_contract.js";
+import { explicitModelSlug } from "../protocol/input/router_model.js";
+import { CLIENT_HARNESS_HEADER } from "../ingress/client_harness.js";
 import {
   codexModelConfig,
   modelSubscriptions,
@@ -37,6 +39,7 @@ import {
   type RouterModelConfig,
 } from "./config.js";
 import type { ActiveLinkGrant } from "../link/grants.js";
+import type { HostedConnection } from "./connected.js";
 import type { SqliteLinkStore } from "../link/sqlite_store.js";
 import { linkSubscription } from "../link/self_hosted.js";
 import { linkTokenGrant } from "../link/service.js";
@@ -78,20 +81,25 @@ export type SelfHostedResolverDeps = {
   autoRouting: boolean;
   env: Record<string, string | undefined>;
   fetch: OAuthFetch;
+  // Set on a gateway connected to hosted Dari (connected.ts).
+  hosted?: HostedConnection;
 };
 
-// One way to serve a model: a connected plan, or its provider's API key.
+// One way to serve a model: a connected plan, its provider's API key, or
+// hosted Dari, with the user's Dari key and the endpoint that serves it.
 type Candidate =
   | { provider: string; plan: SubscriptionCredential }
-  | { provider: string; key: string };
+  | { provider: string; key: string }
+  | { provider: string; key: string; config: ResolvedRouterModelConfig };
 
 /**
  * Resolve a configured router for one request. Each model is served by the
  * connected personal subscriptions that serve it, when the router allows them,
- * in plan order (see models/subscriptions.ts), then by its provider's API key:
- * the first available serves and the rest fail over within the request.
- * Models nothing can serve are left out. A coding agent with its own model
- * list on the router is served that list.
+ * in plan order (see models/subscriptions.ts), then by its provider's API key
+ * (on a connected gateway, by hosted Dari): the first available serves and
+ * the rest fail over within the request. Models nothing can serve are left
+ * out. A coding agent with its own model list on the router is served that
+ * list.
  *
  * A Dari Link token is served apart from any router, on its grant's plans and
  * API keys alone: `dari/routing` chooses among every catalog model they
@@ -226,15 +234,28 @@ export async function resolveSelfHostedRouter(
         },
       });
     }
-    const candidates = await candidatesFor(sources, plans, {
-      key: async () => {
-        const key = await apiKey(base);
-        if (key === undefined) return null;
-        return { provider: base, key };
-      },
-      // A self-hosted gateway has no managed keys.
-      managed: async () => null,
-    });
+    let keyCandidate = async (): Promise<Candidate | null> => {
+      const key = await apiKey(base);
+      if (key === undefined) return null;
+      return { provider: base, key };
+    };
+    // A self-hosted gateway has no managed keys.
+    let managedCandidate = async (): Promise<Candidate | null> => null;
+    // On a gateway connected to hosted Dari, Dari serves what no plan on this
+    // computer does: its own plans after this computer's, the router's key,
+    // and managed credits.
+    const hosted = deps.hosted;
+    if (hosted !== undefined) {
+      const dari = async () => hostedCandidate(hosted, request, model.id);
+      plans.push({ servesClient: true, candidate: dari });
+      keyCandidate = dari;
+      managedCandidate = dari;
+    }
+    const candidates = await candidatesFor(sources, plans, { key: keyCandidate, managed: managedCandidate });
+    // Dari walks the model's sources itself from there, so its one candidate
+    // ends the list.
+    const dariAt = candidates.findIndex((candidate) => candidate.provider === HOSTED_DARI_PROVIDER);
+    if (dariAt !== -1) candidates.splice(dariAt + 1);
 
     if (candidates.length === 0) {
       for (const kind of heldKinds) exhausted.add(kind);
@@ -385,14 +406,16 @@ export function gatewayKeyIndex(keys: readonly string[], presented: string): num
   return null;
 }
 
-// How a candidate runs a model: a ChatGPT plan through the Codex backend, a
-// provider that serves another maker's model as its own model, a configured
-// endpoint, or (undefined) the model's own provider as the catalog has it.
+// How a candidate runs a model: hosted Dari's endpoint, a ChatGPT plan
+// through the Codex backend, a provider that serves another maker's model as
+// its own model, a configured endpoint, or (undefined) the model's own
+// provider as the catalog has it.
 function candidateConfig(
   deps: Pick<SelfHostedResolverDeps, "config">,
   modelId: string,
   candidate: Candidate,
 ): ResolvedRouterModelConfig | undefined {
+  if ("config" in candidate) return candidate.config;
   const { provider } = candidate;
   const price = priceFor(modelId, provider);
   if ("plan" in candidate && candidate.plan.provider === "openai_codex") {
@@ -422,6 +445,39 @@ function candidateConfig(
     api: endpoint.api,
     base_url: endpoint.baseUrl,
     cost: price ?? { input: 0, output: 0 },
+  };
+}
+
+/**
+ * Hosted Dari as the provider of a model: the request's router on hosted Dari,
+ * called for `dari/model/<id>` with the user's Dari key, in Anthropic's API
+ * for Anthropic's models and OpenAI's Responses API for the rest, with the
+ * client's own identifying headers and the coding agent it named, so hosted
+ * sees the same client. Hosted Dari bills and logs what it serves.
+ */
+function hostedCandidate(hosted: HostedConnection, request: ResolveRouterRequest, modelId: string): Candidate {
+  let routerUrl = hosted.url;
+  if (request.routerId !== DEFAULT_ROUTER_ALIAS) routerUrl = `${hosted.url}/${encodeURIComponent(request.routerId)}`;
+  let api = "openai-responses";
+  let baseUrl = `${routerUrl}/v1`;
+  // Anthropic's client adds /v1 itself.
+  if (providerForModel(modelId) === "anthropic") {
+    api = "anthropic-messages";
+    baseUrl = routerUrl;
+  }
+  const headers: Record<string, string> = { ...request.clientHeaders };
+  if (request.clientHarness !== undefined) headers[CLIENT_HARNESS_HEADER] = request.clientHarness;
+  return {
+    provider: HOSTED_DARI_PROVIDER,
+    key: hosted.apiKey,
+    config: {
+      provider: HOSTED_DARI_PROVIDER,
+      native_model_id: explicitModelSlug(modelId),
+      api,
+      base_url: baseUrl,
+      headers,
+      cost: registeredModelPrice(modelId) ?? { input: 0, output: 0 },
+    },
   };
 }
 

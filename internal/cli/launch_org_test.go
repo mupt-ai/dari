@@ -360,6 +360,70 @@ func TestLaunchOrgIsRefusedForAgentsThatRouteOnTheirSetup(t *testing.T) {
 	}
 }
 
+// A launch runs through this computer's gateway, connected with the
+// organization's routing key, which lists the router's models with its own
+// key; an --org launch goes straight to Dari.
+func TestLaunchRunsThroughTheComputersGateway(t *testing.T) {
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rtr_a/v1/models" || r.Header.Get("Authorization") != "Bearer gateway-key" {
+			t.Errorf("gateway got %s %s (%s)", r.Method, r.URL.Path, r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = io.WriteString(w, `{"models":[{"slug":"dari/routing","context_window":272000}]}`)
+	}))
+	defer gw.Close()
+	routing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/rtr_b/v1/models" || r.Header.Get("Authorization") != "Bearer route_b" {
+			t.Errorf("Dari got %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		_, _ = io.WriteString(w, `{"models":[{"slug":"dari/routing","context_window":272000}]}`)
+	}))
+	defer routing.Close()
+	routingServedBy(t, routing)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		org := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer dari_")
+		switch r.Method + " " + r.URL.Path {
+		case "POST /v1/organizations/current/api-keys":
+			_ = json.NewEncoder(w).Encode(map[string]string{"api_key": "route_" + org})
+		case "GET /v1/organizations/current/routers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{}})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+	signInToTwoOrgs(t, api.URL)
+	t.Setenv("CODEX_HOME", t.TempDir())
+	var connected []string
+	launchGateway = func(_ context.Context, hostedKey string, _ io.Writer) *gatewayConfig {
+		connected = append(connected, hostedKey)
+		return &gatewayConfig{url: gw.URL, key: "gateway-key", local: true}
+	}
+	t.Cleanup(func() { launchGateway = func(context.Context, string, io.Writer) *gatewayConfig { return nil } })
+
+	launch := agentLaunch{name: "codex", args: []string{"--router", "rtr_a", "exec", "hi"}}
+	key, baseURL, _, err := resolveAgentRouting(context.Background(), &launch, strings.NewReader(""), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key != "gateway-key" || baseURL != gw.URL+"/rtr_a" || !launch.onComputer || !slices.Equal(connected, []string{"route_a"}) {
+		t.Fatalf("key = %q, baseURL = %q, onComputer = %v, connected = %v", key, baseURL, launch.onComputer, connected)
+	}
+
+	launch = agentLaunch{name: "codex", args: []string{"--org", "b", "--router", "rtr_b", "exec", "hi"}}
+	key, baseURL, _, err = resolveAgentRouting(context.Background(), &launch, strings.NewReader(""), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key != "route_b" || baseURL != routingBaseURL+"/rtr_b" || launch.onComputer || len(connected) != 1 {
+		t.Fatalf("--org: key = %q, baseURL = %q, connected = %v", key, baseURL, connected)
+	}
+}
+
 func TestHostedLaunchListsModelsForEachHarness(t *testing.T) {
 	for _, tc := range []struct{ name, harness string }{
 		{"claude", "claude_code"}, {"codex", "codex"}, {"muse", "muse_code"},

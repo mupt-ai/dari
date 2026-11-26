@@ -27,6 +27,7 @@ import {
   type RouterModelPrice,
 } from "@mupt-ai/dari-router/policy-engine";
 import { HttpError } from "../http/errors.js";
+import { HOSTED_DARI_PROVIDER } from "../platform/routing_contract.js";
 import { effectiveContextWindow } from "../models/context_limits.js";
 import { defaultBaseUrl } from "../models/provider_defaults.js";
 import {
@@ -370,8 +371,14 @@ export function buildModel(
 ): Record<string, unknown> {
   const provider = config?.provider ?? providerForModel(modelId);
   const nativeId = config?.native_model_id ?? nativeModelId(modelId);
-  const registered = resolveModelMetadata(pi, provider, modelId, nativeId);
-  const id = registered?.id ?? (provider === "anthropic" ? nativeId.replace(/(?<=\d)\.(?=\d)/g, "-") : nativeId);
+  let registered = resolveModelMetadata(pi, provider, modelId, nativeId);
+  let id = registered?.id ?? (provider === "anthropic" ? nativeId.replace(/(?<=\d)\.(?=\d)/g, "-") : nativeId);
+  if (provider === HOSTED_DARI_PROVIDER) {
+    // Hosted Dari serves a model under its Dari id, as the model's own
+    // provider describes it.
+    registered = resolveModelMetadata(pi, providerForModel(modelId), modelId, nativeModelId(modelId));
+    id = nativeId;
+  }
   const price = executionPricing(pricing, config);
   const configuredThinkingLevels = config?.supported_thinking_levels;
   // A null catalog value delegates to Pi's registry when it knows the model.
@@ -419,6 +426,7 @@ export function buildModel(
     ...(effectiveThinkingLevels
       ? { supportedThinkingLevels: [...effectiveThinkingLevels] }
       : {}),
+    ...(config?.headers ? { headers: config.headers } : {}),
     fastMode: config?.fast_mode ?? false,
     zeroDataRetention: config?.zdr ?? false,
   };

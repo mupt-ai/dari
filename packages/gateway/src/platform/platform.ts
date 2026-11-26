@@ -513,10 +513,9 @@ export type ResolveRouterRequest = {
   conversationId?: string;
   includePublicEvalCatalog?: boolean;
   clientHarness?: ClientHarness;
-  // The connected gateway listing this router's models: a model a plan on
-  // that gateway serves is listed though hosted Dari holds no plan for it.
-  // Model lists only; that gateway serves those models itself.
-  gatewayId?: string;
+  // The client's own identifying headers (ingress/client_harness.ts), for a
+  // platform that hands the request on.
+  clientHeaders?: Record<string, string>;
   // A later resolve with this request's `conversationId` replaces this one's
   // credentials, so none from it serve the request: a platform should not
   // mark a credential used or refresh it for this resolve.
@@ -620,6 +619,8 @@ export type RequestRecord = {
   // Set for a Dari Link token's request: its grant, and the thinking the
   // provider was sent (as X-Dari-Thinking-Level reports it).
   link?: { grantId: string; thinking: string | null; costUsd: number | null; credentialId: string | null };
+  // The user's plan that served the request, when one did.
+  subscriptionCredentialId?: string;
   // The router's non-secret routing settings, for embedders that compare or
   // replay routing decisions.
   router: RequestRecordRouter;

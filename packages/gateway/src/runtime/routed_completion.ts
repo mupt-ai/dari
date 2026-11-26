@@ -8,6 +8,7 @@ import type { ClientHarness, ResolvedRouter } from "../types.js";
 import { assertAutoroutingAllowed, assertCreditAvailableBeforeRouting, routerSelectsModels } from "../telemetry/usage.js";
 import type { HarnessConversationIdentity } from "./harness_identity/index.js";
 import { CustomerDisconnectedError } from "./customer_disconnect.js";
+import { clientHeaders } from "../ingress/client_harness.js";
 import { withModelMenuHint } from "./model_menu_hint.js";
 import { prepareRoutedCompletion } from "./prepare_routed_completion.js";
 import type { RoutedProtocol } from "./routed_protocol.js";
@@ -42,6 +43,7 @@ export async function handleRoutedCompletion(args: {
     clientRequestId,
     tagsHeader: args.request.headers.get("x-dari-tags"),
     clientHarness: args.clientHarness,
+    clientHeaders: clientHeaders(args.request.headers),
     harnessConversationIdentity: args.harnessConversationIdentity,
   }).catch((error: unknown) => ({ error }));
   if ("error" in prepared) {

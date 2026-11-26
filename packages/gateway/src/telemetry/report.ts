@@ -638,8 +638,11 @@ export class RequestReporter {
             }),
       };
 
+      let subscriptionCredentialId: string | undefined;
+      if (keySource === "subscription") subscriptionCredentialId = outcome.providerExecution?.subscriptionCredentialId;
       gatewayPlatform().recordRequest({
         ...(link === undefined ? {} : { link }),
+        ...(subscriptionCredentialId === undefined ? {} : { subscriptionCredentialId }),
         router: requestRecordRouter(a.credentials),
         candidates: a.candidates.map(({ model, reasoningEffort }) => ({ model, reasoningEffort })),
         ...(a.sessionPinKey === undefined ? {} : { sessionPinKey: a.sessionPinKey }),

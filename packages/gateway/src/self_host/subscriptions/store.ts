@@ -210,15 +210,9 @@ export class SubscriptionStore {
    */
   onChange: ((change: "plans" | "usage") => void) | undefined;
 
-  /**
-   * `privatePlansServe: false` (a gateway connected to hosted Dari) leaves
-   * private plans out of routing and `list`; `list(provider, true)` still
-   * shows them.
-   */
   constructor(
     private readonly db: Database,
     private readonly box: SecretBox | null = null,
-    private readonly options: { privatePlansServe?: boolean } = {},
   ) {
     db.run(`CREATE TABLE IF NOT EXISTS subscription_credentials (
       id TEXT PRIMARY KEY,
@@ -330,14 +324,9 @@ export class SubscriptionStore {
     });
   }
 
-  /**
-   * The gateway owner's subscriptions that serve, grouped by provider, in
-   * connection order; with `includePrivate`, private ones too even where they
-   * do not serve.
-   */
-  list(provider?: SubscriptionProvider, includePrivate = false): SubscriptionCredential[] {
-    const privateShown = includePrivate || this.options.privatePlansServe !== false;
-    return this.every(provider).filter((credential) => credential.owner === null && (privateShown || !credential.private));
+  /** The gateway owner's subscriptions, grouped by provider, in connection order. */
+  list(provider?: SubscriptionProvider): SubscriptionCredential[] {
+    return this.every(provider).filter((credential) => credential.owner === null);
   }
 
   /** The subscriptions a Dari Link user connected. */

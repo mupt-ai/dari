@@ -24,10 +24,7 @@ const USAGE_INTERVAL_MS = 60_000;
 const HEARTBEAT_MS = 60 * 60_000;
 const RETRY_BASE_MS = 5_000;
 const RETRY_MAX_MS = 15 * 60_000;
-// Queued rows wait at least this long, so a request handed on to hosted can
-// take its own row back out first (`discard`).
 const DRAIN_INTERVAL_MS = 2_000;
-const SETTLE_MS = 1_000;
 
 type OutboxRow = { id: number; row_json: string };
 
@@ -104,11 +101,6 @@ export class HostedSync {
     this.db.run("INSERT INTO hosted_request_outbox (row_json, queued_at) VALUES (?, ?)", [json, this.now()]);
   }
 
-  /** Drop a queued request's row: hosted served that request itself and logs its own. */
-  discard(requestId: string): void {
-    this.db.run("DELETE FROM hosted_request_outbox WHERE json_extract(row_json, '$.request_id') = ?", [requestId]);
-  }
-
   /** The plans hosted Dari shows for this gateway. */
   snapshot(): Record<string, unknown> {
     const now = new Date(this.now());
@@ -158,11 +150,8 @@ export class HostedSync {
   private async drainDue(): Promise<void> {
     while (this.now() >= this.drainPausedUntil) {
       const due = this.db
-        .query<OutboxRow, [number, number]>(
-          "SELECT id, row_json FROM hosted_request_outbox WHERE queued_at <= ? ORDER BY id LIMIT ?",
-        )
-        // A row waits a moment, so a request handed on to hosted is discarded before it is sent.
-        .all(this.now() - SETTLE_MS, MAX_BATCH_ROWS);
+        .query<OutboxRow, [number]>("SELECT id, row_json FROM hosted_request_outbox ORDER BY id LIMIT ?")
+        .all(MAX_BATCH_ROWS);
       const batch: OutboxRow[] = [];
       let bytes = 0;
       for (const row of due) {

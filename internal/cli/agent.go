@@ -307,11 +307,15 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 		return "", "", agents.Models{}, err
 	}
 	baseURL := agentRoutingBaseURL(routerID)
-	// A plan the agent uses on this computer serves there; the gateway sends
-	// what it cannot serve on to the same router here. It also lists the
-	// router's models, counting its own plans, which hosted Dari alone does not.
+	// The launch runs through this computer's gateway, which serves its plans
+	// here and sends the rest on to the same router at Dari. A launch in
+	// another organization (--org), or one only setting up, goes straight to
+	// Dari.
 	listURL, listKey := baseURL, access.key
-	gw := computerPlanGateway(ctx, client, launch.name, access.key, stderr)
+	var gw *gatewayConfig
+	if choice.org == "" && !launch.setup() {
+		gw = launchGateway(ctx, access.key, stderr)
+	}
 	if gw != nil {
 		listURL, listKey = gw.url+strings.TrimPrefix(baseURL, routingBaseURL), gw.key
 	}

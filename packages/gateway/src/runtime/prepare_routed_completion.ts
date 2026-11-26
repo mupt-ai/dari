@@ -77,6 +77,7 @@ export async function prepareRoutedCompletion(args: {
   clientRequestId: string | null;
   tagsHeader: string | null;
   clientHarness?: ClientHarness;
+  clientHeaders?: Record<string, string>;
   harnessConversationIdentity?: HarnessConversationIdentity;
 }): Promise<PreparedRoutedCompletion> {
   const tags = requestTags(args.tagsHeader);
@@ -86,6 +87,7 @@ export async function prepareRoutedCompletion(args: {
     routerId: args.routerId,
     apiKey: args.apiKey,
     includePublicEvalCatalog: true,
+    clientHeaders: args.clientHeaders,
   };
   // Direct /v1 callers are authenticated by API key, so their canonical
   // organization router is not known until this resolve completes. Fingerprint

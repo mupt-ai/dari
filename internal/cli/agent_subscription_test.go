@@ -68,7 +68,10 @@ func TestLoggedInAgentConnectsMissingSubscription(t *testing.T) {
 				case "PUT /v1/organizations/current/routers/default", "PUT /v1/organizations/current/routers/claude":
 					var body agentRouterSubscriptionUpdateRequest
 					_ = json.NewDecoder(r.Body).Decode(&body)
-					updated = slices.Contains(body.SubscriptionProviders, map[string]string{"openai_codex": "openai", "anthropic_claude_code": "anthropic"}[tc.provider])
+					provider := map[string]string{"openai_codex": "openai", "anthropic_claude_code": "anthropic"}[tc.provider]
+					for model, sources := range body.ModelSources {
+						updated = updated || (body.ModelProviders[model] == provider && slices.Contains(sources, "plan"))
+					}
 					_ = json.NewEncoder(w).Encode(map[string]any{})
 				default:
 					t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)

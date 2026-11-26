@@ -162,13 +162,13 @@ func experimentRouter(ctx context.Context, client *api.Client, flag string) (age
 // routerPayment is the source a router pays for a model with, as its
 // settings say it does.
 func routerPayment(router agentRouter, modelID, modelProvider string) agentModelSource {
-	if slices.Contains(router.SubscriptionProviders, modelProvider) && slices.Contains(router.SubscriptionModels, modelID) {
+	if slices.Contains(router.ModelSources[modelID], "plan") {
 		return agentModelSource{kind: "subscription", provider: modelProvider}
 	}
 	if served := router.ModelProviders[modelID]; served != "" && served != modelProvider {
 		return agentModelSource{kind: "key", provider: served}
 	}
-	if router.ProviderKeySources[modelProvider] == "user" {
+	if i := slices.Index(router.ModelSources[modelID], "key"); i != -1 && !slices.Contains(router.ModelSources[modelID][:i], "managed") {
 		return agentModelSource{kind: "key", provider: modelProvider}
 	}
 	return agentModelSource{kind: "managed", provider: modelProvider}
@@ -185,17 +185,9 @@ func saveExperimentPayments(
 ) (agentRouter, error) {
 	keys := keyContext.keys(choices)
 	body := agentRouterUpdateBody(router, models, choices)
-	keys.apply(body.ModelProviders, body.ProviderKeySources)
-	for _, choice := range choices {
-		// A provider with a saved key keeps it; the rest move to Dari credits.
-		if _, ok := keys.credentialIDs[choice.Source.provider]; !ok && choice.Source.kind == "managed" &&
-			!subscriptionOnlyProviders[choice.Source.provider] && slices.Contains(slices.Collect(maps.Values(body.ModelProviders)), choice.Source.provider) {
-			body.ProviderKeySources[choice.Source.provider] = "managed"
-		}
-	}
+	keys.apply(body.ModelProviders)
 	body.ProviderCredentialIDs = keys.credentialIDs
-	body.SubscriptionAPIFallbackModels = keys.fallbackModels(router.SubscriptionAPIFallbackModels, body.EnabledModels)
-	body.SubscriptionModels = subscriptionModelsFor(router, choices, keyContext.subscriptions)
+	body.ModelSources = keys.modelSources(router, body.EnabledModels, body.ModelProviders)
 	return putAgentRouter(ctx, client, router.ID, body)
 }
 
@@ -215,7 +207,7 @@ func templateSetupSteps(setup agentSetup, router agentRouter, keyContext agentKe
 	var steps []agentModelSource
 	for _, plan := range templateSubscriptions(setup) {
 		if _, connected := keyContext.subscriptions[plan.routerProvider]; !connected &&
-			plan.routerProvider == provider && slices.Contains(router.SubscriptionProviders, provider) {
+			plan.routerProvider == provider && slices.Contains(router.planProviders(), provider) {
 			steps = append(steps, agentModelSource{kind: "connect", provider: provider, modelProvider: provider, label: "Connect " + plan.name})
 		}
 	}
@@ -469,7 +461,7 @@ func applyAgentExperiment(
 		return "", err
 	}
 	subscribed := slices.DeleteFunc(connected, func(subscription agentSubscriptionProvider) bool {
-		return !slices.Contains(router.SubscriptionProviders, subscription.routerProvider)
+		return !slices.Contains(router.planProviders(), subscription.routerProvider)
 	})
 	keyContext, err := loadAgentKeyContext(ctx, client, subscribed)
 	if err != nil {

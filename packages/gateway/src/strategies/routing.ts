@@ -313,11 +313,9 @@ export function providerAuthForSelectedModel(args: {
     return structured;
   }
   if (key) return { type: "bearer", apiKey: key };
-  const source = args.credentials.provider_key_sources?.[provider] ?? "user";
-  const prefix = source === "managed" ? "Dari-managed" : "stored";
   throw new HttpError(
     401,
-    `No ${prefix} ${providerLabel(provider)} provider credential is configured for this router.`,
+    `No stored ${providerLabel(provider)} provider credential is configured for this router.`,
     "missing_provider_key",
   );
 }

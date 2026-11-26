@@ -63,7 +63,6 @@ func multipleSubscriptionsHandler(t *testing.T, seen map[string]map[string]any) 
 			}})
 		case "POST /v1/organizations/current/credentials/OPENAI_CODEX_OAUTH_TOKEN/mark-available",
 			"DELETE /v1/organizations/current/credentials/ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN",
-			"PUT /v1/organizations/current/credentials/OPENAI_CODEX_OAUTH_TOKEN_2/auto-reset",
 			"PUT /v1/organizations/current/credentials/ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN/label",
 			"POST /v1/organizations/current/credentials/META_MUSE_OAUTH_TOKEN/mark-available",
 			"DELETE /v1/organizations/current/credentials/META_MUSE_OAUTH_TOKEN",
@@ -240,29 +239,6 @@ func TestMovingASubscriptionNamesThePlanItReplaces(t *testing.T) {
 	started := seen["POST /v1/organizations/current/credentials/oauth/sessions"]
 	if started["moving_from"] != "cred_laptop" {
 		t.Fatalf("start body = %#v, want moving_from", started)
-	}
-}
-
-func TestSubscriptionAutoResetSendsTheSetting(t *testing.T) {
-	useTestAPIKey(t)
-	seen := map[string]map[string]any{}
-	srv := multipleSubscriptionsServer(t, seen)
-	defer srv.Close()
-
-	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{"--api-url", srv.URL, "accounts", "subscription", "auto-reset", "openai_codex_oauth_token_2", "on"})
-	if err := captureStdout(t, cmd.Execute); err != nil {
-		t.Fatal(err)
-	}
-	body := seen["PUT /v1/organizations/current/credentials/OPENAI_CODEX_OAUTH_TOKEN_2/auto-reset"]
-	if body["enabled"] != true {
-		t.Fatalf("auto-reset body = %#v", body)
-	}
-
-	invalid := newRootCmd("dev")
-	invalid.SetArgs([]string{"--api-url", srv.URL, "accounts", "subscription", "auto-reset", "codex", "maybe"})
-	if err := captureStdout(t, invalid.Execute); err == nil || !strings.Contains(err.Error(), "expected on or off") {
-		t.Fatalf("err = %v", err)
 	}
 }
 

@@ -6,6 +6,7 @@ import {
 } from "@mupt-ai/dari-router/policy-engine";
 
 import { CLIENT_HARNESSES } from "../ingress/client_harness.js";
+import { checkSources, DEFAULT_RESET_MIN_HOURS, type Source } from "../models/sources.js";
 import { otherModelProviders, providerModel } from "../models/canonical.js";
 import type { ClientHarness, RouterRole, RouterRoleModels, RouterRolePrompts } from "../types.js";
 
@@ -22,7 +23,9 @@ import type { ClientHarness, RouterRole, RouterRoleModels, RouterRolePrompts } f
  *     agentModels:          # optional: a coding agent's own list
  *       codex:
  *         - openai/gpt-6.2-sol
- *     subscriptions: true   # serve with connected Claude Code / ChatGPT plans
+ *       - id: anthropic/claude-opus-5-5
+ *         sources: [plan, reset, key] # optional; default [plan, key]
+ *     resetMinHours: 24     # spend a banked reset only when a plan is out this long
  *     sessionPinning: false # route each session and subagent once, then keep its model
  *     roleModels:           # optional: serve an agent role one model, without routing
  *       main: anthropic/claude-fable-5-2
@@ -78,7 +81,8 @@ export type RouterConfig = {
   // A coding agent's own models, served to it in place of `models`.
   agentModels: Partial<Record<ClientHarness, RouterModelConfig[]>>;
   retries: number;
-  subscriptions: boolean;
+  // Spend a banked reset only when the plan would otherwise stay out this long.
+  resetMinHours: number;
   sessionPinning: boolean;
   nativeCompaction: boolean;
   zdr: boolean;
@@ -98,6 +102,9 @@ export type RouterModelConfig = {
   // The provider that serves the model when not the one its id names, such as
   // `opencode-go` for `deepseek-ai/DeepSeek-V4.1-Flash-1017`.
   provider?: string;
+  // Where the model is served from, in order (models/sources.ts); absent
+  // means SELF_HOSTED_DEFAULT_SOURCES.
+  sources?: Source[];
 };
 
 /** The provider that serves a router's model, whose credential it needs. */
@@ -226,7 +233,7 @@ function parseRouter(id: string, raw: unknown): RouterConfig {
       roleModel(field, model, [models, ...Object.values(agentModels)].flat())),
     rolePrompts: parseRoleMap(`routers.${id}.rolePrompts`, raw.rolePrompts, rolePrompt),
     retries: optionalRetries(raw.retries, `routers.${id}.retries`) ?? 1,
-    subscriptions: optionalBoolean(raw.subscriptions, `routers.${id}.subscriptions`) ?? true,
+    resetMinHours: optionalResetMinHours(raw.resetMinHours, `routers.${id}.resetMinHours`),
     sessionPinning: optionalBoolean(raw.sessionPinning, `routers.${id}.sessionPinning`) ?? false,
     nativeCompaction: optionalBoolean(raw.nativeCompaction, `routers.${id}.nativeCompaction`) ?? false,
     zdr: optionalBoolean(raw.zdr, `routers.${id}.zdr`) ?? false,
@@ -306,6 +313,11 @@ function parseModel(routerId: string, raw: unknown): RouterModelConfig {
     );
   }
   const model: RouterModelConfig = { id: entry.id };
+  if (entry.sources != null) {
+    const checked = checkSources(entry.sources);
+    if ("error" in checked) throw new Error(`Model ${entry.id} on router "${routerId}": ${checked.error}`);
+    model.sources = checked.sources;
+  }
   if (entry.thinking != null) {
     if (
       !Array.isArray(entry.thinking) ||
@@ -337,6 +349,14 @@ function optionalBoolean(value: unknown, field: string): boolean | undefined {
   return value;
 }
 
+function optionalResetMinHours(value: unknown, field: string): number {
+  if (value === undefined) return DEFAULT_RESET_MIN_HOURS;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+    throw new Error(`${field} must be a number of hours, 0 or more.`);
+  }
+  return value;
+}
+
 function optionalRetries(value: unknown, field: string): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 5) {
@@ -351,8 +371,10 @@ function optionalRetries(value: unknown, field: string): number | undefined {
  *
  * ```yaml
  * name: Opus 5.5 + DeepSeek Subagents
+ * reset_min_hours: 24
  * models:
- *   - anthropic/claude-opus-5-5
+ *   - id: anthropic/claude-opus-5-5
+ *     sources: [plan, reset, key]  # default [plan, key]
  *   - id: deepseek-ai/DeepSeek-V4.1-Flash-1017
  *     thinking: [high]
  *     provider: opencode-go   # served by this provider, not the one its id names
@@ -365,15 +387,15 @@ function optionalRetries(value: unknown, field: string): number | undefined {
  * agents: { codex: [openai/gpt-6.1-sol] }
  * ```
  *
- * The gateway pays with connected subscriptions when `payment.allow` lists
- * `subscription`, and otherwise with provider API keys; it has no credits.
+ * Each model's `sources` decide whether connected plans or provider API keys
+ * serve it; the gateway has no credits. `payment` is checked and left unused.
  * `hosted` settings and a model's `fast` apply only on hosted Dari, and are
  * accepted and left unused; `routing.rules` runs only there and is refused.
  */
 export type RouterSpec = { name: string; router: RouterConfig };
 
-const SPEC_FIELDS = ["name", "models", "roles", "routing", "payment", "native_compaction", "agents", "hosted"];
-const SPEC_MODEL_FIELDS = ["id", "thinking", "provider", "fast"];
+const SPEC_FIELDS = ["name", "reset_min_hours", "models", "roles", "routing", "payment", "native_compaction", "agents", "hosted"];
+const SPEC_MODEL_FIELDS = ["id", "thinking", "provider", "fast", "sources"];
 const PAYMENT_KINDS = ["subscription", "key", "credits"];
 const SPEC_NAME_MAX_LENGTH = 120;
 
@@ -427,7 +449,7 @@ export function parseRouterSpec(id: string, raw: unknown): RouterSpec {
         roleModel(`${field}.model`, model, [models, ...Object.values(agentModels)].flat())),
       rolePrompts: parseRoleMap("roles", roleValues("prompt"), (field, prompt) => rolePrompt(`${field}.prompt`, prompt)),
       retries: optionalRetries(routing.retries ?? undefined, "routing.retries") ?? 1,
-      subscriptions: allow.includes("subscription"),
+      resetMinHours: optionalResetMinHours(spec.reset_min_hours ?? undefined, "reset_min_hours"),
       sessionPinning: optionalBoolean(routing.session_pinning ?? undefined, "routing.session_pinning") ?? false,
       nativeCompaction: optionalBoolean(spec.native_compaction ?? undefined, "native_compaction") ?? false,
       zdr: false,
@@ -446,11 +468,12 @@ export function routerSpecFor(name: string, router: RouterConfig): Record<string
   const agents = Object.entries(router.agentModels);
   return {
     name,
+    reset_min_hours: router.resetMinHours,
     models: router.models.map(specModel),
     ...(Object.keys(roles).length > 0 ? { roles } : {}),
     routing: { session_pinning: router.sessionPinning, retries: router.retries },
     // The gateway pays with plans and API keys; it has no credits.
-    payment: { allow: router.subscriptions ? ["subscription", "key"] : ["key"] },
+    payment: { allow: ["subscription", "key"] },
     native_compaction: router.nativeCompaction,
     ...(agents.length > 0
       ? { agents: Object.fromEntries(agents.map(([agent, models]) => [agent, models!.map(specModel)])) }
@@ -465,7 +488,7 @@ export function routerSpecYaml(spec: unknown): string {
 }
 
 function specModel(model: RouterModelConfig): string | Record<string, unknown> {
-  return model.thinking === undefined && model.provider === undefined ? model.id : { ...model };
+  return model.thinking === undefined && model.provider === undefined && model.sources === undefined ? model.id : { ...model };
 }
 
 // A spec section as a map, refusing fields the spec does not have; absent is empty.

@@ -14,6 +14,7 @@ import {
   type CodexUsage,
 } from "../../providers/subscription_resets.js";
 import { codexUsageFromReport, fetchCodexUsageReport } from "../../providers/codex_usage.js";
+import { shouldSpendReset, type Source } from "../../models/sources.js";
 import { refreshedAccessToken } from "./access.js";
 import type { OAuthFetch, SubscriptionProvider } from "./oauth.js";
 import { isHeld, type SubscriptionCredential, type SubscriptionStore } from "./store.js";
@@ -22,9 +23,12 @@ import { isHeld, type SubscriptionCredential, type SubscriptionStore } from "./s
  * Banked limit resets of the gateway owner's ChatGPT and Claude Code plans, as
  * hosted Dari spends them (dari-routing-backend subscription_recovery.ts and
  * the control plane's subscription_resets.py): listed and spent on request,
- * and, for a plan whose owner turned it on, spent once every plan of its
- * provider is held.
+ * and spent once every plan of its provider is held when the model's sources
+ * say so (models/sources.ts shouldSpendReset).
  */
+
+/** The held model's sources and its router's reset threshold. */
+export type ResetPolicy = { sources: readonly Source[]; resetMinHours: number };
 
 /** Where the gateway reaches Claude and ChatGPT: the config's endpoints, or the providers'. */
 export type ProviderBaseUrls = { claude?: string; codex?: string };
@@ -97,38 +101,41 @@ export async function useReset(deps: ResetDeps, credential: SubscriptionCredenti
  * After a usage-limit hold on one of the owner's plans: correct a ChatGPT
  * plan's hold from Codex's report, and once every plan of the provider is
  * held, release one the provider already serves again or spend one banked
- * reset on the plan that would stay out longest, among those with
- * auto-reset on. Returns whether a plan of the provider serves now.
+ * reset on the plan that would stay out longest, when the policy says so.
+ * Returns whether a plan of the provider serves now.
  */
-export async function recoverHeldPlans(deps: ResetDeps, held: SubscriptionCredential): Promise<boolean> {
+export async function recoverHeldPlans(deps: ResetDeps, held: SubscriptionCredential, policy: ResetPolicy): Promise<boolean> {
   const now = deps.now ?? new Date();
   const serving = () => deps.store.activeCredential(held.provider, now) !== null;
   try {
-    if (held.provider === "openai_codex") await recoverCodex(deps, held, now, serving);
-    else if (held.provider === "anthropic_claude_code" && !serving()) await recoverClaude(deps, now);
+    if (held.provider === "openai_codex") await recoverCodex(deps, held, policy, now, serving);
+    else if (held.provider === "anthropic_claude_code" && !serving()) await recoverClaude(deps, policy, now);
   } catch (error) {
     console.error("subscription recovery failed", error instanceof Error ? error.message : String(error));
   }
   return serving();
 }
 
-async function recoverClaude(deps: ResetDeps, now: Date): Promise<void> {
+async function recoverClaude(deps: ResetDeps, policy: ResetPolicy, now: Date): Promise<void> {
   const candidates = deps.store.list("anthropic_claude_code")
-    .filter((plan) => plan.autoRedeemResets && isHeld(plan, now))
+    .filter((plan) => isHeld(plan, now))
     .sort((a, b) => b.unavailableUntil!.getTime() - a.unavailableUntil!.getTime());
   for (const plan of candidates) {
-    const outcome = await claimOnHold(deps, plan, now);
+    const outcome = await claimOnHold(deps, plan, policy, now);
     // At most one reset per outage.
     if (outcome !== "skipped") return;
   }
 }
 
-async function claimOnHold(deps: ResetDeps, plan: SubscriptionCredential, now: Date): Promise<"skipped" | "spent" | "restored"> {
+async function claimOnHold(deps: ResetDeps, plan: SubscriptionCredential, policy: ResetPolicy, now: Date): Promise<"skipped" | "spent" | "restored"> {
   let token: string;
   let grant: { grantId: string; organizationUuid: string } | null = null;
   try {
     token = await refreshedAccessToken(deps.store, plan, deps);
-    const grantId = nextClaudeGrant(await claudeUsageReport(deps.fetch, token, deps.baseUrls?.claude));
+    const report = await claudeUsageReport(deps.fetch, token, deps.baseUrls?.claude);
+    const resets = claudeResetsFromReport(report);
+    if (!shouldSpendReset({ ...policy, returnsAt: plan.unavailableUntil!, resets, now })) return "skipped";
+    const grantId = nextClaudeGrant(report);
     const organizationUuid = grantId === null ? null : await claudeOrganizationUuid(deps.fetch, token, deps.baseUrls?.claude);
     if (grantId !== null && organizationUuid !== null) grant = { grantId, organizationUuid };
   } catch (error) {
@@ -156,7 +163,7 @@ async function claimOnHold(deps: ResetDeps, plan: SubscriptionCredential, now: D
   return ["not_limited", "ineligible", "cooldown"].includes(result) ? "skipped" : "spent";
 }
 
-async function recoverCodex(deps: ResetDeps, held: SubscriptionCredential, now: Date, serving: () => boolean): Promise<void> {
+async function recoverCodex(deps: ResetDeps, held: SubscriptionCredential, policy: ResetPolicy, now: Date, serving: () => boolean): Promise<void> {
   const usages = new Map<string, CodexUsage | null>();
   const usageOf = async (plan: SubscriptionCredential) => {
     if (!usages.has(plan.id)) {
@@ -185,28 +192,29 @@ async function recoverCodex(deps: ResetDeps, held: SubscriptionCredential, now: 
       return;
     }
     const back = naturalRecovery(usage, now);
-    if (plan.autoRedeemResets && back !== null && usage.availableResets > 0) candidates.push({ plan, recovery: back });
+    if (back !== null && usage.availableResets > 0) candidates.push({ plan, recovery: back });
   }
   // The plan that would stay out longest gains the most from a reset.
   candidates.sort((a, b) => b.recovery.getTime() - a.recovery.getTime());
   for (const { plan, recovery: back } of candidates) {
-    const outcome = await redeemOnHold(deps, plan, back, now);
+    const outcome = await redeemOnHold(deps, plan, back, policy, now);
     // At most one credit per outage, even when Codex has not caught up.
     if (outcome !== "skipped") return;
   }
 }
 
-async function redeemOnHold(deps: ResetDeps, plan: SubscriptionCredential, recovery: Date, now: Date): Promise<"skipped" | "spent" | "restored"> {
+async function redeemOnHold(deps: ResetDeps, plan: SubscriptionCredential, recovery: Date, policy: ResetPolicy, now: Date): Promise<"skipped" | "spent" | "restored"> {
   let access: CodexAccess;
-  let creditId: string | undefined;
+  let resets: BankedReset[];
   try {
     access = codexAccess(deps, plan, await refreshedAccessToken(deps.store, plan, deps));
-    creditId = (await codexResets(deps.fetch, access))[0]?.id;
+    resets = await codexResets(deps.fetch, access);
   } catch (error) {
     console.error("codex reset credit read failed", error instanceof Error ? error.message : String(error));
     return "skipped";
   }
-  if (creditId === undefined) return "skipped";
+  if (!shouldSpendReset({ ...policy, returnsAt: recovery, resets, now })) return "skipped";
+  const creditId = resets[0]!.id;
   let code: string;
   try {
     // One outage is one exhausted window, so its reset names it.

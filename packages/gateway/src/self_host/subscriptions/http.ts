@@ -43,7 +43,7 @@ export type SubscriptionHttpDeps = {
 const BASE = "/v1/organizations/current/credentials";
 // Subscription names are env-var-style, which keeps other credential routes
 // such as `provider-credentials/...` out of these matches.
-const NAMED = /^\/([A-Za-z_][A-Za-z0-9_]*)(\/label|\/mark-available|\/auto-reset|\/private|\/resets|\/resets\/[^/]+\/use)?$/;
+const NAMED = /^\/([A-Za-z_][A-Za-z0-9_]*)(\/label|\/mark-available|\/private|\/resets|\/resets\/[^/]+\/use)?$/;
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -107,12 +107,6 @@ export async function handleSubscriptionRequest(
     }
     if (action === "/mark-available" && request.method === "POST") {
       return json(200, summary(deps.store, found(deps.store.markAvailable(name, now), name), now));
-    }
-    if (action === "/auto-reset" && request.method === "PUT") {
-      const body = await readBody(request);
-      if (typeof body.enabled !== "boolean") throw new HttpError(400, "enabled must be true or false.");
-      const credential = resettable(found(deps.store.getByName(name), name));
-      return json(200, summary(deps.store, found(deps.store.setAutoRedeemResets(credential.name, body.enabled, now), name), now));
     }
     if (action === "/resets" && request.method === "GET") {
       const credential = resettable(found(deps.store.getByName(name), name));
@@ -331,7 +325,6 @@ function credentialBody(credential: SubscriptionCredential, active: boolean, now
     // The share of its tightest window the plan last reported used, and
     // every window as shown; null when it reports none and is not held.
     usage: usageBody(credential, now),
-    auto_redeem_resets: credential.autoRedeemResets,
   };
 }
 

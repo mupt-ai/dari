@@ -94,12 +94,9 @@ func TestAgentProviderKeysWithoutKeysKeepDariCredits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys.apply(body.ModelProviders, body.ProviderKeySources)
+	keys.apply(body.ModelProviders)
 	body.ProviderCredentialIDs = keys.credentialIDs
 
-	if want := map[string]string{"anthropic": "managed", "openai": "managed", "fireworks": "managed"}; !maps.Equal(body.ProviderKeySources, want) {
-		t.Errorf("provider_key_sources = %v, want %v", body.ProviderKeySources, want)
-	}
 	encoded, _ := json.Marshal(body)
 	if strings.Contains(string(encoded), "provider_credential_ids") || !strings.Contains(stderr.String(), "Dari Credits for Fable 5.1, Sol, GLM") {
 		t.Errorf("payload = %s, stderr = %q", encoded, stderr.String())
@@ -118,7 +115,7 @@ func TestAgentProviderKeysGatewayServesWhatItCan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys.apply(body.ModelProviders, body.ProviderKeySources)
+	keys.apply(body.ModelProviders)
 	body.ProviderCredentialIDs = keys.credentialIDs
 
 	if want := map[string]string{
@@ -127,9 +124,6 @@ func TestAgentProviderKeysGatewayServesWhatItCan(t *testing.T) {
 		"zai-org/GLM-5.3":            "fireworks",
 	}; !maps.Equal(body.ModelProviders, want) {
 		t.Errorf("model_providers = %v, want %v", body.ModelProviders, want)
-	}
-	if want := map[string]string{"vercel-ai-gateway": "user", "fireworks": "managed"}; !maps.Equal(body.ProviderKeySources, want) {
-		t.Errorf("provider_key_sources = %v, want %v", body.ProviderKeySources, want)
 	}
 	if want := map[string]string{"vercel-ai-gateway": "cred_team"}; !maps.Equal(body.ProviderCredentialIDs, want) {
 		t.Errorf("provider_credential_ids = %v, want %v", body.ProviderCredentialIDs, want)
@@ -151,7 +145,7 @@ func TestAgentProviderKeysPreferDirectKeysOverGateways(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys.apply(body.ModelProviders, body.ProviderKeySources)
+	keys.apply(body.ModelProviders)
 
 	// OpenRouter serves only Fable in the test catalog, and Fable has a direct key.
 	if want := map[string]string{
@@ -178,14 +172,14 @@ func TestAgentProviderKeysKeepSubscriptionModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keys.apply(body.ModelProviders, body.ProviderKeySources)
+	keys.apply(body.ModelProviders)
 
 	if body.ModelProviders["anthropic/claude-fable-5-1"] != "anthropic" || body.ModelProviders["openai/gpt-5.6-sol"] != "vercel-ai-gateway" {
 		t.Errorf("model_providers = %v", body.ModelProviders)
 	}
 	// The Anthropic key only takes over while the subscription is unavailable.
-	if want := []string{"anthropic/claude-fable-5-1"}; !slices.Equal(keys.apiFallbackModels, want) {
-		t.Errorf("api fallback models = %v, want %v", keys.apiFallbackModels, want)
+	if got := keys.sources["anthropic/claude-fable-5-1"]; !slices.Equal(got, []string{"plan", "key"}) {
+		t.Errorf("Fable sources = %v, want [plan key]", got)
 	}
 }
 
@@ -226,8 +220,8 @@ func TestAttachAgentProviderKeysKeepsTheRoutersModels(t *testing.T) {
 	if !maps.Equal(put.ModelProviders, map[string]string{"anthropic/claude-fable-5-1": "vercel-ai-gateway", "zai-org/GLM-5.3": "fireworks"}) {
 		t.Fatalf("model providers = %v", put.ModelProviders)
 	}
-	if put.ProviderKeySources["vercel-ai-gateway"] != "user" || put.ProviderCredentialIDs["vercel-ai-gateway"] != "cred_vercel" {
-		t.Fatalf("key sources = %v, credential ids = %v", put.ProviderKeySources, put.ProviderCredentialIDs)
+	if put.ProviderCredentialIDs["vercel-ai-gateway"] != "cred_vercel" {
+		t.Fatalf("credential ids = %v", put.ProviderCredentialIDs)
 	}
 	if levels := put.ModelThinkingLevels["anthropic/claude-fable-5-1"]; strings.Join(levels, ",") != "max" {
 		t.Fatalf("thinking levels = %v, want the router's own", put.ModelThinkingLevels)
@@ -245,19 +239,11 @@ func TestAgentProviderKeysDirectKeyOnSubscriptionBecomesAPIFallback(t *testing.T
 		t.Fatal(err)
 	}
 
-	if want := []string{"anthropic/claude-fable-5-1"}; !slices.Equal(keys.apiFallbackModels, want) {
-		t.Fatalf("API fallback models = %v, want %v", keys.apiFallbackModels, want)
-	}
-	if got := keys.fallbackModels([]string{"zai-org/GLM-5.3", "removed/model"}, body.EnabledModels); !slices.Equal(got, []string{"zai-org/GLM-5.3", "anthropic/claude-fable-5-1"}) {
-		t.Fatalf("merged API fallback models = %v", got)
+	if got := keys.sources["anthropic/claude-fable-5-1"]; !slices.Equal(got, []string{"plan", "key"}) {
+		t.Fatalf("Fable sources = %v, want [plan key]", got)
 	}
 	if !strings.Contains(stderr.String(), "Claude Code Subscription for Fable 5.1") {
 		t.Errorf("stderr = %q", stderr.String())
-	}
-	// Without a direct key on a subscribed provider, the router's API
-	// fallback is left as it is.
-	if got := (agentProviderKeys{}).fallbackModels([]string{"zai-org/GLM-5.3"}, body.EnabledModels); got != nil {
-		t.Fatalf("fallback models without subscription keys = %v, want nil", got)
 	}
 }
 
@@ -265,11 +251,10 @@ func TestAttachAgentProviderKeysChangesOnlyThePickersSubscriptionChoices(t *test
 	models, _ := providerKeysTestModels()
 	fable, opus, haiku := "anthropic/claude-fable-5-1", "anthropic/claude-opus-5", "anthropic/claude-haiku-5"
 	router := agentRouter{
-		ID:                    "rtr_winner",
-		EnabledModels:         []string{fable, opus, haiku},
-		ModelProviders:        map[string]string{fable: "anthropic", opus: "anthropic", haiku: "anthropic"},
-		SubscriptionProviders: []string{"anthropic"},
-		SubscriptionModels:    []string{fable, opus},
+		ID:             "rtr_winner",
+		EnabledModels:  []string{fable, opus, haiku},
+		ModelProviders: map[string]string{fable: "anthropic", opus: "anthropic", haiku: "anthropic"},
+		ModelSources:   map[string][]string{fable: {"plan"}, opus: {"plan"}, haiku: {"managed"}},
 	}
 	put := func(keys agentProviderKeys) agentRouterUpdateRequest {
 		var body agentRouterUpdateRequest
@@ -285,12 +270,8 @@ func TestAttachAgentProviderKeysChangesOnlyThePickersSubscriptionChoices(t *test
 	}
 	// This launch picked Sol (not on the router) on the subscription and Opus
 	// on credits: only Opus changes, and Fable stays on the subscription.
-	body := put(agentProviderKeys{subscriptionModels: []string{"openai/gpt-5.6-sol"}, offSubscription: []string{opus}})
-	if body.SubscriptionModels == nil || strings.Join(*body.SubscriptionModels, ",") != fable {
-		t.Fatalf("subscription models = %v, want only Fable", body.SubscriptionModels)
-	}
-	// Decisions that match the router's change nothing, so nothing is sent.
-	if body := put(agentProviderKeys{subscriptionModels: []string{fable}, offSubscription: []string{haiku}}); body.SubscriptionModels != nil {
-		t.Fatalf("subscription models = %v, want the router's kept", *body.SubscriptionModels)
+	body := put(agentProviderKeys{sources: map[string][]string{"openai/gpt-5.6-sol": {"plan"}, opus: {"managed"}}})
+	if want := map[string][]string{fable: {"plan"}, opus: {"managed"}, haiku: {"managed"}}; !maps.EqualFunc(body.ModelSources, want, slices.Equal) {
+		t.Fatalf("sources = %v, want %v", body.ModelSources, want)
 	}
 }

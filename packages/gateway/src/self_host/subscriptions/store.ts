@@ -53,9 +53,6 @@ export type SubscriptionCredential = {
   // Kept off hosted Dari: a gateway connected to it neither serves nor
   // reports the plan.
   private: boolean;
-  // Whether routing may spend the plan's banked limit resets once every plan
-  // of its provider is held (ChatGPT and Claude Code).
-  autoRedeemResets: boolean;
   accessToken: string;
   refreshToken: string;
   expiresAt: Date;
@@ -168,7 +165,6 @@ type CredentialRow = {
   account_id: string | null;
   owner: string | null;
   private: number | null;
-  auto_redeem_resets: number | null;
   access_token: string;
   refresh_token: string;
   expires_at: number;
@@ -195,7 +191,7 @@ const ADDED_COLUMNS = {
   model_holds: "TEXT",
   owner: "TEXT",
   private: "INTEGER",
-  auto_redeem_resets: "INTEGER",
+  auto_redeem_resets: "INTEGER", // no longer read; resets follow each model's sources
 } as const;
 
 type SessionRow = {
@@ -634,18 +630,6 @@ export class SubscriptionStore {
     return this.get(credential.id);
   }
 
-  /** Let routing spend the plan's banked resets, or not. Null when it is not connected. */
-  setAutoRedeemResets(name: string, enabled: boolean, now = new Date()): SubscriptionCredential | null {
-    const credential = this.getByName(name);
-    if (credential === null) return null;
-    this.db.run("UPDATE subscription_credentials SET auto_redeem_resets = ?, updated_at = ? WHERE id = ?", [
-      enabled ? 1 : 0,
-      now.getTime(),
-      credential.id,
-    ]);
-    return this.get(credential.id);
-  }
-
   /** Remove a subscription. Returns what was removed, or null when it was not connected. */
   disconnect(name: string, owner: string | null = null): SubscriptionCredential | null {
     const credential = this.getByName(name, owner);
@@ -859,7 +843,6 @@ function credentialFromRow(row: CredentialRow): SubscriptionCredential {
     accountId: row.account_id,
     owner: row.owner,
     private: row.private === 1,
-    autoRedeemResets: row.auto_redeem_resets === 1,
     accessToken: row.access_token,
     refreshToken: row.refresh_token,
     expiresAt: new Date(row.expires_at),

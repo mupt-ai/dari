@@ -256,14 +256,6 @@ test("a plan for another provider is ignored", async () => {
   expect(calls[0]).toMatchObject({ url: "https://api.openai.com/v1/responses", authorization: "Bearer openai-key" });
 });
 
-test("strict routers still refuse subscriptions the platform did not supply", async () => {
-  router = strictRouter({ provider_key_sources: { meta: "subscription" } });
-  const response = await chat(MUSE);
-  expect(response.status).toBe(400);
-  expect((await response.json() as { error: { code: string } }).error.code).toBe("strict_subscription_refused");
-  expect(calls).toEqual([]);
-});
-
 test("a supplied plan at its usage limit is reported, not held", async () => {
   supplied = { [GPT]: { apiKey: CODEX_TOKEN, subscription: "openai_codex" } };
   router = strictRouter({ attributed_user_id: "user_1" });
@@ -282,12 +274,92 @@ test("a supplied plan at its usage limit is reported, not held", async () => {
   expect(holds).toEqual([]);
 });
 
+test("a held plan carries its model's sources and the router's reset threshold", async () => {
+  const limited = (async () => Response.json(
+    { error: { code: "usage_limit_reached", message: "You've hit your usage limit." } },
+    { status: 429 },
+  )) as unknown as typeof fetch;
+  const recording = globalThis.fetch;
+  globalThis.fetch = limited;
+  try {
+    supplied = { [GPT]: { apiKey: CODEX_TOKEN, subscription: "openai_codex", credentialId: "plan_1" } };
+    router = strictRouter({ attributed_user_id: "user_1", model_sources: { [GPT]: ["plan", "reset", "key"] }, reset_min_hours: 6 });
+    await (await chat(GPT)).text();
+    router = strictRouter({ attributed_user_id: "user_1" });
+    await (await chat(GPT)).text();
+  } finally {
+    globalThis.fetch = recording;
+  }
+  expect(holds.map((hold) => [hold.credentialId, hold.sources, hold.resetMinHours])).toEqual([
+    ["plan_1", ["plan", "reset", "key"], 6],
+    // A model with no list never spends a reset.
+    ["plan_1", [], 24],
+  ]);
+});
+
+// The OpenAI config a fallback serves GPT with.
+const GPT_CONFIG = { provider: "openai", native_model_id: "gpt-5.5", api: "openai-responses", cost: { input: 1, output: 1, cached_input: 0, cache_write: 0 } };
+
+for (const [status, error] of [
+  [401, { code: "invalid_api_key", message: "Incorrect API key." }],
+  [429, { code: "insufficient_quota", message: "You exceeded your current quota." }],
+] as const) test(`[key, managed] fails over from a saved key answering ${status} to Dari's managed key, billed as managed`, async () => {
+  router = strictRouter({
+    provider_key_sources: { openai: "user" },
+    managed_keys: { openai: "managed-openai-key" },
+    model_fallbacks: { [GPT]: [{ config: GPT_CONFIG, managed: true }] },
+  });
+  const recording = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const authorization = new Request(input, init).headers.get("authorization");
+    if (authorization === "Bearer openai-key") {
+      calls.push({ url: String(input), authorization, apiKey: null, model: null });
+      return Response.json({ error }, { status });
+    }
+    return await recording(input, init);
+  }) as typeof fetch;
+  try {
+    const response = await chat(GPT);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-dari-provider-key-source")).toBe("managed");
+    await response.text();
+  } finally {
+    globalThis.fetch = recording;
+  }
+  expect(calls.map((call) => call.authorization)).toEqual(["Bearer openai-key", "Bearer managed-openai-key"]);
+});
+
+test("a managed fallback is skipped when credits are exhausted", async () => {
+  router = strictRouter({
+    credit_exhausted: true,
+    managed_keys: { openai: "managed-openai-key" },
+    model_fallbacks: { [GPT]: [{ config: GPT_CONFIG, managed: true }] },
+  });
+  supplied = { [GPT]: { apiKey: CODEX_TOKEN, subscription: "openai_codex" } };
+  const recording = globalThis.fetch;
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push({ url: String(input), authorization: new Request(input, init).headers.get("authorization"), apiKey: null, model: null });
+    return Response.json({ error: { code: "usage_limit_reached", message: "You've hit your usage limit." } }, { status: 429 });
+  }) as typeof fetch;
+  try {
+    const response = await chat(GPT);
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    await response.text();
+  } finally {
+    globalThis.fetch = recording;
+  }
+  expect(calls.some((call) => call.authorization === "Bearer managed-openai-key")).toBe(false);
+});
+
 for (const [keySource, code] of [
   ["user", "provider_credential_rejected"],
   ["managed", "provider_execution_failed"],
 ] as const) {
   test(`a provider refusing a ${keySource} key answers ${code}`, async () => {
-    router = strictRouter({ provider_key_sources: { openai: keySource } });
+    router = keySource === "user"
+      ? strictRouter({ provider_key_sources: { openai: "user" } })
+      : strictRouter({ provider_keys: {}, managed_keys: {} });
+    if (keySource === "managed") supplied = { [GPT]: { apiKey: "managed-openai-key", managed: true } };
     const recording = globalThis.fetch;
     globalThis.fetch = (async () => Response.json(
       { error: { code: "expired_secret_key", message: "Your API key has expired." } },

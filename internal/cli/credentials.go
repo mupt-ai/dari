@@ -279,8 +279,7 @@ type subscriptionCredential struct {
 	ModelHolds         []subscriptionModelHold `json:"model_holds"`
 	SubscriptionActive bool                    `json:"subscription_active"`
 	// Usage is how much of its quota the plan last reported used.
-	Usage            *subscriptionUsage `json:"usage"`
-	AutoRedeemResets bool               `json:"auto_redeem_resets"`
+	Usage *subscriptionUsage `json:"usage"`
 	// Private is a local gateway's plan that never syncs to hosted Dari.
 	Private bool `json:"private"`
 	// place is where the plan lives when the page shows plans from both
@@ -364,7 +363,6 @@ func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
 			http.MethodPost, func(name string) string { return url.PathEscape(name) + "/mark-available" }, nil),
 		newPlacedSubscriptionCmd(gf, "disconnect", "Disconnect a subscription, on Dari or on this computer",
 			http.MethodDelete, func(name string) string { return url.PathEscape(name) + "?scope=user" }, nil),
-		newSubscriptionAutoResetCmd(gf),
 		newSubscriptionResetsCmd(gf),
 		newSubscriptionUseResetCmd(gf),
 		newSubscriptionRenameCmd(gf),
@@ -413,7 +411,6 @@ func newSubscriptionListCmd(gf *globalFlags) *cobra.Command {
 					"model_holds":        activeModelHolds(subscription, time.Now()),
 					"last_used_at":       subscription.LastUsedAt,
 					"usage":              subscription.Usage,
-					"auto_redeem_resets": subscription.AutoRedeemResets,
 					// Where the plan itself is managed, at its vendor.
 					"manage_url": subscriptionProviderFor(subscription.OAuthProvider).billingURL,
 				})
@@ -467,26 +464,6 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&reconnect, "reconnect", "", "credential name of the subscription to reconnect (see `subscription list`)")
 	cmd.Flags().StringVar(&on, "on", "", "where the plan lives: dari, computer (synced to Dari), or private; omit for the menu. With --reconnect: dari or computer, when the name is in both")
-	return cmd
-}
-
-func newSubscriptionAutoResetCmd(gf *globalFlags) *cobra.Command {
-	cmd := newPlacedSubscriptionCmd(gf, "auto-reset",
-		"Let Dari spend a ChatGPT or Claude Code subscription's banked limit resets when every subscription for that provider is exhausted",
-		http.MethodPut, func(name string) string { return url.PathEscape(name) + "/auto-reset" },
-		func(args []string) any {
-			return map[string]bool{"enabled": strings.EqualFold(strings.TrimSpace(args[1]), "on")}
-		})
-	cmd.Use = "auto-reset <codex|claude-code|NAME> <on|off>"
-	cmd.Args = func(cmd *cobra.Command, args []string) error {
-		if err := cobra.ExactArgs(2)(cmd, args); err != nil {
-			return err
-		}
-		if state := strings.ToLower(strings.TrimSpace(args[1])); state != "on" && state != "off" {
-			return fmt.Errorf("expected on or off, got %q", args[1])
-		}
-		return nil
-	}
 	return cmd
 }
 

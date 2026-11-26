@@ -24,7 +24,6 @@ const CLI_CREDENTIAL_FIELDS = [
   "model_holds",
   "subscription_active",
   "usage",
-  "auto_redeem_resets",
   "private",
 ];
 
@@ -114,7 +113,6 @@ describe("connecting", () => {
         model_holds: [],
         subscription_active: true,
         usage: null,
-        auto_redeem_resets: false,
       },
     });
     expect(JSON.parse((g.fetch.calls as RecordedCall[])[0]!.body).code).toBe("pasted-code");
@@ -508,15 +506,9 @@ describe("banked resets", () => {
     expect(g.calls.find((c) => c.key.startsWith("POST"))!.body).toMatchObject({ credit_id: "credit_1" });
   });
 
-  test("auto-reset is a setting of ChatGPT and Claude Code plans only", async () => {
+  test("only ChatGPT and Claude Code plans have banked resets", async () => {
     const g = resetGateway({});
-    const claude = g.store.connect(tokens({ expiresAt }), null, now)!;
     const muse = g.store.connect(tokens({ provider: "meta_muse", accountEmail: "muse@example.com", expiresAt }), null, now)!;
-
-    expect((await g.call("PUT", `/${claude.name}/auto-reset`, { enabled: true })).body.auto_redeem_resets).toBe(true);
-    expect((await g.call("GET", "")).body.credentials[0].auto_redeem_resets).toBe(true);
-    expect((await g.call("PUT", `/${claude.name}/auto-reset`, { enabled: "yes" })).status).toBe(400);
-    expect((await g.call("PUT", `/${muse.name}/auto-reset`, { enabled: true })).status).toBe(400);
     expect((await g.call("GET", `/${muse.name}/resets`)).status).toBe(400);
   });
 

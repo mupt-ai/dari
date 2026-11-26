@@ -1,3 +1,4 @@
+import { DEFAULT_RESET_MIN_HOURS } from "../models/sources.js";
 import type { RoutingDecision } from "@mupt-ai/dari-router/policy-engine";
 import { HttpError } from "../http/errors.js";
 import { linkUnavailableError, plansExhausted } from "../link/errors.js";
@@ -765,9 +766,12 @@ async function providerFailedAttempt(
     if (execution.providerKeySource === "subscription") logUnclassifiedRefusal(execution, responseCapture);
     // The customer's own key was refused: theirs to fix, not a gateway fault.
     const rejected = execution.providerKeySource === "user" && (status === 401 || status === 403);
-    // A plan whose token is refused cannot serve; the model's next candidate
-    // may. The plan is not held: a refused token is not a usage limit.
+    // A plan or saved key that is refused cannot serve; the model's next
+    // candidate (such as Dari's managed key) may. A refused token is not a
+    // usage limit, so nothing is held.
     const planRefused = execution.providerKeySource === "subscription" && (status === 401 || status === 403);
+    // The user's own key ran out (rate limit or quota): Dari's key may serve.
+    const keyLimited = execution.providerKeySource === "user" && status === 429;
     return {
       kind: "provider_failed",
       message: rejected
@@ -775,7 +779,7 @@ async function providerFailedAttempt(
         : message,
       latencyMs,
       retryable: !isPromptPolicyRejection(message),
-      ...(planRefused ? { failover: true as const } : {}),
+      ...(planRefused || rejected || keyLimited ? { failover: true as const } : {}),
     };
   }
   const limit = detected.oauthProvider === "openai_codex" && detected.model === undefined
@@ -792,6 +796,8 @@ async function providerFailedAttempt(
       userId: execution.subscriptionUserId,
       credentialId: execution.subscriptionCredentialId,
       limit,
+      sources: execution.subscriptionSources ?? [],
+      resetMinHours: execution.subscriptionResetMinHours ?? DEFAULT_RESET_MIN_HOURS,
       ...(execution.subscriptionLinkGrantId ? { linkGrantId: execution.subscriptionLinkGrantId } : {}),
     });
   // Nothing reached the client yet, so the same request is retried on the

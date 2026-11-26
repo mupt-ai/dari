@@ -155,7 +155,7 @@ func TestProviderCredentialRoleFlagsRejectStaticKeys(t *testing.T) {
 
 func TestRouterCreateSendsSavedProviderCredential(t *testing.T) {
 	var body map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withEmptyCatalog(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Fatalf("decode body: %v", err)
@@ -180,6 +180,7 @@ func TestRouterCreateSendsSavedProviderCredential(t *testing.T) {
 		"name":                    "Production",
 		"enabled_models":          []any{"openrouter/openai/gpt-5.5"},
 		"provider_credential_ids": map[string]any{"openrouter": "cred_openrouter"},
+		"model_sources":           map[string]any{"openrouter/openai/gpt-5.5": []any{"key"}},
 		"routing_strategy":        "dari",
 	}
 	if !reflect.DeepEqual(body, want) {

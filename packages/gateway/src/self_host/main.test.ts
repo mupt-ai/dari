@@ -375,7 +375,7 @@ hosted: { speculative_routing: true }
   expect((await fetch(`${baseUrl}/deepseek/v1/models`, { headers: authorized() })).status).toBe(404);
   // The config file's router serves again, and reads back as a spec.
   expect(await (await routers("/solo")).text()).toBe(
-    "name: solo\nmodels:\n  - local/model-b\nrouting:\n  session_pinning: false\n  retries: 1\npayment:\n  allow:\n    - subscription\n    - key\nnative_compaction: false\n",
+    "name: solo\nreset_min_hours: 24\nmodels:\n  - local/model-b\nrouting:\n  session_pinning: false\n  retries: 1\npayment:\n  allow:\n    - subscription\n    - key\nnative_compaction: false\n",
   );
 });
 

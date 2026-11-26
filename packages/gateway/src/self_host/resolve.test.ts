@@ -211,16 +211,33 @@ describe("resolveSelfHostedRouter", () => {
     expect(exhausted.message).toContain("Every connected Claude Code subscription is at its usage limit for the models");
   });
 
-  test("routers can opt out of subscriptions", async () => {
+  test("a model's sources set the order of its plans and key, skipping managed", async () => {
     const resolver = deps({
       apiKeys: { anthropic: "sk-ant" },
       config: {
-        routers: { default: { models: ["anthropic/claude-sonnet-4-5"], subscriptions: false } },
+        routers: { default: {
+          resetMinHours: 6,
+          models: [
+            { id: "anthropic/claude-sonnet-4-5", sources: ["managed", "key", "plan"] },
+            { id: "anthropic/claude-opus-4-5", sources: ["key"] },
+            "anthropic/claude-haiku-4-5",
+          ],
+        } },
       },
     });
     resolver.subscriptions.connect(tokens({ expiresAt: FUTURE }), null);
     const resolved = await resolveSelfHostedRouter(resolver, request({ clientHarness: "claude_code" }));
-    expect(resolved.provider_key_sources?.anthropic).toBe("user");
+    expect(resolved.provider_keys.anthropic).toBe("sk-ant");
+    expect(resolved.provider_credentials?.["anthropic/claude-sonnet-4-5"]).toBeUndefined();
+    expect(resolved.model_fallbacks?.["anthropic/claude-sonnet-4-5"]).toEqual([expect.objectContaining({ subscription: "anthropic_claude_code" })]);
+    expect(resolved.model_fallbacks?.["anthropic/claude-opus-4-5"]).toBeUndefined();
+    expect(resolved.provider_credentials?.["anthropic/claude-haiku-4-5"]).toMatchObject({ subscription: "anthropic_claude_code" });
+    expect(resolved.model_sources).toEqual({
+      "anthropic/claude-sonnet-4-5": ["managed", "key", "plan"],
+      "anthropic/claude-opus-4-5": ["key"],
+      "anthropic/claude-haiku-4-5": ["plan", "key"],
+    });
+    expect(resolved.reset_min_hours).toBe(6);
   });
 
   test("configured endpoints get an execution config and their own key", async () => {
@@ -426,7 +443,7 @@ describe("parseGatewayConfig", () => {
           models: [{ id: "a/b" }],
           agentModels: {},
           retries: 1,
-          subscriptions: true,
+          resetMinHours: 24,
           sessionPinning: false,
           nativeCompaction: false,
           zdr: false,

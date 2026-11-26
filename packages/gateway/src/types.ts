@@ -1,3 +1,4 @@
+import type { Source } from "./models/sources.js";
 import type {
   CustomRouterConfig,
   Provider,
@@ -74,6 +75,8 @@ export type ProviderCredential = {
   subscription?: SubscriptionKind;
   // A resolved personal plan: quota holds and usage belong to this credential.
   credentialId?: string;
+  // Dari's managed key: billed to the organization's credits.
+  managed?: true;
 };
 
 export type ProviderAuth = ResolvedProviderAuth | AwsAssumeRoleProviderAuth;
@@ -138,6 +141,8 @@ export type ResolvedRouterModelConfig = {
 export type ModelFallback = {
   config: ResolvedRouterModelConfig;
   subscription?: SubscriptionKind | null;
+  // Served by Dari's managed key for config.provider (managed_keys).
+  managed?: true;
 };
 
 /** Why a Dari Link grant cannot serve one provider's models now. */
@@ -160,7 +165,11 @@ export type ResolvedRouter = {
   enabled_models: string[];
   provider_keys: Partial<Record<Provider, string>>;
   provider_auth?: Partial<Record<Provider, AwsProviderAuth>>;
+  // Describes only the router's saved keys above ("user"); a managed key is
+  // supplied per model (provider_credentials, managed_keys).
   provider_key_sources?: Partial<Record<Provider, ProviderKeySource>>;
+  // Dari's managed key per provider, for managed fallbacks.
+  managed_keys?: Partial<Record<Provider, string>>;
   // Model -> the platform-supplied credential that replaces the provider key
   // above for this request. Supplied by resolveRouter or resolveProviderCredential.
   provider_credentials?: Record<string, ProviderCredential>;
@@ -202,6 +211,11 @@ export type ResolvedRouter = {
   // support it.
   native_compaction?: boolean;
   primary_retries?: number;
+  // Each enabled model's sources (models/sources.ts), and how long a plan must
+  // otherwise stay out before a banked reset is spent on it. A model with no
+  // entry never spends one.
+  model_sources?: Record<string, Source[]>;
+  reset_min_hours?: number;
   // Serve only the requested `dari/model/<id>` at the requested thinking
   // level: no selector, lease, or personal subscription the platform did not
   // supply through resolveProviderCredential, and an error for anything

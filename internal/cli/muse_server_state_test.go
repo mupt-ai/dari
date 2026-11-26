@@ -18,9 +18,9 @@ func TestFreshMachineReusesConfiguredMusePlan(t *testing.T) {
 				"enabled_models": []string{"openai/gpt-5.6-sol"},
 			}, {
 				"id": "rtr_muse", "name": "Dari Muse Code", "client_key": "dari-cli:muse-code", "coding_agents": []string{"muse_code"},
-				"enabled_models":         []string{"meta/muse-spark"},
-				"model_providers":        map[string]string{"meta/muse-spark": "meta"},
-				"subscription_providers": []string{"meta"},
+				"enabled_models":  []string{"meta/muse-spark"},
+				"model_providers": map[string]string{"meta/muse-spark": "meta"},
+				"model_sources":   map[string][]string{"meta/muse-spark": {"plan"}},
 			}}})
 		case "/v1/organizations/current/credentials":
 			_ = json.NewEncoder(w).Encode(map[string]any{"credentials": []map[string]string{{"oauth_provider": museSubscription.id}}})

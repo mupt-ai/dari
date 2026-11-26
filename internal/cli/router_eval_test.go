@@ -78,7 +78,7 @@ func TestRouterModelsUsesModelCatalogRoute(t *testing.T) {
 func TestRouterCreateSendsPayload(t *testing.T) {
 	t.Setenv("TEST_FIREWORKS_KEY", "sk-fireworks-env")
 	var body map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withEmptyCatalog(func(w http.ResponseWriter, r *http.Request) {
 		if auth := r.Header.Get("Authorization"); auth != "Bearer dari_test" {
 			t.Fatalf("Authorization = %q", auth)
 		}
@@ -109,6 +109,7 @@ func TestRouterCreateSendsPayload(t *testing.T) {
 		"name":             "Production Router",
 		"enabled_models":   []any{"fireworks/deepseek-ai/DeepSeek-V4-Pro", "fireworks/deepseek-ai/DeepSeek-V4-Flash"},
 		"provider_keys":    map[string]any{"fireworks": "sk-fireworks-env"},
+		"model_sources":    map[string]any{"fireworks/deepseek-ai/DeepSeek-V4-Pro": []any{"key"}, "fireworks/deepseek-ai/DeepSeek-V4-Flash": []any{"key"}},
 		"routing_strategy": "dari",
 	}
 	if !reflect.DeepEqual(body, want) {
@@ -120,7 +121,7 @@ func TestRouterCreateManualFlagsAllowPathLikeNames(t *testing.T) {
 	for _, name := range []string{"Team/Prod", "draft.yaml"} {
 		t.Run(name, func(t *testing.T) {
 			var body map[string]any
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := httptest.NewServer(withEmptyCatalog(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost || r.URL.Path != "/v1/organizations/current/routers" {
 					t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
@@ -144,10 +145,10 @@ func TestRouterCreateManualFlagsAllowPathLikeNames(t *testing.T) {
 				t.Fatalf("dari router create %q: %v", name, err)
 			}
 			want := map[string]any{
-				"name":                 name,
-				"enabled_models":       []any{"openai/gpt-5.5"},
-				"provider_key_sources": map[string]any{"openai": "managed"},
-				"routing_strategy":     "dari",
+				"name":             name,
+				"enabled_models":   []any{"openai/gpt-5.5"},
+				"model_sources":    map[string]any{"openai/gpt-5.5": []any{"managed"}},
+				"routing_strategy": "dari",
 			}
 			if !reflect.DeepEqual(body, want) {
 				t.Fatalf("create body = %#v, want %#v", body, want)
@@ -170,7 +171,7 @@ func TestRouterCreateSendsEvalScoreImputationOnlyWhenSet(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var body map[string]any
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := httptest.NewServer(withEmptyCatalog(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost || r.URL.Path != "/v1/organizations/current/routers" {
 					t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 				}
@@ -215,7 +216,7 @@ func TestRouterCreateSendsSessionPinningAndNativeCompaction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var body map[string]any
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := httptest.NewServer(withEmptyCatalog(func(w http.ResponseWriter, r *http.Request) {
 				raw, _ := io.ReadAll(r.Body)
 				if err := json.Unmarshal(raw, &body); err != nil {
 					t.Fatalf("decode body: %v", err)
@@ -253,7 +254,7 @@ func TestRouterCreateRequiresModels(t *testing.T) {
 
 func TestRouterUpdateOverlaysCurrentConfig(t *testing.T) {
 	var body map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(withEmptyCatalog(func(w http.ResponseWriter, r *http.Request) {
 		if auth := r.Header.Get("Authorization"); auth != "Bearer dari_test" {
 			t.Fatalf("Authorization = %q", auth)
 		}
@@ -295,7 +296,7 @@ func TestRouterUpdateOverlaysCurrentConfig(t *testing.T) {
 	want := map[string]any{
 		"name":                  "Staging",
 		"enabled_models":        []any{"fireworks/deepseek-ai/DeepSeek-V4-Pro"},
-		"provider_key_sources":  map[string]any{"fireworks": "managed"},
+		"model_sources":         map[string]any{"fireworks/deepseek-ai/DeepSeek-V4-Pro": []any{"managed"}},
 		"allow_long_context":    false,
 		"eval_score_imputation": false,
 		"session_pinning":       true,

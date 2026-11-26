@@ -112,20 +112,21 @@ A router spec is a whole router as one YAML file with no credentials, the same f
 ```yaml
 name: Opus 5.5 + DeepSeek Subagents
 models:
-  - anthropic/claude-opus-5-5
+  - id: anthropic/claude-opus-5-5
+    sources: [plan, reset, api]   # where it is served from, in order
   - id: deepseek-ai/DeepSeek-V4.1-Flash-1017
     thinking: [high]
     provider: opencode-go   # served by this provider, not the one its id names
+reset_min_hours: 24         # spend a banked reset only when a plan would be out this long
 roles:
   main: { model: anthropic/claude-opus-5-5 }
   subagent: { model: deepseek-ai/DeepSeek-V4.1-Flash-1017, prompt: Be brief. }
 routing: { session_pinning: false, retries: 1 }
-payment: { allow: [subscription, key] }   # without subscription, only API keys pay
 native_compaction: false
 agents: { codex: [openai/gpt-6.1-sol] }
 ```
 
-The gateway pays with connected subscriptions when `payment.allow` lists `subscription`, then with provider API keys; it has no Dari credits. On hosted Dari the same setting is the router's `subscription_providers`: it can name any provider whose models some plan serves, such as `fireworks` or `google`, and those models try the user's plans first. `hosted` settings and a model's `fast` apply only on hosted Dari and are ignored here; `routing.rules` runs only on hosted Dari and is refused. A model's `provider` must be one that serves it, such as `opencode-go` or `fireworks` for the DeepSeek, Kimi, and GLM models; the plan-only provider `vercel-token-pass` serves through a connected subscription.
+Each model lists its `sources`, tried in order: `plan` (connected subscriptions), `reset` (when those plans are out, spend a banked reset, but only if the plan would otherwise be out at least `reset_min_hours`, or the reset would expire first; only right after `plan`), and `api` (the provider's API key). A model without `sources` uses `[plan, api]` here; on hosted Dari a model without them uses `[plan]`. The gateway has no Dari credits. `hosted` settings and a model's `fast` apply only on hosted Dari and are ignored here; `routing.rules` runs only on hosted Dari and is refused. A model's `provider` must be one that serves it, such as `opencode-go` or `fireworks` for the DeepSeek, Kimi, and GLM models; the plan-only provider `vercel-token-pass` serves through a connected subscription.
 
 With any gateway key:
 

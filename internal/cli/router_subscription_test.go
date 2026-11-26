@@ -21,7 +21,7 @@ func routerSubscriptionTestServer(t *testing.T, body *map[string]any) *httptest.
 				"enabled_models": []string{"openai/gpt-5.6-sol", "anthropic/claude-fable-5"},
 			})
 		case "GET /v1/organizations/current/routers/model-catalog":
-			_, _ = w.Write([]byte(`{"groups":[]}`))
+			_, _ = w.Write([]byte(`{"groups":[{"provider":"openai","models":[{"id":"openai/gpt-5.6-sol"}]},{"provider":"anthropic","models":[{"id":"anthropic/claude-fable-5"}]}]}`))
 		case "POST /v1/organizations/current/routers", "PUT /v1/organizations/current/routers/rtr_123":
 			raw, _ := io.ReadAll(r.Body)
 			*body = nil
@@ -37,82 +37,97 @@ func routerSubscriptionTestServer(t *testing.T, body *map[string]any) *httptest.
 	return srv
 }
 
-func TestRouterCreateSendsSubscriptionFlags(t *testing.T) {
+// Without --sources, models of a provider given a key run on its API and
+// the rest on plans.
+func TestRouterCreateDefaultsKeyedProvidersToAPI(t *testing.T) {
 	var body map[string]any
 	srv := routerSubscriptionTestServer(t, &body)
 	useTestAPIKey(t)
 
 	cmd := newRootCmd("dev")
 	cmd.SetArgs([]string{
-		"--api-url", srv.URL, "router", "create", "Subscriptions",
+		"--api-url", srv.URL, "router", "create", "Keys",
 		"--model", "openai/gpt-5.6-sol,anthropic/claude-fable-5",
-		"--managed-key", "openai,anthropic",
-		"--subscription", "OpenAI", "--subscription", "anthropic",
-		"--api-fallback", "openai/gpt-5.6-sol",
-		"--subscription-model", "openai/gpt-5.6-sol,anthropic/claude-fable-5",
+		"--managed-key", "openai",
 	})
 	if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
 		t.Fatalf("dari router create: %v", err)
 	}
-	if got, want := body["subscription_providers"], []any{"openai", "anthropic"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("subscription_providers = %#v, want %#v", got, want)
-	}
-	if got, want := body["subscription_api_fallback_models"], []any{"openai/gpt-5.6-sol"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("subscription_api_fallback_models = %#v, want %#v", got, want)
-	}
-	if got, want := body["subscription_models"], []any{"openai/gpt-5.6-sol", "anthropic/claude-fable-5"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("subscription_models = %#v, want %#v", got, want)
+	want := map[string]any{"openai/gpt-5.6-sol": []any{"managed"}, "anthropic/claude-fable-5": []any{"plan"}}
+	if got := body["model_sources"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("model_sources = %#v, want %#v", got, want)
 	}
 }
 
-func TestRouterUpdateSubscriptionModelFlag(t *testing.T) {
+func TestRouterUpdateSendsResetMinHours(t *testing.T) {
 	var body map[string]any
 	srv := routerSubscriptionTestServer(t, &body)
 	useTestAPIKey(t)
 
 	cmd := newRootCmd("dev")
-	cmd.SetArgs([]string{"--api-url", srv.URL, "router", "update", "rtr_123", "--subscription-model", "anthropic/claude-fable-5"})
+	cmd.SetArgs([]string{"--api-url", srv.URL, "router", "update", "rtr_123", "--reset-min-hours", "6"})
 	if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
 		t.Fatalf("dari router update: %v", err)
 	}
-	if got, want := body["subscription_models"], []any{"anthropic/claude-fable-5"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("subscription_models = %#v, want %#v", got, want)
+	if body["reset_min_hours"] != float64(6) {
+		t.Fatalf("reset_min_hours = %#v", body["reset_min_hours"])
 	}
-	if _, sent := body["subscription_providers"]; sent {
-		t.Fatalf("subscription_providers sent without --subscription: %#v", body)
+	if _, sent := body["model_sources"]; sent {
+		t.Fatalf("model_sources sent without --sources: %#v", body)
 	}
 }
 
-func TestRouterUpdateSubscriptionFlagsKeepOrClear(t *testing.T) {
-	for _, tc := range []struct {
-		name      string
-		args      []string
-		providers any
-		fallbacks any
-	}{
-		{name: "omitted keeps both", args: []string{"--name", "Renamed"}},
-		{name: "replaces providers", args: []string{"--subscription", "anthropic"}, providers: []any{"anthropic"}},
-		{name: "takes a Muse Code subscription", args: []string{"--subscription", "Meta"}, providers: []any{"meta"}},
-		// Plans serve other providers' models too; the server validates.
-		{name: "takes any provider", args: []string{"--subscription", "Fireworks"}, providers: []any{"fireworks"}},
-		{name: "empty clears", args: []string{"--subscription", "", "--api-fallback", ""}, providers: []any{}, fallbacks: []any{}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var body map[string]any
-			srv := routerSubscriptionTestServer(t, &body)
-			useTestAPIKey(t)
+func TestRouterCreateSendsModelSources(t *testing.T) {
+	var body map[string]any
+	srv := routerSubscriptionTestServer(t, &body)
+	useTestAPIKey(t)
 
-			cmd := newRootCmd("dev")
-			cmd.SetArgs(append([]string{"--api-url", srv.URL, "router", "update", "rtr_123"}, tc.args...))
-			if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
-				t.Fatalf("dari router update: %v", err)
-			}
-			if got := body["subscription_providers"]; !reflect.DeepEqual(got, tc.providers) {
-				t.Fatalf("subscription_providers = %#v, want %#v", got, tc.providers)
-			}
-			if got := body["subscription_api_fallback_models"]; !reflect.DeepEqual(got, tc.fallbacks) {
-				t.Fatalf("subscription_api_fallback_models = %#v, want %#v", got, tc.fallbacks)
-			}
-		})
+	cmd := newRootCmd("dev")
+	cmd.SetArgs([]string{
+		"--api-url", srv.URL, "router", "create", "Sources",
+		"--model", "openai/gpt-5.6-sol,anthropic/claude-fable-5",
+		"--sources", "openai/gpt-5.6-sol=plan,reset,key,managed", "--sources", "anthropic/claude-fable-5=Managed",
+	})
+	if err := captureStdout(t, func() error { return cmd.Execute() }); err != nil {
+		t.Fatalf("dari router create: %v", err)
 	}
+	want := map[string]any{"openai/gpt-5.6-sol": []any{"plan", "reset", "key", "managed"}, "anthropic/claude-fable-5": []any{"managed"}}
+	if got := body["model_sources"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("model_sources = %#v, want %#v", got, want)
+	}
+}
+
+func TestRouterSourcesRejectsBadValues(t *testing.T) {
+	for _, tc := range []struct{ args []string }{
+		{[]string{"--sources", "anthropic/claude-fable-5=reset,plan"}},
+		{[]string{"--sources", "anthropic/claude-fable-5=plan,key,reset"}},
+		{[]string{"--reset-min-hours", "-1"}},
+		{[]string{"--sources", "anthropic/claude-fable-5=plan,api"}},
+		{[]string{"--sources", "anthropic/claude-fable-5=plan,plan"}},
+	} {
+		var body map[string]any
+		srv := routerSubscriptionTestServer(t, &body)
+		useTestAPIKey(t)
+		cmd := newRootCmd("dev")
+		cmd.SilenceUsage, cmd.SilenceErrors = true, true
+		cmd.SetArgs(append([]string{"--api-url", srv.URL, "router", "update", "rtr_123"}, tc.args...))
+		if err := cmd.Execute(); err == nil {
+			t.Fatalf("%v: no error", tc.args)
+		}
+		if body != nil {
+			t.Fatalf("%v: sent %#v", tc.args, body)
+		}
+	}
+}
+
+// withEmptyCatalog serves an empty model catalog ahead of handler, for
+// `router create` runs that look up models' providers.
+func withEmptyCatalog(handler http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers/model-catalog" {
+			_, _ = w.Write([]byte(`{"groups":[]}`))
+			return
+		}
+		handler(w, r)
+	})
 }

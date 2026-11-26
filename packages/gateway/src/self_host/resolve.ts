@@ -19,6 +19,7 @@ import {
 } from "../models/subscriptions.js";
 import { CANONICAL_MODELS, otherModelProviders, providerModel } from "../models/canonical.js";
 import { gatewayFor } from "../models/gateways.js";
+import { candidatesFor, DEFAULT_RESET_MIN_HOURS, SELF_HOSTED_DEFAULT_SOURCES, type PlanOption, type Source } from "../models/sources.js";
 import { linkNothingServed, plansExhausted, providersUnavailable } from "../link/errors.js";
 import { buildModel, pi, registeredModelPrice } from "../providers/pi.js";
 import type {
@@ -124,9 +125,6 @@ export async function resolveSelfHostedRouter(
   const listed = grant === null ? routed : grantModels(grant, routed, granted, grantedKeys);
   const now = new Date();
   const servable = grant === null ? undefined : new Set(grant.credentialIds);
-  // A grant uses the subscriptions its user chose, whatever the router allows.
-  const plansServe = router?.subscriptions === true || grant !== null;
-
   // The plan of each kind that serves this conversation, chosen once.
   const conversationPlans = new Map<SubscriptionProvider, SubscriptionCredential | null>();
   const conversationPlan = (kind: SubscriptionProvider) => {
@@ -188,6 +186,8 @@ export async function resolveSelfHostedRouter(
     model_thinking_levels: thinkingLevels(listed),
     model_prices: {},
     model_configs: {},
+    model_sources: {},
+    reset_min_hours: router?.resetMinHours ?? DEFAULT_RESET_MIN_HOURS,
   };
 
   // Each model is served by the user's plans that serve it, in order, then by
@@ -201,26 +201,40 @@ export async function resolveSelfHostedRouter(
   const models: RouterModelConfig[] = [];
   for (const model of listed) {
     const base = modelProvider(model);
-    const candidates: Candidate[] = [];
     const heldKinds: SubscriptionProvider[] = [];
     const modelHolds: Date[] = [];
-    for (const kind of plansServe ? modelSubscriptions(model.id) : []) {
+    // A grant serves its plans, then its keys; a router model its own list.
+    let sources: readonly Source[] = model.sources ?? SELF_HOSTED_DEFAULT_SOURCES;
+    if (grant !== null) sources = SELF_HOSTED_DEFAULT_SOURCES;
+    const plans: PlanOption<Candidate>[] = [];
+    for (const kind of modelSubscriptions(model.id)) {
       const client = subscriptionClient(kind);
-      if (client !== undefined && client !== request.clientHarness) continue;
-      const plan = planFor(kind, model.id);
-      if (plan !== null) {
-        candidates.push({ provider: subscriptionModelProvider(kind), plan });
-        continue;
-      }
-      const connected = grant === null ? deps.subscriptions.list(kind) : deps.subscriptions.withIds(grant.credentialIds, kind);
-      if (connected.length === 0) continue;
-      heldKinds.push(kind);
-      for (const credential of connected) {
-        for (const hold of activeModelHolds(credential, now)) if (hold.model === model.id) modelHolds.push(hold.until);
-      }
+      plans.push({
+        servesClient: client === undefined || client === request.clientHarness,
+        candidate: async () => {
+          const plan = planFor(kind, model.id);
+          if (plan !== null) return { provider: subscriptionModelProvider(kind), plan };
+          // Held at its limit: remember why, for the error when nothing serves.
+          const connected = grant === null ? deps.subscriptions.list(kind) : deps.subscriptions.withIds(grant.credentialIds, kind);
+          if (connected.length > 0) heldKinds.push(kind);
+          for (const credential of connected) {
+            for (const hold of activeModelHolds(credential, now)) {
+              if (hold.model === model.id) modelHolds.push(hold.until);
+            }
+          }
+          return null;
+        },
+      });
     }
-    const key = await apiKey(base);
-    if (key !== undefined) candidates.push({ provider: base, key });
+    const candidates = await candidatesFor(sources, plans, {
+      key: async () => {
+        const key = await apiKey(base);
+        if (key === undefined) return null;
+        return { provider: base, key };
+      },
+      // A self-hosted gateway has no managed keys.
+      managed: async () => null,
+    });
 
     if (candidates.length === 0) {
       for (const kind of heldKinds) exhausted.add(kind);
@@ -233,6 +247,7 @@ export async function resolveSelfHostedRouter(
       continue;
     }
     models.push(model);
+    resolved.model_sources![model.id] = [...sources];
     const [first, ...rest] = candidates;
     const firstConfig = candidateConfig(deps, model.id, first!);
     const price = priceFor(model.id, first!.provider);
@@ -461,7 +476,8 @@ export async function providersWithoutCredentials(
   for (const model of allRouterModels(router)) {
     const provider = modelProvider(model);
     if (missing.has(provider)) continue;
-    const plans = router.subscriptions ? modelSubscriptions(model.id) : [];
+    const sources = model.sources ?? SELF_HOSTED_DEFAULT_SOURCES;
+    const plans = sources.includes("plan") ? modelSubscriptions(model.id) : [];
     if (plans.some((plan) => deps.subscriptions.list(plan).length > 0)) continue;
     if (await configuredProviderApiKey(deps, provider) === undefined) missing.add(provider);
   }

@@ -137,7 +137,7 @@ async function readHostedRouter(hosted: HostedConnection, fetchImpl: typeof fetc
   if (models.length === 0) throw new Error("it lists no models");
   return parseGatewayConfig({
     routers: {
-      [routerId]: { models, subscriptions: true, nativeCompaction: catalog.remote_compaction === "v2" },
+      [routerId]: { models, nativeCompaction: catalog.remote_compaction === "v2" },
     },
   }).routers[routerId]!;
 }

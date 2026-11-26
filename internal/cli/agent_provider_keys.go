@@ -28,46 +28,48 @@ type agentProviderKeys struct {
 	modelProviders map[string]string
 	// credentialIDs maps a provider to the saved credential it uses.
 	credentialIDs map[string]string
-	// apiFallbackModels are subscription models that keep running on the
-	// user's key while the subscription is unavailable.
-	apiFallbackModels []string
-	// subscriptionProviders are the providers whose models run on the user's
-	// subscription.
-	subscriptionProviders []string
-	// subscriptionModels are the models the subscription serves, set only
-	// when other models of a subscription's provider are paid for another
-	// way, so the choice is made per model.
-	subscriptionModels []string
-	// offSubscription are the models of a subscription's provider the picker
-	// put on another payment source, set with subscriptionModels.
-	offSubscription []string
+	// sources are where the picker serves each model from, in order: a model
+	// on a plan gets ["plan"], with "key" after it when the user's key for
+	// its provider is the fallback; a model on a saved key gets ["key"], on
+	// Dari credits ["managed"].
+	sources map[string][]string
+	// keepPlan are picked models whose plan, if the router has one, stays:
+	// the picker offered no plan for their provider.
+	keepPlan map[string]bool
 }
 
-// fallbackModels adds the models that fall back to the user's key to the
-// router's current API fallback models, keeping only enabled ones. Nil leaves
-// the router's API fallback as it is.
-func (keys agentProviderKeys) fallbackModels(current, enabled []string) []string {
-	if len(keys.apiFallbackModels) == 0 {
-		return nil
-	}
-	models := []string{}
-	for _, id := range append(slices.Clone(current), keys.apiFallbackModels...) {
-		if slices.Contains(enabled, id) && !slices.Contains(models, id) {
-			models = append(models, id)
+// modelSources is every enabled model's sources for a router update: the
+// picker's choice, else the router's current list, else, for a newly enabled
+// model, its provider's plan when the router serves that provider from one.
+func (keys agentProviderKeys) modelSources(router agentRouter, enabled []string, providers map[string]string) map[string][]string {
+	planProviders := router.planProviders()
+	out := map[string][]string{}
+	for _, id := range enabled {
+		current, had := router.ModelSources[id]
+		picked, ok := keys.sources[id]
+		switch {
+		case ok && had && slices.Contains(current, "plan") && (keys.keepPlan[id] || slices.Equal(picked, []string{"plan"})):
+			// A plan model keeps its own reset and fallback choices.
+			out[id] = current
+		case ok && !had && keys.keepPlan[id] && slices.Contains(planProviders, providers[id]):
+			// A new model goes on its provider's plan, as the API does.
+			out[id] = []string{"plan"}
+		case ok:
+			out[id] = picked
+		case had:
+			out[id] = current
+		case slices.Contains(planProviders, providers[id]):
+			out[id] = []string{"plan"}
+		default:
+			out[id] = []string{"managed"}
 		}
 	}
-	return models
+	return out
 }
 
-// apply routes the router's models onto the user's keys and drops key
-// sources for providers that no longer serve any of its models.
-func (keys agentProviderKeys) apply(providers, sources map[string]string) {
+// apply routes the router's models onto the providers of the user's keys.
+func (keys agentProviderKeys) apply(providers map[string]string) {
 	maps.Copy(providers, keys.modelProviders)
-	served := slices.Collect(maps.Values(providers))
-	maps.DeleteFunc(sources, func(provider, _ string) bool { return !slices.Contains(served, provider) })
-	for provider := range keys.credentialIDs {
-		sources[provider] = "user"
-	}
 }
 
 type agentProviderCredential struct {
@@ -273,42 +275,31 @@ func (c agentKeyContext) sourcesPreferring(model agentModel, provider string, wa
 
 // keys turns each chosen model's source into router settings. A model on a
 // subscription keeps the user's key for its provider, when there is one, as
-// the fallback while the subscription is unavailable.
+// the fallback while the subscription is unavailable. A model whose provider
+// has no plan offered here, paid for by its own provider, stays as the
+// router has it.
 func (c agentKeyContext) keys(choices []agentModelChoice) agentProviderKeys {
-	keys := agentProviderKeys{modelProviders: map[string]string{}, credentialIDs: map[string]string{}, subscriptionProviders: []string{}}
+	keys := agentProviderKeys{modelProviders: map[string]string{}, credentialIDs: map[string]string{}, sources: map[string][]string{}, keepPlan: map[string]bool{}}
 	for _, choice := range choices {
 		source := choice.Source
+		_, offered := c.subscriptions[source.modelProvider]
 		switch source.kind {
 		case "subscription":
-			if !slices.Contains(keys.subscriptionProviders, source.provider) {
-				keys.subscriptionProviders = append(keys.subscriptionProviders, source.provider)
-			}
+			keys.sources[choice.ID] = []string{"plan"}
 			if key, ok := c.saved[source.provider]; ok && !c.blocked["key"] {
 				keys.credentialIDs[source.provider] = key.ID
-				keys.apiFallbackModels = append(keys.apiFallbackModels, choice.ID)
+				keys.sources[choice.ID] = []string{"plan", "key"}
 			}
 		case "key":
 			keys.modelProviders[choice.ID] = source.provider
 			keys.credentialIDs[source.provider] = source.credentialID
+			keys.sources[choice.ID] = []string{"key"}
+		case "managed":
+			keys.sources[choice.ID] = []string{"managed"}
 		}
-	}
-	// A subscription chosen for only some of its provider's models names them.
-	onSubscription, mixed := []string{}, false
-	for _, choice := range choices {
-		if !slices.Contains(keys.subscriptionProviders, choice.Source.modelProvider) {
-			continue
+		if (source.kind == "key" || source.kind == "managed") && !offered && source.native() {
+			keys.keepPlan[choice.ID] = true
 		}
-		if choice.Source.kind == "subscription" {
-			onSubscription = append(onSubscription, choice.ID)
-		} else {
-			mixed = true
-			keys.offSubscription = append(keys.offSubscription, choice.ID)
-		}
-	}
-	if mixed {
-		keys.subscriptionModels = onSubscription
-	} else {
-		keys.offSubscription = nil
 	}
 	return keys
 }
@@ -403,7 +394,7 @@ func applyAgentProviderKeys(ctx context.Context, client *api.Client, routerID st
 	models = includeCurrentAgentModels(models, router)
 	body := agentRouterUpdateBody(router, models, currentAgentModelChoices(router))
 	subscribed := slices.DeleteFunc([]agentSubscriptionProvider{claudeSubscription, codexSubscription, grokSubscription, museSubscription}, func(subscription agentSubscriptionProvider) bool {
-		return !slices.Contains(router.SubscriptionProviders, subscription.routerProvider)
+		return !slices.Contains(router.planProviders(), subscription.routerProvider)
 	})
 	keys, err := agentProviderKeysFor(ctx, client, stderr, models, body.EnabledModels, body.ModelProviders, subscribed)
 	if err != nil || len(keys.credentialIDs) == 0 {
@@ -418,27 +409,11 @@ func applyAgentProviderKeys(ctx context.Context, client *api.Client, routerID st
 func attachAgentProviderKeys(ctx context.Context, client *api.Client, router agentRouter, models []agentModel, keys agentProviderKeys) (agentRouter, error) {
 	body := agentRouterUpdateBody(router, models, currentAgentModelChoices(router))
 	maps.DeleteFunc(keys.modelProviders, func(model, _ string) bool { return !slices.Contains(body.EnabledModels, model) })
-	keys.apply(body.ModelProviders, body.ProviderKeySources)
+	keys.apply(body.ModelProviders)
 	served := slices.Collect(maps.Values(body.ModelProviders))
 	maps.DeleteFunc(keys.credentialIDs, func(provider, _ string) bool { return !slices.Contains(served, provider) })
-	maps.DeleteFunc(body.ProviderKeySources, func(provider, _ string) bool { return !slices.Contains(served, provider) })
 	body.ProviderCredentialIDs = keys.credentialIDs
-	body.SubscriptionAPIFallbackModels = keys.fallbackModels(router.SubscriptionAPIFallbackModels, body.EnabledModels)
-	// A per-model payment choice made in the picker is saved here too, on top
-	// of the router's own: only the models the picker decided change.
-	if keys.subscriptionModels != nil {
-		served := slices.DeleteFunc(slices.Clone(router.SubscriptionModels), func(model string) bool {
-			return slices.Contains(keys.offSubscription, model)
-		})
-		for _, model := range keys.subscriptionModels {
-			if slices.Contains(body.EnabledModels, model) && !slices.Contains(served, model) {
-				served = append(served, model)
-			}
-		}
-		if !sameModelSet(served, router.SubscriptionModels) {
-			body.SubscriptionModels = &served
-		}
-	}
+	body.ModelSources = keys.modelSources(router, body.EnabledModels, body.ModelProviders)
 	return putAgentRouter(ctx, client, router.ID, body)
 }
 

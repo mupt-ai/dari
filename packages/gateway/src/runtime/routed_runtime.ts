@@ -631,10 +631,16 @@ async function nextProviderChoice(
   for (let index = (choice.fallback ?? -1) + 1; index < fallbacks.length; index += 1) {
     const fallback = fallbacks[index]!;
     if (!fallback.subscription && credentials.credit_exhausted === true) continue;
-    const plan = fallback.subscription
-      ? await fallbackPlan(credentials, fallback, model, prepared.routing.conversationId)
-      : undefined;
-    if (fallback.subscription && plan === undefined) continue;
+    let plan: ProviderCredential | undefined;
+    if (fallback.subscription) {
+      plan = await fallbackPlan(credentials, fallback, model, prepared.routing.conversationId);
+      if (plan === undefined) continue;
+    }
+    if (fallback.managed) {
+      const key = credentials.managed_keys?.[fallback.config.provider];
+      if (!key) continue;
+      plan = { apiKey: key, managed: true };
+    }
     try {
       return {
         decision: choice.decision,

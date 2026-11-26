@@ -48,7 +48,7 @@ test("a router spec reads as the router the gateway serves", () => {
       roleModels: { main: "anthropic/claude-opus-5-5", subagent: "deepseek-ai/DeepSeek-V4.1-Flash-1017" },
       rolePrompts: { subagent: "Be brief." },
       retries: 2,
-      subscriptions: true,
+      resetMinHours: 24,
       sessionPinning: true,
       nativeCompaction: true,
       zdr: false,
@@ -56,18 +56,39 @@ test("a router spec reads as the router the gateway serves", () => {
   });
 });
 
-test("an omitted setting takes its default, and a spec without subscription pays with keys", () => {
+test("an omitted setting takes its default", () => {
   const spec = (text: string) => parseRouterSpec("r", parseRouterSpecText(text)).router;
   expect(spec("name: Plain\nmodels: [openai/gpt-6.1-sol]")).toMatchObject({
     retries: 1,
-    subscriptions: true,
+    resetMinHours: 24,
     sessionPinning: false,
     nativeCompaction: false,
     roleModels: {},
     rolePrompts: {},
     agentModels: {},
   });
-  expect(spec("name: Keys\nmodels: [openai/gpt-6.1-sol]\npayment: { allow: [key, credits] }").subscriptions).toBe(false);
+});
+
+test("a spec reads each model's sources and the reset threshold", () => {
+  const spec = (text: string) => parseRouterSpec("r", parseRouterSpecText(text)).router;
+  const router = spec("name: S\nreset_min_hours: 6\nmodels:\n  - { id: openai/gpt-6.1-sol, sources: [key, plan, reset] }\n  - openai/gpt-5.5");
+  expect(router.resetMinHours).toBe(6);
+  expect(router.models).toEqual([{ id: "openai/gpt-6.1-sol", sources: ["key", "plan", "reset"] }, { id: "openai/gpt-5.5" }]);
+  expect(() => spec("name: S\nmodels: [{ id: openai/gpt-5.5, sources: [reset, plan] }]")).toThrow("Source reset must come right after plan.");
+  expect(() => spec("name: S\nmodels: [{ id: openai/gpt-5.5, sources: [plan, credits] }]")).toThrow("Unknown source");
+  expect(() => spec("name: S\nreset_min_hours: -1\nmodels: [openai/gpt-5.5]")).toThrow("reset_min_hours must be a number of hours");
+});
+
+test("a config file reads each model's sources and the reset threshold", () => {
+  const router = parseGatewayConfig({
+    routers: { default: { resetMinHours: 2, models: [{ id: "openai/gpt-5.5", sources: ["plan", "reset"] }] } },
+  }).routers.default!;
+  expect(router.resetMinHours).toBe(2);
+  expect(router.models).toEqual([{ id: "openai/gpt-5.5", sources: ["plan", "reset"] }]);
+  expect(() => parseGatewayConfig({ routers: { default: { models: [{ id: "openai/gpt-5.5", sources: "plan" }] } } }))
+    .toThrow("Sources must be a list");
+  expect(() => parseGatewayConfig({ routers: { default: { resetMinHours: "1", models: ["openai/gpt-5.5"] } } }))
+    .toThrow("routers.default.resetMinHours");
 });
 
 test("a router spec the gateway cannot serve as written is refused", () => {
@@ -111,11 +132,14 @@ test("a model names another provider only when that provider serves it", () => {
 test("a config file router reads back as an equivalent spec", () => {
   const router = parseGatewayConfig({
     routers: { default: {
-      models: ["anthropic/claude-opus-5-5", { id: "deepseek-ai/DeepSeek-V4.1-Flash-1017", thinking: ["off"], provider: "opencode-go" }],
+      models: [
+        { id: "anthropic/claude-opus-5-5", sources: ["plan", "reset", "key"] },
+        { id: "deepseek-ai/DeepSeek-V4.1-Flash-1017", thinking: ["off"], provider: "opencode-go" },
+      ],
       agentModels: { codex: ["openai/gpt-6.1-sol"] },
       roleModels: { subagent: "deepseek-ai/DeepSeek-V4.1-Flash-1017" },
       rolePrompts: { main: "Delegate." },
-      subscriptions: false,
+      resetMinHours: 12,
       sessionPinning: true,
       retries: 0,
     } },

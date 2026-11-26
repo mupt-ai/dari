@@ -43,13 +43,14 @@ test("prepareProviderExecution uses the mapped provider key and keeps BYOK unbil
   expect(execution.usageContext).toBeUndefined();
 });
 
-test("prepareProviderExecution bills managed-key calls to the organization", () => {
+test("prepareProviderExecution bills a managed primary to the organization", () => {
   const managed = mappedRouter({
-    provider_keys: { openrouter: "managed-key" },
-    provider_key_sources: { openrouter: "managed" },
+    provider_keys: {},
+    provider_credentials: { "xai/grok-4.5": { apiKey: "managed-key", managed: true } },
   });
 
   const execution = prepare(managed);
+  expect(execution.apiKey).toBe("managed-key");
   expect(execution.headers["X-Dari-Provider-Key-Source"]).toBe("managed");
   expect(execution.usageContext).toMatchObject({
     organizationId: "org_1",

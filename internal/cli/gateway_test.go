@@ -285,7 +285,6 @@ func TestGatewaySubscriptionCommandsUseGatewayKey(t *testing.T) {
 		{"", []string{"rename", "claude-code", "Work Max"}, "PUT /v1/organizations/current/credentials/ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN/label"},
 		{"", []string{"mark-available", "openai_codex_oauth_token"}, "POST /v1/organizations/current/credentials/OPENAI_CODEX_OAUTH_TOKEN/mark-available"},
 		{"", []string{"disconnect", "claude-code"}, "DELETE /v1/organizations/current/credentials/ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN"},
-		{"", []string{"auto-reset", "openai_codex_oauth_token_2", "on"}, "PUT /v1/organizations/current/credentials/OPENAI_CODEX_OAUTH_TOKEN_2/auto-reset"},
 		{"", []string{"resets", "claude-code"}, "GET /v1/organizations/current/credentials/ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN/resets"},
 	} {
 		if err := run(tc.stdin, tc.args...); err != nil {
@@ -297,10 +296,6 @@ func TestGatewaySubscriptionCommandsUseGatewayKey(t *testing.T) {
 	}
 	if _, ok := seen["POST /v1/organizations/current/credentials/oauth/sessions"]; !ok {
 		t.Error("connect did not start an OAuth session on the gateway")
-	}
-
-	if seen["PUT /v1/organizations/current/credentials/OPENAI_CODEX_OAUTH_TOKEN_2/auto-reset"]["enabled"] != true {
-		t.Error("auto-reset on did not send enabled: true")
 	}
 }
 

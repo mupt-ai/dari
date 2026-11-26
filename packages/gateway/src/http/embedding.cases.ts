@@ -184,15 +184,6 @@ test("a grant-only strict router refuses ungranted models with strict errors", a
   expect(upstreamCalls).toEqual([]);
 });
 
-test("a strict router refuses personal subscriptions", async () => {
-  router = resolvedRouter({ strict: true, provider_key_sources: { openrouter: "subscription" } });
-  supplyCredentials = false;
-  const response = await chat({ model: `dari/model/${MODEL_A}` });
-  expect(response.status).toBe(400);
-  expect((await response.json() as { error: { code: string } }).error.code).toBe("strict_subscription_refused");
-  expect(upstreamCalls).toEqual([]);
-});
-
 function resolvedRouter(overrides: Partial<ResolvedRouter>): ResolvedRouter {
   const config = (nativeId: string) => ({
     provider: "openrouter",

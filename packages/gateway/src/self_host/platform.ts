@@ -63,7 +63,7 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
         apiKey: await refreshedAccessToken(deps.subscriptions, next, { fetch: deps.fetch }),
       };
     },
-    async markSubscriptionUnavailable({ credentialId, limit, linkGrantId }) {
+    async markSubscriptionUnavailable({ credentialId, limit, linkGrantId, sources, resetMinHours }) {
       if (credentialId === undefined) return false;
       if (limit.model !== undefined) {
         return deps.subscriptions.holdModel(credentialId, limit.model, limit.resetsAt, limit.reason);
@@ -79,7 +79,7 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
           store: deps.subscriptions,
           fetch: deps.fetch,
           baseUrls: providerBaseUrls(deps.config.providers),
-        }, held);
+        }, held, { sources, resetMinHours });
       }
       // A grant's retry may use only its own subscriptions.
       const provider = deps.subscriptions.get(credentialId)?.provider;

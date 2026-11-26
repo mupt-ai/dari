@@ -137,7 +137,7 @@ dari hermes
 `dari accounts` is the interactive page for subscriptions (plan, usage, renewal, buying another, rename, reconnect, disconnect), API keys, and auto-routing, hosted or on a gateway. Without a terminal, every action on that page has a command that prints JSON:
 
 - Subscriptions: `dari accounts subscription list` (plan, `workspace_name`, usage windows, holds, `manage_url`; each ChatGPT workspace or Claude organization is its own subscription, even on one email), `connect <provider>` (`--reconnect NAME` to reconnect; with no terminal it waits for the browser approval), `rename`, `mark-available`, `disconnect`.
-- Banked limit resets (hosted): `dari accounts subscription resets <provider>`, `use-reset <provider> [RESET_ID]`, `auto-reset <provider> on|off`.
+- Banked limit resets (hosted): `dari accounts subscription resets <provider>`, `use-reset <provider> [RESET_ID]`. Per-model `reset` sources on a router spend them (see `dari router update --sources`).
 - API keys: hosted `dari accounts list` and `dari accounts provider add|update|remove`; local gateway `dari accounts key` (list), `dari accounts key <provider> <api-key|off>`.
 - Auto-routing: local gateway `dari accounts auto-routing <dari-api-key|off>`; hosted needs the Autorouting plan, bought in the web app (`dari accounts list` reports `autorouting_allowed`).
 

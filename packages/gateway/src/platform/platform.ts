@@ -1,3 +1,4 @@
+import type { Source } from "../models/sources.js";
 import type { ActivityPlatform } from "../activity/http.js";
 import type {
   Provider,
@@ -80,7 +81,7 @@ export type GatewayPlatform = {
   nextSubscription?(request: NextSubscriptionRequest): Promise<NextSubscription | undefined>;
   /**
    * Account one call served on a platform-managed provider key. Only reached
-   * when `resolveRouter` reports a "managed" key source.
+   * for a model whose supplied credential is `managed`.
    */
   recordUsage(usage: Record<string, unknown>): Promise<void>;
   /** Receive the finished request's log row. Must not throw. */
@@ -574,6 +575,10 @@ export type SubscriptionHold = {
   // The Dari Link grant the request ran under; another plan serves a retry
   // only when the grant may use it.
   linkGrantId?: string;
+  // The model's sources and its router's reset threshold, for deciding
+  // whether to spend a banked reset (models/sources.ts shouldSpendReset).
+  sources: Source[];
+  resetMinHours: number;
 };
 
 export type NextSubscriptionRequest = {

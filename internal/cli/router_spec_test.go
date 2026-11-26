@@ -59,3 +59,25 @@ func TestRouterSpecApplyAndGet(t *testing.T) {
 		t.Fatalf("get --yaml =\n%s\nwant\n%s", got, want)
 	}
 }
+
+// A spec's per-model sources reach the API as written; the API parses them.
+func TestRouterSpecApplySendsModelSources(t *testing.T) {
+	useTestAPIKey(t)
+	spec := "name: Plans\nreset_min_hours: 12\nmodels:\n  - id: anthropic/claude-opus-5-5\n    sources: [plan, reset, api]\n"
+	var applied map[string]any
+	server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&applied)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_1"})
+	}))
+	defer server.Close()
+	file := filepath.Join(t.TempDir(), "router.yaml")
+	if err := os.WriteFile(file, []byte(spec), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newRootCmd("dev")
+	cmd.SetOut(io.Discard)
+	cmd.SetArgs([]string{"--api-url", server.URL, "router", "apply", file})
+	if err := cmd.Execute(); err != nil || applied["spec_yaml"] != spec {
+		t.Fatalf("apply = %v, sent %v", err, applied)
+	}
+}

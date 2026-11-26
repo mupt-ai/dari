@@ -11,11 +11,12 @@ import { RouterSpecStore } from "./router_specs.js";
 import { SessionPinStore } from "./session_pin_store.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
 import { tokens } from "./subscriptions/test_support.js";
+import type { Source } from "../models/sources.js";
 
-// With every Claude Code plan at its limit, the plan whose owner turned
-// auto-reset on spends one banked reset and serves the retry, as on hosted
-// Dari; with it off, the provider is never asked.
-function gatewayWithTwoHeldPlans(autoReset: boolean) {
+// With every Claude Code plan at its limit, a banked reset is spent on the
+// plan out longest when the model's sources and the router's threshold say so
+// (models/sources.ts shouldSpendReset), as on hosted Dari.
+function gatewayWithTwoHeldPlans(policy: { sources: Source[]; resetMinHours: number }, grantEndsAt?: Date) {
   const db = new Database(":memory:");
   const subscriptions = new SubscriptionStore(db);
   const calls: string[] = [];
@@ -35,7 +36,7 @@ function gatewayWithTwoHeldPlans(autoReset: boolean) {
     fetch: async (url, init) => {
       calls.push(`${init.method ?? "GET"} ${url}`);
       if (url.includes("/api/oauth/usage")) {
-        return Response.json({ cedar_ember: { eligible: true, next_grant_id: "g", grants: [{ id: "g", usable_now: true, resets_left: 1 }] } });
+        return Response.json({ cedar_ember: { eligible: true, next_grant_id: "g", grants: [{ id: "g", usable_now: true, resets_left: 1, ...(grantEndsAt ? { ends_at: grantEndsAt.toISOString() } : {}) }] } });
       }
       if (url.endsWith("/api/oauth/profile")) return Response.json({ organization: { uuid: "org_1" } });
       if (url.endsWith("/reset_rate_limits")) return Response.json({ result: "reset" });
@@ -45,28 +46,41 @@ function gatewayWithTwoHeldPlans(autoReset: boolean) {
   const expiresAt = new Date(Date.now() + 86_400_000);
   const a = subscriptions.connect(tokens({ accountEmail: "a@example.com", expiresAt }), null)!;
   const b = subscriptions.connect(tokens({ accountEmail: "b@example.com", expiresAt }), null)!;
-  if (autoReset) subscriptions.setAutoRedeemResets(b.name, true);
   subscriptions.markUnavailable(b.id, new Date(Date.now() + 3_600_000), "usage_limit");
   const hold = () => platform.markSubscriptionUnavailable({
     userId: "owner",
     credentialId: a.id,
     limit: { oauthProvider: "anthropic_claude_code", resetsAt: new Date(Date.now() + 1_800_000), reason: "usage_limit" },
+    ...policy,
   });
   return { subscriptions, calls, hold, a, b };
 }
 
-test("a held pool spends a banked reset on the plan with auto-reset on", async () => {
-  const g = gatewayWithTwoHeldPlans(true);
+const SPEND = ["POST https://api.anthropic.com/api/organizations/org_1/reset_rate_limits"];
+const posts = (calls: string[]) => calls.filter((call) => call.startsWith("POST"));
+
+test("a plan out longer than the threshold spends a banked reset", async () => {
+  const g = gatewayWithTwoHeldPlans({ sources: ["plan", "reset"], resetMinHours: 0.5 });
   expect(await g.hold()).toBe(true);
   expect(g.subscriptions.get(g.b.id)!.unavailableUntil).toBeNull();
   expect(g.subscriptions.get(g.a.id)!.unavailableUntil).not.toBeNull();
-  expect(g.calls.filter((call) => call.startsWith("POST"))).toEqual([
-    "POST https://api.anthropic.com/api/organizations/org_1/reset_rate_limits",
-  ]);
+  expect(posts(g.calls)).toEqual(SPEND);
 });
 
-test("a held pool without auto-reset stays held and asks nothing", async () => {
-  const g = gatewayWithTwoHeldPlans(false);
+test("a short wait keeps the reset", async () => {
+  const g = gatewayWithTwoHeldPlans({ sources: ["plan", "reset"], resetMinHours: 24 });
   expect(await g.hold()).toBe(false);
-  expect(g.calls).toEqual([]);
+  expect(posts(g.calls)).toEqual([]);
+});
+
+test("a short wait still spends a reset that would expire before the plan returns", async () => {
+  const g = gatewayWithTwoHeldPlans({ sources: ["plan", "reset"], resetMinHours: 24 }, new Date(Date.now() + 600_000));
+  expect(await g.hold()).toBe(true);
+  expect(posts(g.calls)).toEqual(SPEND);
+});
+
+test("a model without reset in its sources never spends one", async () => {
+  const g = gatewayWithTwoHeldPlans({ sources: ["plan", "key"], resetMinHours: 0 });
+  expect(await g.hold()).toBe(false);
+  expect(posts(g.calls)).toEqual([]);
 });

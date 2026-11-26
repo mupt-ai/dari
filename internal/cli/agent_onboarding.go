@@ -102,23 +102,34 @@ type agentRoutingAccess struct {
 }
 
 type agentRouter struct {
-	ID                            string              `json:"id"`
-	Name                          string              `json:"name"`
-	ClientKey                     string              `json:"client_key"`
-	IsDefault                     bool                `json:"is_default"`
-	CodingAgents                  []string            `json:"coding_agents"`
-	ProviderKeySources            map[string]string   `json:"provider_key_sources"`
-	EnabledModels                 []string            `json:"enabled_models"`
-	ModelProviders                map[string]string   `json:"model_providers"`
-	ModelThinkingLevels           map[string][]string `json:"model_thinking_levels"`
-	SubscriptionProviders         []string            `json:"subscription_providers"`
-	SubscriptionAPIFallbackModels []string            `json:"subscription_api_fallback_models"`
-	// SubscriptionModels are the models the router's subscriptions serve.
-	SubscriptionModels []string `json:"subscription_models"`
-	SessionPinning     bool     `json:"session_pinning"`
-	NativeCompaction   bool     `json:"native_compaction"`
+	ID                  string              `json:"id"`
+	Name                string              `json:"name"`
+	ClientKey           string              `json:"client_key"`
+	IsDefault           bool                `json:"is_default"`
+	CodingAgents        []string            `json:"coding_agents"`
+	EnabledModels       []string            `json:"enabled_models"`
+	ModelProviders      map[string]string   `json:"model_providers"`
+	ModelThinkingLevels map[string][]string `json:"model_thinking_levels"`
+	// ModelSources lists, per enabled model, where it is served from in
+	// order: "plan" (the user's subscriptions), "reset" (a banked reset),
+	// "key" (the router's saved key) and "managed" (Dari credits).
+	ModelSources     map[string][]string `json:"model_sources"`
+	SessionPinning   bool                `json:"session_pinning"`
+	NativeCompaction bool                `json:"native_compaction"`
 	// RoleModels pins a model to the main agent or subagents.
 	RoleModels map[string]*string `json:"role_models"`
+}
+
+// planProviders are the providers serving any of the router's models from a
+// plan.
+func (router agentRouter) planProviders() []string {
+	providers := []string{}
+	for model, sources := range router.ModelSources {
+		if provider := router.ModelProviders[model]; slices.Contains(sources, "plan") && provider != "" && !slices.Contains(providers, provider) {
+			providers = append(providers, provider)
+		}
+	}
+	return providers
 }
 
 // roleOf names the agent role a router pins model to, if any.
@@ -160,87 +171,39 @@ type agentModelChoice struct {
 }
 
 type agentRouterCreateRequest struct {
-	Name                          string              `json:"name"`
-	ClientKey                     string              `json:"client_key"`
-	CodingAgent                   string              `json:"coding_agent"`
-	EnabledModels                 []string            `json:"enabled_models"`
-	ModelProviders                map[string]string   `json:"model_providers"`
-	ProviderKeySources            map[string]string   `json:"provider_key_sources"`
-	ProviderCredentialIDs         map[string]string   `json:"provider_credential_ids,omitempty"`
-	ModelThinkingLevels           map[string][]string `json:"model_thinking_levels"`
-	RoutingStrategy               string              `json:"routing_strategy"`
-	SpeculativeRouting            bool                `json:"speculative_routing"`
-	SessionPinning                bool                `json:"session_pinning"`
-	PrimaryRetries                int                 `json:"primary_retries"`
-	SubscriptionProviders         []string            `json:"subscription_providers"`
-	SubscriptionAPIFallbackModels []string            `json:"subscription_api_fallback_models"`
-	// The models a subscription serves, sent only when some models of a
-	// subscription's provider are paid for another way; omitted, the
-	// subscription serves all of them.
-	SubscriptionModels  []string `json:"subscription_models,omitempty"`
-	EvalScoreImputation bool     `json:"eval_score_imputation"`
+	Name                  string              `json:"name"`
+	ClientKey             string              `json:"client_key"`
+	CodingAgent           string              `json:"coding_agent"`
+	EnabledModels         []string            `json:"enabled_models"`
+	ModelProviders        map[string]string   `json:"model_providers"`
+	ProviderCredentialIDs map[string]string   `json:"provider_credential_ids,omitempty"`
+	ModelThinkingLevels   map[string][]string `json:"model_thinking_levels"`
+	RoutingStrategy       string              `json:"routing_strategy"`
+	SpeculativeRouting    bool                `json:"speculative_routing"`
+	SessionPinning        bool                `json:"session_pinning"`
+	PrimaryRetries        int                 `json:"primary_retries"`
+	ModelSources          map[string][]string `json:"model_sources"`
+	EvalScoreImputation   bool                `json:"eval_score_imputation"`
 }
 
 type agentRouterUpdateRequest struct {
 	Name                  string              `json:"name"`
 	EnabledModels         []string            `json:"enabled_models"`
 	ModelProviders        map[string]string   `json:"model_providers"`
-	ProviderKeySources    map[string]string   `json:"provider_key_sources,omitempty"`
 	ProviderCredentialIDs map[string]string   `json:"provider_credential_ids,omitempty"`
 	ModelThinkingLevels   map[string][]string `json:"model_thinking_levels"`
-	// Omitted keeps the router's current API fallback models.
-	SubscriptionAPIFallbackModels []string `json:"subscription_api_fallback_models,omitempty"`
-	// The models the router's subscriptions serve. Nil is omitted and keeps
-	// the router's current choice; an empty list serves none.
-	SubscriptionModels *[]string `json:"subscription_models,omitempty"`
-	// Nil is omitted and keeps the router's current subscriptions.
-	SubscriptionProviders *[]string `json:"subscription_providers,omitempty"`
-	SessionPinning        bool      `json:"session_pinning"`
-	NativeCompaction      bool      `json:"native_compaction"`
+	// Each enabled model's sources; nil is omitted and keeps the router's.
+	ModelSources     map[string][]string `json:"model_sources,omitempty"`
+	SessionPinning   bool                `json:"session_pinning"`
+	NativeCompaction bool                `json:"native_compaction"`
 }
 
-// Omitting subscription_api_fallback_models keeps the router's current ones.
 type agentRouterSubscriptionUpdateRequest struct {
-	Name                  string              `json:"name"`
-	EnabledModels         []string            `json:"enabled_models"`
-	ModelProviders        map[string]string   `json:"model_providers,omitempty"`
-	ModelThinkingLevels   map[string][]string `json:"model_thinking_levels,omitempty"`
-	SubscriptionProviders []string            `json:"subscription_providers"`
-}
-
-// subscriptionModelsFor is the per-model payment choice for a router update:
-// the chosen models its subscriptions serve. A model of a provider whose
-// subscription the picker offered is served when the subscription was picked
-// for it; a model of any other subscription provider stays as the router has
-// it, unless it now runs on a gateway key. Nil, which keeps the router's
-// choice, when the picker offered none of the router's subscriptions.
-func subscriptionModelsFor(router agentRouter, choices []agentModelChoice, offered map[string]string) *[]string {
-	if !slices.ContainsFunc(router.SubscriptionProviders, func(provider string) bool { _, ok := offered[provider]; return ok }) {
-		return nil
-	}
-	served := []string{}
-	for _, choice := range choices {
-		if _, ok := offered[choice.Source.modelProvider]; ok {
-			if choice.Source.kind == "subscription" {
-				served = append(served, choice.ID)
-			}
-		} else if choice.Source.native() && (slices.Contains(router.SubscriptionModels, choice.ID) ||
-			(!slices.Contains(router.EnabledModels, choice.ID) && slices.Contains(router.SubscriptionProviders, choice.Source.modelProvider))) {
-			// A model moved to a gateway key is no longer its provider's, so
-			// no subscription serves it. A newly enabled model goes on its
-			// provider's plan, as the API does by default.
-			served = append(served, choice.ID)
-		}
-	}
-	return &served
-}
-
-// sameModelSet reports whether two model lists name the same models.
-func sameModelSet(a, b []string) bool {
-	a, b = slices.Clone(a), slices.Clone(b)
-	slices.Sort(a)
-	slices.Sort(b)
-	return slices.Equal(a, b)
+	Name                string              `json:"name"`
+	EnabledModels       []string            `json:"enabled_models"`
+	ModelProviders      map[string]string   `json:"model_providers,omitempty"`
+	ModelThinkingLevels map[string][]string `json:"model_thinking_levels,omitempty"`
+	ModelSources        map[string][]string `json:"model_sources"`
 }
 
 type agentCredential struct {
@@ -432,7 +395,7 @@ func ensureAgentRouter(
 	// it, preferred first; the picker lets the user change any of them.
 	if !setup.ownsRouter() {
 		subscribed = slices.DeleteFunc(slices.Clone(setup.subscriptions), func(subscription agentSubscriptionProvider) bool {
-			return !slices.Contains(defaultRouter.SubscriptionProviders, subscription.routerProvider)
+			return !slices.Contains(defaultRouter.planProviders(), subscription.routerProvider)
 		})
 	}
 	keyContext, err := loadAgentKeyContext(ctx, client, subscribed)
@@ -471,13 +434,12 @@ func ensureAgentRouter(
 	routerID := defaultRouter.ID
 	if !setup.ownsRouter() {
 		body := agentRouterUpdateBody(defaultRouter, models, choices)
-		keys.apply(body.ModelProviders, body.ProviderKeySources)
+		keys.apply(body.ModelProviders)
 		body.ProviderCredentialIDs = keys.credentialIDs
-		body.SubscriptionAPIFallbackModels = keys.fallbackModels(defaultRouter.SubscriptionAPIFallbackModels, body.EnabledModels)
 		body.SessionPinning = sessionPinning
-		body.SubscriptionModels = subscriptionModelsFor(defaultRouter, choices, keyContext.subscriptions)
+		body.ModelSources = keys.modelSources(defaultRouter, body.EnabledModels, body.ModelProviders)
 		if len(keys.credentialIDs) > 0 || body.SessionPinning != defaultRouter.SessionPinning || agentRouterNeedsUpdate(defaultRouter, choices) ||
-			(body.SubscriptionModels != nil && !sameModelSet(*body.SubscriptionModels, defaultRouter.SubscriptionModels)) {
+			!maps.EqualFunc(body.ModelSources, defaultRouter.ModelSources, slices.Equal) {
 			if defaultRouter, err = putAgentRouter(ctx, client, defaultRouter.ID, body); err != nil {
 				return "", err
 			}
@@ -491,13 +453,9 @@ func ensureAgentRouter(
 			!slices.Contains(slices.Collect(maps.Values(body.ModelProviders)), subscribed[0].routerProvider) {
 			return "", fmt.Errorf("a %s subscription needs at least one selected model served directly by %s", subscribed[0].name, subscribed[0].vendor)
 		}
-		keys.apply(body.ModelProviders, body.ProviderKeySources)
+		keys.apply(body.ModelProviders)
 		body.ProviderCredentialIDs = keys.credentialIDs
-		body.SubscriptionProviders = keys.subscriptionProviders
-		body.SubscriptionModels = keys.subscriptionModels
-		if fallback := keys.fallbackModels(nil, body.EnabledModels); fallback != nil {
-			body.SubscriptionAPIFallbackModels = fallback
-		}
+		body.ModelSources = keys.modelSources(agentRouter{}, body.EnabledModels, body.ModelProviders)
 		body.SessionPinning = sessionPinning
 		var created agentRouter
 		createErr := client.Do(ctx, http.MethodPost, "/v1/organizations/current/routers", body, &created)
@@ -579,27 +537,10 @@ func reconfigureAgentRouter(ctx context.Context, client *api.Client, setup agent
 	agentStep(stderr, "Paying with "+agentSourceSummary(models, choices))
 	keys := keyContext.keys(choices)
 	body := agentRouterUpdateBody(router, models, choices)
-	keys.apply(body.ModelProviders, body.ProviderKeySources)
+	keys.apply(body.ModelProviders)
 	body.ProviderCredentialIDs = keys.credentialIDs
-	body.SubscriptionAPIFallbackModels = keys.fallbackModels(router.SubscriptionAPIFallbackModels, body.EnabledModels)
 	body.SessionPinning = picked.sessionPinning
-	// Connected plans go on the router where it serves their models, in the
-	// same save as the models they pay for.
-	served := slices.Collect(maps.Values(body.ModelProviders))
-	providers := []string{}
-	for _, provider := range router.SubscriptionProviders {
-		if slices.Contains(served, provider) {
-			providers = append(providers, provider)
-		}
-	}
-	for _, subscription := range subscribed {
-		if slices.Contains(served, subscription.routerProvider) && !slices.Contains(providers, subscription.routerProvider) {
-			providers = append(providers, subscription.routerProvider)
-		}
-	}
-	body.SubscriptionProviders = &providers
-	router.SubscriptionProviders = providers
-	body.SubscriptionModels = subscriptionModelsFor(router, choices, keyContext.subscriptions)
+	body.ModelSources = keys.modelSources(router, body.EnabledModels, body.ModelProviders)
 	if _, err := putAgentRouter(ctx, client, router.ID, body); err != nil {
 		return err
 	}
@@ -1027,9 +968,9 @@ func readAgentLine(stdin io.Reader) (string, error) {
 	}
 }
 
-// setAgentRouterSubscription adds the subscriptions' providers to, or removes
-// them from, the router's subscription providers. Providers without enabled
-// models on the router are skipped, and API fallback models stay as they are.
+// setAgentRouterSubscription puts the subscriptions' plans first for, or takes
+// them off, the router's models those plans' providers serve. A model taken
+// off its plan runs on its key or Dari credits.
 func setAgentRouterSubscription(
 	ctx context.Context,
 	client *api.Client,
@@ -1037,32 +978,38 @@ func setAgentRouterSubscription(
 	subscriptions []agentSubscriptionProvider,
 	enabled bool,
 ) error {
-	providers := slices.DeleteFunc(slices.Clone(router.SubscriptionProviders), func(provider string) bool {
-		return !enabled && slices.ContainsFunc(subscriptions, func(s agentSubscriptionProvider) bool { return s.routerProvider == provider })
-	})
-	if enabled {
-		served := slices.Collect(maps.Values(router.ModelProviders))
-		for _, subscription := range subscriptions {
-			if !slices.Contains(providers, subscription.routerProvider) && slices.Contains(served, subscription.routerProvider) {
-				providers = append(providers, subscription.routerProvider)
+	sources := map[string][]string{}
+	changed := false
+	for _, model := range router.EnabledModels {
+		current := router.ModelSources[model]
+		next := current
+		if slices.ContainsFunc(subscriptions, func(s agentSubscriptionProvider) bool { return s.routerProvider == router.ModelProviders[model] }) {
+			if enabled && !slices.Contains(current, "plan") {
+				next = []string{"plan"}
+			} else if !enabled && slices.Contains(current, "plan") {
+				// Off its plan, a model keeps its key or Dari credits, else
+				// moves to Dari credits.
+				next = slices.DeleteFunc(slices.Clone(current), func(source string) bool { return source == "plan" || source == "reset" })
+				if len(next) == 0 {
+					next = []string{"managed"}
+				}
 			}
 		}
+		changed = changed || !slices.Equal(next, current)
+		sources[model] = next
 	}
-	if providers == nil {
-		providers = []string{}
-	}
-	if sameStringSet(providers, router.SubscriptionProviders) {
+	if !changed {
 		return nil
 	}
 	if strings.TrimSpace(router.Name) == "" || len(router.EnabledModels) == 0 {
 		return errors.New("Dari returned an incomplete agent router")
 	}
 	body := agentRouterSubscriptionUpdateRequest{
-		Name:                  router.Name,
-		EnabledModels:         router.EnabledModels,
-		ModelProviders:        router.ModelProviders,
-		ModelThinkingLevels:   router.ModelThinkingLevels,
-		SubscriptionProviders: providers,
+		Name:                router.Name,
+		EnabledModels:       router.EnabledModels,
+		ModelProviders:      router.ModelProviders,
+		ModelThinkingLevels: router.ModelThinkingLevels,
+		ModelSources:        sources,
 	}
 	path := "/v1/organizations/current/routers/" + url.PathEscape(router.ID)
 	// Decode into a fresh router so the caller's maps are not merged with the response.
@@ -1631,31 +1578,18 @@ func agentRouterCreateBody(
 ) agentRouterCreateRequest {
 	ids := choiceIDs(choices)
 	providers := agentProvidersFor(models, ids)
-	providerSources := map[string]string{}
-	for _, provider := range providers {
-		providerSources[provider] = "managed"
-	}
 	clientKey, name := setup.ownRouter(len(subscribed) > 0)
-	subscriptionProviders := []string{}
-	for _, subscription := range subscribed {
-		if providerSources[subscription.routerProvider] != "" {
-			subscriptionProviders = append(subscriptionProviders, subscription.routerProvider)
-		}
-	}
 	return agentRouterCreateRequest{
-		Name:                          name,
-		ClientKey:                     clientKey,
-		CodingAgent:                   setup.codingAgent,
-		EnabledModels:                 ids,
-		ModelProviders:                providers,
-		ProviderKeySources:            providerSources,
-		ModelThinkingLevels:           choiceLevels(choices),
-		RoutingStrategy:               "dari",
-		SpeculativeRouting:            true,
-		PrimaryRetries:                3,
-		SubscriptionProviders:         subscriptionProviders,
-		SubscriptionAPIFallbackModels: []string{},
-		EvalScoreImputation:           true,
+		Name:                name,
+		ClientKey:           clientKey,
+		CodingAgent:         setup.codingAgent,
+		EnabledModels:       ids,
+		ModelProviders:      providers,
+		ModelThinkingLevels: choiceLevels(choices),
+		RoutingStrategy:     "dari",
+		SpeculativeRouting:  true,
+		PrimaryRetries:      3,
+		EvalScoreImputation: true,
 	}
 }
 
@@ -1666,24 +1600,15 @@ func agentRouterUpdateBody(
 ) agentRouterUpdateRequest {
 	ids := choiceIDs(choices)
 	providers := agentProvidersFor(models, ids)
-	currentProviders := map[string]bool{}
 	for model, provider := range current.ModelProviders {
-		currentProviders[provider] = true
 		if slices.Contains(ids, model) {
 			providers[model] = provider
-		}
-	}
-	providerSources := map[string]string{}
-	for _, provider := range providers {
-		if !currentProviders[provider] {
-			providerSources[provider] = "managed"
 		}
 	}
 	return agentRouterUpdateRequest{
 		Name:                current.Name,
 		EnabledModels:       ids,
 		ModelProviders:      providers,
-		ProviderKeySources:  providerSources,
 		ModelThinkingLevels: choiceLevels(choices),
 		SessionPinning:      current.SessionPinning,
 		NativeCompaction:    current.NativeCompaction,

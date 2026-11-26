@@ -598,30 +598,6 @@ func (page accountsPage) manageSubscription(ctx context.Context, subscription su
 				return useResetPage(ctx, client, subscription, reset, stdin, stderr)
 			})
 		}
-		if resettable {
-			// The setting shows its state, and changing it asks first, so a
-			// stray number key changes nothing.
-			state, turn, keep := ansiGray+"Off"+ansiReset, "Turn on", "Keep off"
-			if subscription.AutoRedeemResets {
-				state, turn, keep = ansiGreen+"On"+ansiReset, "Turn off", "Keep on"
-			}
-			toggle := agentChoiceOption{label: "Use Automatically: " + state}
-			if len(resets) == 0 {
-				toggle.heading = "Banked Resets"
-			}
-			add(toggle, func() (bool, error) {
-				explain := []string{
-					"Spends one when every " + provider.name + " subscription is at its limit.",
-					"  " + ansiGray + "Now: " + ansiReset + state,
-				}
-				confirm, err := runAgentChoiceTUI(stdin, stderr, "Use Banked Resets Automatically?", explain, []agentChoiceOption{{label: keep}, {label: turn}})
-				if err != nil || confirm == 0 {
-					return false, err
-				}
-				var updated map[string]any
-				return true, api.HumanError(client.Do(ctx, http.MethodPut, path+"/auto-reset", map[string]bool{"enabled": !subscription.AutoRedeemResets}, &updated))
-			})
-		}
 		settings := len(options)
 		if provider.billingURL != "" {
 			add(agentChoiceOption{label: "Manage Plan at " + provider.vendor}, func() (bool, error) {

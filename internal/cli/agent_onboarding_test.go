@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -611,11 +612,13 @@ func TestEnsureClaudeAgentRouterCreatesSeparateRouter(t *testing.T) {
 	if got := created["coding_agent"]; got != "claude_code" {
 		t.Errorf("coding_agent = %#v", got)
 	}
-	if got := stringSlice(created["subscription_providers"]); !slices.Equal(got, []string{"anthropic"}) {
-		t.Errorf("subscription_providers = %q", got)
+	if got := planModels(created); len(got) == 0 || !slices.ContainsFunc(got, func(model string) bool { return strings.HasPrefix(model, "anthropic/") }) {
+		t.Errorf("plan models = %q, want the Claude models", got)
 	}
-	if got, ok := created["subscription_api_fallback_models"].([]any); !ok || len(got) != 0 {
-		t.Errorf("subscription_api_fallback_models = %#v, want []", created["subscription_api_fallback_models"])
+	for model, sources := range modelSources(created) {
+		if slices.Contains(sources, "plan") && len(sources) > 1 {
+			t.Errorf("%s sources = %q, want no API fallback", model, sources)
+		}
 	}
 	if _, ok := created["personal_oauth_enabled"]; ok {
 		t.Errorf("create payload still sends personal_oauth_enabled")
@@ -661,10 +664,9 @@ func TestOwnAgentRouterUsesManagedRouterAfterOptOut(t *testing.T) {
 							"model_thinking_levels": map[string][]string{"openai/gpt-5.6-sol": {"medium"}},
 						},
 						{
-							"id":                     "rtr_personal",
-							"name":                   ownRouterName(agent, true),
-							"client_key":             ownRouterKey(agent, true),
-							"subscription_providers": []string{"anthropic"},
+							"id":         "rtr_personal",
+							"name":       ownRouterName(agent, true),
+							"client_key": ownRouterKey(agent, true),
 						},
 					}})
 				case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
@@ -712,8 +714,8 @@ func TestOwnAgentRouterUsesManagedRouterAfterOptOut(t *testing.T) {
 			if got := created["name"]; got != ownRouterName(agent, false) {
 				t.Errorf("name = %#v", got)
 			}
-			if got, ok := created["subscription_providers"].([]any); !ok || len(got) != 0 {
-				t.Errorf("subscription_providers = %#v, want []", created["subscription_providers"])
+			if got := planModels(created); len(got) != 0 {
+				t.Errorf("plan models = %q, want none", got)
 			}
 		})
 	}
@@ -727,10 +729,9 @@ func TestEnsureClaudeAgentRouterAvoidsPersonalRouterWithoutCredentialsOnEOF(t *t
 			_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{
 				{"id": "rtr_default", "name": "Default", "is_default": true},
 				{
-					"id":                     "rtr_claude",
-					"name":                   ownRouterName("claude", true),
-					"client_key":             ownRouterKey("claude", true),
-					"subscription_providers": []string{"anthropic"},
+					"id":         "rtr_claude",
+					"name":       ownRouterName("claude", true),
+					"client_key": ownRouterKey("claude", true),
 				},
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
@@ -849,14 +850,14 @@ func TestEnsureClaudeAgentRouterRequiresSubscriptionAfterRename(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{
 				{"id": "rtr_default", "name": "Default", "is_default": true},
 				{
-					"id":                     "rtr_claude",
-					"name":                   "Renamed by user",
-					"client_key":             ownRouterKey("claude", true),
-					"coding_agents":          []string{"claude_code"},
-					"enabled_models":         []string{"anthropic/claude-fable-5", "openai/gpt-5.6-sol"},
-					"model_providers":        map[string]string{"anthropic/claude-fable-5": "anthropic", "openai/gpt-5.6-sol": "openai"},
-					"model_thinking_levels":  map[string][]string{"anthropic/claude-fable-5": {"high"}, "openai/gpt-5.6-sol": {"medium"}},
-					"subscription_providers": []string{"openai"},
+					"id":                    "rtr_claude",
+					"name":                  "Renamed by user",
+					"client_key":            ownRouterKey("claude", true),
+					"coding_agents":         []string{"claude_code"},
+					"enabled_models":        []string{"anthropic/claude-fable-5", "openai/gpt-5.6-sol"},
+					"model_providers":       map[string]string{"anthropic/claude-fable-5": "anthropic", "openai/gpt-5.6-sol": "openai"},
+					"model_thinking_levels": map[string][]string{"anthropic/claude-fable-5": {"high"}, "openai/gpt-5.6-sol": {"medium"}},
+					"model_sources":         map[string][]string{"anthropic/claude-fable-5": {"managed"}, "openai/gpt-5.6-sol": {"plan", "key"}},
 				},
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
@@ -890,12 +891,10 @@ func TestEnsureClaudeAgentRouterRequiresSubscriptionAfterRename(t *testing.T) {
 	}
 	// Claude Code adds its own provider and leaves the router's other
 	// subscriptions and API fallback models alone.
-	if got := stringSlice(updated["subscription_providers"]); !slices.Equal(got, []string{"openai", "anthropic"}) {
-		t.Errorf("subscription_providers = %q", got)
+	if want := map[string][]string{"anthropic/claude-fable-5": {"plan"}, "openai/gpt-5.6-sol": {"plan", "key"}}; !maps.EqualFunc(modelSources(updated), want, slices.Equal) {
+		t.Errorf("model_sources = %v, want %v", modelSources(updated), want)
 	}
-	if _, ok := updated["subscription_api_fallback_models"]; ok {
-		t.Errorf("update must keep the router's API fallback models: %#v", updated["subscription_api_fallback_models"])
-	}
+
 	if got := updated["name"]; got != "Renamed by user" {
 		t.Errorf("name = %#v", got)
 	}
@@ -912,11 +911,10 @@ func TestEnsureClaudeAgentRouterSkipsUpdateForCompliantRouter(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{
 				{"id": "rtr_default", "name": "Default", "is_default": true},
 				{
-					"id":                     "rtr_claude",
-					"name":                   "Renamed by user",
-					"client_key":             ownRouterKey("claude", true),
-					"coding_agents":          []string{"claude_code"},
-					"subscription_providers": []string{"anthropic"},
+					"id":            "rtr_claude",
+					"name":          "Renamed by user",
+					"client_key":    ownRouterKey("claude", true),
+					"coding_agents": []string{"claude_code"},
 				},
 			}})
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/credentials":
@@ -985,7 +983,7 @@ func TestEnsureClaudeAgentRouterRecoversFromConcurrentCreate(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&updated); err != nil {
 				t.Error(err)
 			}
-			subscriptionUpdated = slices.Equal(stringSlice(updated["subscription_providers"]), []string{"anthropic"})
+			subscriptionUpdated = len(planModels(updated)) > 0
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_other_computer"})
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -1712,8 +1710,8 @@ func TestMuseCodeRouterServesThePlan(t *testing.T) {
 			if routerID != "rtr_muse" || created["client_key"] != "dari-cli:muse-code" || created["name"] != "Dari Muse Code" {
 				t.Fatalf("router %q created as %v (%v)", routerID, created["name"], created["client_key"])
 			}
-			if got := stringSlice(created["subscription_providers"]); !slices.Equal(got, []string{"meta"}) {
-				t.Fatalf("subscription_providers = %q, want [meta]", got)
+			if got := planModels(created); len(got) == 0 {
+				t.Fatalf("plan models = %q, want the Meta models", got)
 			}
 		})
 	}
@@ -1757,12 +1755,9 @@ func TestClaudeCodeRouterServesChatGPTAlongsideClaudeCode(t *testing.T) {
 	if body.Name != "Dari Claude Code" || body.ClientKey != "dari-cli:claude-code" {
 		t.Errorf("router = %q (%q)", body.Name, body.ClientKey)
 	}
-	if want := []string{"anthropic", "openai"}; !slices.Equal(body.SubscriptionProviders, want) {
-		t.Errorf("subscription_providers = %v, want %v", body.SubscriptionProviders, want)
-	}
 	managed := agentRouterCreateBody(agentSetups["codex"], models, choices, nil)
-	if managed.Name != "Dari Codex (Managed)" || managed.ClientKey != "dari-cli:codex-managed" || len(managed.SubscriptionProviders) != 0 {
-		t.Errorf("managed router = %q (%q) %v", managed.Name, managed.ClientKey, managed.SubscriptionProviders)
+	if managed.Name != "Dari Codex (Managed)" || managed.ClientKey != "dari-cli:codex-managed" {
+		t.Errorf("managed router = %q (%q)", managed.Name, managed.ClientKey)
 	}
 }
 
@@ -1817,14 +1812,10 @@ func TestAgentPickerPaymentIsChosenPerModel(t *testing.T) {
 	if choices[0].Source.kind != "managed" || choices[1].Source.kind != "subscription" {
 		t.Fatalf("Opus should be on credits and Sonnet still on the subscription: %+v", choices)
 	}
-	// The router is told which models the subscription serves.
-	keys := agentKeyContext{}.keys(choices)
-	if !slices.Equal(keys.subscriptionProviders, []string{"anthropic"}) || !slices.Equal(keys.subscriptionModels, []string{"anthropic/sonnet"}) {
-		t.Fatalf("providers %q models %q", keys.subscriptionProviders, keys.subscriptionModels)
-	}
-	// All of a provider's models on its subscription name no models.
-	if keys := (agentKeyContext{}).keys([]agentModelChoice{{ID: "anthropic/opus", Source: anthropic[0]}, {ID: "anthropic/sonnet", Source: anthropic[0]}}); keys.subscriptionModels != nil {
-		t.Fatalf("subscription models = %q, want none", keys.subscriptionModels)
+	// The router is told where each model is served from.
+	keys := agentKeyContext{subscriptions: map[string]string{"anthropic": "Claude Code"}}.keys(choices)
+	if want := map[string][]string{"anthropic/opus": {"managed"}, "anthropic/sonnet": {"plan"}}; !maps.EqualFunc(keys.sources, want, slices.Equal) {
+		t.Fatalf("sources = %v, want %v", keys.sources, want)
 	}
 }
 
@@ -1922,7 +1913,7 @@ func TestAccountsKeyRefusesAnEmptyKey(t *testing.T) {
 	}
 }
 
-func TestSubscriptionModelsForARouterUpdate(t *testing.T) {
+func TestModelSourcesForARouterUpdate(t *testing.T) {
 	sub := func(provider string) agentModelSource {
 		return agentModelSource{kind: "subscription", provider: provider, modelProvider: provider}
 	}
@@ -1930,44 +1921,33 @@ func TestSubscriptionModelsForARouterUpdate(t *testing.T) {
 		return agentModelSource{kind: "managed", provider: provider, modelProvider: provider}
 	}
 	router := agentRouter{
-		SubscriptionProviders: []string{"anthropic", "openai"},
-		SubscriptionModels:    []string{"anthropic/opus", "anthropic/sonnet", "openai/sol"},
+		EnabledModels:  []string{"anthropic/opus", "anthropic/sonnet", "openai/sol"},
+		ModelProviders: map[string]string{"anthropic/opus": "anthropic", "anthropic/sonnet": "anthropic", "openai/sol": "openai", "openai/new": "openai", "fireworks/glm": "fireworks"},
+		ModelSources:   map[string][]string{"anthropic/opus": {"plan", "key"}, "anthropic/sonnet": {"plan"}, "openai/sol": {"plan"}},
 	}
+	keyContext := agentKeyContext{subscriptions: map[string]string{"anthropic": "Claude Code"}}
 	choices := []agentModelChoice{
 		{ID: "anthropic/opus", Source: sub("anthropic")},
 		{ID: "anthropic/sonnet", Source: credits("anthropic")},
-		// The picker offered no ChatGPT subscription, so Sol stays as the router has it.
+		// The picker offered no ChatGPT plan, so Sol stays as the router has it.
 		{ID: "openai/sol", Source: credits("openai")},
+		// New models: on the plan when their provider is served from one.
+		{ID: "openai/new", Source: credits("openai")},
+		{ID: "fireworks/glm", Source: credits("fireworks")},
+		// A model moved to a gateway key runs on that key.
+		{ID: "anthropic/haiku", Source: agentModelSource{kind: "key", provider: "vercel-ai-gateway", modelProvider: "anthropic"}},
 	}
-	got := subscriptionModelsFor(router, choices, map[string]string{"anthropic": "Claude Code"})
-	if got == nil || !slices.Equal(*got, []string{"anthropic/opus", "openai/sol"}) {
-		t.Fatalf("served = %v", got)
+	got := keyContext.keys(choices).modelSources(router, choiceIDs(choices), router.ModelProviders)
+	want := map[string][]string{
+		"anthropic/opus":   {"plan", "key"},
+		"anthropic/sonnet": {"managed"},
+		"openai/sol":       {"plan"},
+		"openai/new":       {"plan"},
+		"fireworks/glm":    {"managed"},
+		"anthropic/haiku":  {"key"},
 	}
-	// A model moved to a gateway key leaves the list: the gateway is not a
-	// subscription provider, so the router would refuse it there.
-	gateway := agentModelSource{kind: "key", provider: "vercel-ai-gateway", modelProvider: "anthropic"}
-	moved := subscriptionModelsFor(
-		agentRouter{SubscriptionProviders: []string{"anthropic", "opencode-go"}, SubscriptionModels: []string{"anthropic/opus", "deepseek/flash"}},
-		[]agentModelChoice{{ID: "anthropic/opus", Source: gateway}, {ID: "deepseek/flash", Source: sub("opencode-go")}},
-		map[string]string{"opencode-go": "OpenCode Go"},
-	)
-	if moved == nil || !slices.Equal(*moved, []string{"deepseek/flash"}) {
-		t.Fatalf("moved = %v", moved)
-	}
-	// Every offered model moved off the subscription: an empty list, not nil.
-	none := subscriptionModelsFor(agentRouter{SubscriptionProviders: []string{"anthropic"}}, []agentModelChoice{{ID: "anthropic/opus", Source: credits("anthropic")}}, map[string]string{"anthropic": "Claude Code"})
-	if none == nil || len(*none) != 0 {
-		t.Fatalf("none = %v", none)
-	}
-	// The picker offered none of the router's subscriptions: leave the router's choice alone.
-	if kept := subscriptionModelsFor(router, choices, map[string]string{}); kept != nil {
-		t.Fatalf("kept = %v", *kept)
-	}
-	// An empty list is sent as [], and nil is left out.
-	sent, _ := json.Marshal(agentRouterUpdateRequest{SubscriptionModels: none})
-	omitted, _ := json.Marshal(agentRouterUpdateRequest{})
-	if !strings.Contains(string(sent), `"subscription_models":[]`) || strings.Contains(string(omitted), "subscription_models") {
-		t.Fatalf("sent %s omitted %s", sent, omitted)
+	if !maps.EqualFunc(got, want, slices.Equal) {
+		t.Fatalf("sources = %v, want %v", got, want)
 	}
 }
 
@@ -1988,4 +1968,26 @@ func TestPaymentRowsWrapToThePage(t *testing.T) {
 	if !strings.Contains(plain, "+ Connect Claude Code") {
 		t.Fatalf("a choice was lost:\n%s", plain)
 	}
+}
+
+// modelSources reads a router request's model_sources.
+func modelSources(body map[string]any) map[string][]string {
+	out := map[string][]string{}
+	sources, _ := body["model_sources"].(map[string]any)
+	for model, list := range sources {
+		out[model] = stringSlice(list)
+	}
+	return out
+}
+
+// planModels are the models a router request serves from a plan, sorted.
+func planModels(body map[string]any) []string {
+	var models []string
+	for model, sources := range modelSources(body) {
+		if slices.Contains(sources, "plan") {
+			models = append(models, model)
+		}
+	}
+	slices.Sort(models)
+	return models
 }

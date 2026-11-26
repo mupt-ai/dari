@@ -1,3 +1,4 @@
+import { DEFAULT_RESET_MIN_HOURS, type Source } from "../models/sources.js";
 import {
   isRecord,
   type CandidateCostEstimate,
@@ -79,6 +80,10 @@ export type ProviderExecution = ProviderCallConfig & {
   subscriptionCredentialId?: string;
   // The Dari Link grant whose subscriptions alone may serve this call.
   subscriptionLinkGrantId?: string;
+  // The model's sources and the router's reset threshold, carried onto the
+  // hold when the plan hits its limit.
+  subscriptionSources?: Source[];
+  subscriptionResetMinHours?: number;
   // The thinking the provider was sent, as X-Dari-Thinking-Level reports it.
   thinkingLevel: string;
   usageContext: RoutingUsageContext | undefined;
@@ -134,16 +139,6 @@ export function prepareProviderExecution(args: {
   const thinkingLevel: string = args.clientThinking ?? args.decision.reasoningEffort;
   const supplied = args.credentials.provider_credentials?.[model];
   const providerKeySource = keySourceForModel(args.credentials, model);
-  // A strict router serves a plan only when the platform supplied it for this
-  // request, never a pooled or personal one it resolved.
-  if (args.credentials.strict === true && providerKeySource === "subscription" && !supplied) {
-    throw new HttpError(
-      400,
-      `Strict routers do not serve '${model}' from a personal subscription.`,
-      "strict_subscription_refused",
-      "model",
-    );
-  }
   const auth: ProviderAuth = supplied
     ? { type: "bearer", apiKey: supplied.apiKey.trim() }
     : providerAuthForSelectedModel({ selectedModel: model, credentials: args.credentials });
@@ -175,6 +170,8 @@ export function prepareProviderExecution(args: {
       ? {
           subscriptionUserId: args.credentials.attributed_user_id,
           subscriptionCredentialId: supplied?.credentialId,
+          subscriptionSources: args.credentials.model_sources?.[model] ?? [],
+          subscriptionResetMinHours: args.credentials.reset_min_hours ?? DEFAULT_RESET_MIN_HOURS,
           ...(args.credentials.link_grant_id ? { subscriptionLinkGrantId: args.credentials.link_grant_id } : {}),
         }
       : {}),

@@ -37,16 +37,6 @@ test("requires stored provider authentication for the selected model", () => {
       ),
     }),
   ).toThrow("No stored Anthropic provider credential is configured for this router.");
-  expect(() =>
-    providerAuthForSelectedModel({
-      selectedModel: "openai/gpt-4.1-mini",
-      credentials: credentials(
-        "openai/gpt-4.1-mini",
-        {},
-        { openai: "managed" },
-      ),
-    }),
-  ).toThrow("No Dari-managed OpenAI provider credential is configured for this router.");
 });
 
 test("uses request-scoped SigV4 authentication for Amazon Bedrock", () => {

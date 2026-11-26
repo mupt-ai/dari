@@ -16,17 +16,17 @@ export function executionProviderForModel(
 }
 
 /**
- * The key that serves a model on a resolved router: a platform-supplied
- * credential first, then the resolved provider key. Missing declarations are
- * user-owned so unknown platform data cannot trigger managed-key billing.
+ * Who pays for the key that serves a model: a supplied plan, Dari's managed
+ * key (billed to credits), or otherwise the router's own saved key.
  */
 export function keySourceForModel(
   credentials: ResolvedRouter,
   model: string,
 ): ProviderKeySource {
   const supplied = credentials.provider_credentials?.[model];
-  if (supplied) return supplied.subscription ? "subscription" : "user";
-  return credentials.provider_key_sources?.[executionProviderForModel(credentials, model)] ?? "user";
+  if (supplied?.subscription) return "subscription";
+  if (supplied?.managed) return "managed";
+  return "user";
 }
 
 /**

@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -124,17 +125,15 @@ type routerCreateRequest struct {
 	EnabledModels         []string          `json:"enabled_models"`
 	ProviderKeys          map[string]string `json:"provider_keys,omitempty"`
 	ProviderCredentialIDs map[string]string `json:"provider_credential_ids,omitempty"`
-	ProviderKeySources    map[string]string `json:"provider_key_sources,omitempty"`
 	RoutingStrategy       string            `json:"routing_strategy"`
 	RoleModels            *routerRoles      `json:"role_models,omitempty"`
 	RolePrompts           *routerRoles      `json:"role_prompts,omitempty"`
-	// Providers whose models try the attributed user's plans first, and the
-	// models that keep running on the provider's API credential when no plan can.
-	SubscriptionProviders         []string `json:"subscription_providers,omitempty"`
-	SubscriptionAPIFallbackModels []string `json:"subscription_api_fallback_models,omitempty"`
-	// Models the subscription serves; the providers' other models run on their
-	// API credential. Omitted: every model of a subscription provider.
-	SubscriptionModels []string `json:"subscription_models,omitempty"`
+	// Where each model is served from, in order: "plan" (the attributed
+	// user's subscriptions), "reset" (a banked reset), "key" (the router's
+	// saved key for the provider), "managed" (Dari's key, billed to credits).
+	ModelSources map[string][]string `json:"model_sources,omitempty"`
+	// Spend a banked reset only when a plan would be out this many hours.
+	ResetMinHours *int `json:"reset_min_hours,omitempty"`
 }
 
 type routerUpdateRequest struct {
@@ -146,14 +145,12 @@ type routerUpdateRequest struct {
 	EnabledModels         []string          `json:"enabled_models"`
 	ProviderKeys          map[string]string `json:"provider_keys,omitempty"`
 	ProviderCredentialIDs map[string]string `json:"provider_credential_ids,omitempty"`
-	ProviderKeySources    map[string]string `json:"provider_key_sources,omitempty"`
 	// Omitted keeps the current role models; an object replaces both roles.
 	RoleModels  *routerRoles `json:"role_models,omitempty"`
 	RolePrompts *routerRoles `json:"role_prompts,omitempty"`
-	// Omitted keeps the current list; an empty list clears it.
-	SubscriptionProviders         *[]string `json:"subscription_providers,omitempty"`
-	SubscriptionAPIFallbackModels *[]string `json:"subscription_api_fallback_models,omitempty"`
-	SubscriptionModels            *[]string `json:"subscription_models,omitempty"`
+	// Omitted keeps each model's sources; a listed model gets the given list.
+	ModelSources  map[string][]string `json:"model_sources,omitempty"`
+	ResetMinHours *int                `json:"reset_min_hours,omitempty"`
 }
 
 type routerCurrent struct {
@@ -164,23 +161,22 @@ type routerCurrent struct {
 }
 
 type routerConfigFlags struct {
-	allowLongContext      bool
-	evalScoreImputation   bool
-	sessionPinning        bool
-	nativeCompaction      bool
-	models                []string
-	subscriptionProviders []string
-	apiFallbackModels     []string
-	subscriptionModels    []string
-	providerKeyPairs      []string
-	providerKeyEnvs       []string
-	providerCredentials   []string
-	managedKeyProvider    []string
-	mainModel             string
-	subagentModel         string
-	mainPrompt            string
-	subagentPrompt        string
-	flagNames             []string
+	allowLongContext    bool
+	evalScoreImputation bool
+	sessionPinning      bool
+	nativeCompaction    bool
+	models              []string
+	modelSources        []string
+	resetMinHours       int
+	providerKeyPairs    []string
+	providerKeyEnvs     []string
+	providerCredentials []string
+	managedKeyProvider  []string
+	mainModel           string
+	subagentModel       string
+	mainPrompt          string
+	subagentPrompt      string
+	flagNames           []string
 }
 
 func (rf *routerConfigFlags) register(cmd *cobra.Command) {
@@ -194,7 +190,7 @@ func (rf *routerConfigFlags) register(cmd *cobra.Command) {
 	cmd.Flags().StringArrayVar(&rf.providerKeyPairs, name("provider-key"), nil, "Provider API key as provider=KEY, e.g. fireworks=sk-... (repeatable)")
 	cmd.Flags().StringArrayVar(&rf.providerKeyEnvs, name("provider-key-env"), nil, "Read a provider API key from the local environment as provider=ENV_VAR (repeatable)")
 	cmd.Flags().StringArrayVar(&rf.providerCredentials, name("provider-credential"), nil, "Use a saved provider credential as provider=CREDENTIAL_ID (repeatable)")
-	cmd.Flags().StringSliceVar(&rf.managedKeyProvider, name("managed-key"), nil, "Use the Dari-managed key for this provider (repeatable or comma-separated)")
+	cmd.Flags().StringSliceVar(&rf.managedKeyProvider, name("managed-key"), nil, "Serve this provider's models from Dari's managed key, billed to credits; ignored with --sources (repeatable or comma-separated)")
 	cmd.Flags().StringVar(&rf.mainModel, name("main-model"), "", "Serve the main agent this enabled model instead of routing it; on update an empty value routes it again")
 	cmd.Flags().StringVar(&rf.subagentModel, name("subagent-model"), "", "Serve subagents this enabled model instead of routing them; on update an empty value routes them again")
 	cmd.Flags().StringVar(&rf.mainPrompt, name("main-prompt"), "", "Append this text to the main agent's system prompt, e.g. to nudge it to delegate; on update an empty value removes it")
@@ -203,42 +199,102 @@ func (rf *routerConfigFlags) register(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&rf.evalScoreImputation, name("eval-score-imputation"), true, "Estimate missing eval scores for a model and thinking level from related measured scores (on by default)")
 	cmd.Flags().BoolVar(&rf.sessionPinning, name("session-pinning"), false, "Route once when a session starts and keep that model for the whole session; each subagent is routed once when it starts (off by default)")
 	cmd.Flags().BoolVar(&rf.nativeCompaction, name("native-compaction"), false, "Let Codex compact context server-side with the provider's native compaction; requests carrying compaction state are routed only to models that support it (off by default)")
-	cmd.Flags().StringSliceVar(&rf.subscriptionProviders, name("subscription"), nil, "Serve this provider's models from the attributed user's personal subscriptions first: every plan that offers a model, the maker's plan first (repeatable or comma-separated). The provider's --provider-credential or --managed-key choice becomes its API fallback credential. On update this replaces the list; an empty value clears it")
-	cmd.Flags().StringSliceVar(&rf.subscriptionModels, name("subscription-model"), nil, "Serve only this model of a --subscription provider from the subscription; the provider's other models run on its API credential (repeatable or comma-separated). Without it the subscription serves all of them. On update this replaces the list")
-	cmd.Flags().StringSliceVar(&rf.apiFallbackModels, name("api-fallback"), nil, "Keep this subscription model running on the provider's API credential when none of the user's plans can serve it; models without it pause until a plan is back (repeatable or comma-separated). On update this replaces the list; an empty value clears it")
+	cmd.Flags().StringArrayVar(&rf.modelSources, name("sources"), nil, "Where a model is served from, in order, as MODEL=plan,reset,key,managed: plan is the attributed user's subscriptions, reset spends a banked reset when they are out (right after plan), key the router's saved key for the provider, managed Dari's key billed to credits; an empty list serves it from none (repeatable)")
+	cmd.Flags().IntVar(&rf.resetMinHours, name("reset-min-hours"), 24, "Spend a banked reset only when the plan would otherwise be out at least this many hours, or the reset would expire first (default 24)")
 }
 
-// subscriptionSettings returns the subscription lists, nil when their flag
-// was not passed so update keeps the router's current list.
-func (rf *routerConfigFlags) subscriptionSettings(cmd *cobra.Command) (providers, apiFallbackModels, subscriptionModels *[]string) {
-	if cmd.Flags().Changed("subscription") {
-		cleaned := []string{}
-		for _, provider := range rf.subscriptionProviders {
-			provider = strings.ToLower(strings.TrimSpace(provider))
-			if provider == "" {
+// sources parses --sources, nil when it was not passed.
+func (rf *routerConfigFlags) sources(cmd *cobra.Command) (map[string][]string, error) {
+	if !cmd.Flags().Changed("sources") {
+		return nil, nil
+	}
+	return parseModelSources(rf.modelSources)
+}
+
+// resetMinHours is --reset-min-hours, nil when it was not passed.
+func (rf *routerConfigFlags) resetHours(cmd *cobra.Command) (*int, error) {
+	if !cmd.Flags().Changed("reset-min-hours") {
+		return nil, nil
+	}
+	if rf.resetMinHours < 0 {
+		return nil, fmt.Errorf("--reset-min-hours must be 0 or more")
+	}
+	return &rf.resetMinHours, nil
+}
+
+// keyedModelSources is the sources the key flags imply: models of a provider
+// given a saved or inline key get ["key"], of one given --managed-key
+// ["managed"], and, when withPlan, the rest ["plan"]; otherwise the rest are
+// left out so they keep their sources.
+func keyedModelSources(cmd *cobra.Command, gf *globalFlags, models, keyed, managed []string, withPlan bool) (map[string][]string, error) {
+	var catalog agentModelCatalog
+	if err := orgKeyRequest(cmd, gf, http.MethodGet, "/v1/organizations/current/routers/model-catalog", nil, &catalog); err != nil {
+		return nil, err
+	}
+	providers := map[string]string{}
+	for _, group := range catalog.Groups {
+		for _, model := range group.Models {
+			if _, seen := providers[model.ID]; !seen || model.DefaultProvider == group.Provider {
+				providers[model.ID] = group.Provider
+			}
+		}
+	}
+	out := map[string][]string{}
+	for _, model := range models {
+		provider, listed := providers[model]
+		if !listed {
+			// A model the catalog doesn't list is named by its provider.
+			provider, _, _ = strings.Cut(model, "/")
+		}
+		var sources []string
+		if slices.Contains(keyed, provider) {
+			sources = append(sources, "key")
+		}
+		if slices.Contains(managed, provider) {
+			sources = append(sources, "managed")
+		}
+		if sources == nil && withPlan {
+			sources = []string{"plan"}
+		}
+		if sources != nil {
+			out[model] = sources
+		}
+	}
+	return out, nil
+}
+
+// parseModelSources reads MODEL=plan,reset,key,managed pairs.
+func parseModelSources(pairs []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, pair := range pairs {
+		model, list, ok := strings.Cut(pair, "=")
+		model = strings.TrimSpace(model)
+		if !ok || model == "" {
+			return nil, fmt.Errorf("--sources %q must be MODEL=plan,reset,key,managed", pair)
+		}
+		if _, dup := out[model]; dup {
+			return nil, fmt.Errorf("--sources names model %s more than once", model)
+		}
+		sources := []string{}
+		for _, source := range strings.Split(list, ",") {
+			source = strings.ToLower(strings.TrimSpace(source))
+			if source == "" {
 				continue
 			}
-			cleaned = append(cleaned, provider)
+			if !slices.Contains([]string{"plan", "reset", "key", "managed"}, source) {
+				return nil, fmt.Errorf("--sources for %s: unknown source %q; use plan, reset, key, or managed", model, source)
+			}
+			if slices.Contains(sources, source) {
+				return nil, fmt.Errorf("--sources for %s: source %s is listed twice", model, source)
+			}
+			sources = append(sources, source)
 		}
-		providers = &cleaned
-	}
-	if cmd.Flags().Changed("api-fallback") {
-		apiFallbackModels = cleanModelFlag(rf.apiFallbackModels)
-	}
-	if cmd.Flags().Changed("subscription-model") {
-		subscriptionModels = cleanModelFlag(rf.subscriptionModels)
-	}
-	return providers, apiFallbackModels, subscriptionModels
-}
-
-func cleanModelFlag(models []string) *[]string {
-	cleaned := []string{}
-	for _, model := range models {
-		if model = strings.TrimSpace(model); model != "" {
-			cleaned = append(cleaned, model)
+		if i := slices.Index(sources, "reset"); i != -1 && (i == 0 || sources[i-1] != "plan") {
+			return nil, fmt.Errorf("--sources for %s: source reset must come right after plan", model)
 		}
+		out[model] = sources
 	}
-	return &cleaned
+	return out, nil
 }
 
 // roleModels and rolePrompts apply the role flags passed over current, or
@@ -300,15 +356,15 @@ func (rf *routerConfigFlags) providerKeys(stderr io.Writer) (map[string]string, 
 	return keys, nil
 }
 
-func (rf *routerConfigFlags) providerKeySources() map[string]string {
-	if len(rf.managedKeyProvider) == 0 {
-		return nil
-	}
-	sources := map[string]string{}
+// managedProviders are the providers named by --managed-key.
+func (rf *routerConfigFlags) managedProviders() []string {
+	var providers []string
 	for _, provider := range rf.managedKeyProvider {
-		sources[strings.ToLower(strings.TrimSpace(provider))] = "managed"
+		if provider = strings.ToLower(strings.TrimSpace(provider)); provider != "" {
+			providers = append(providers, provider)
+		}
 	}
-	return sources
+	return providers
 }
 
 func (rf *routerConfigFlags) providerCredentialIDs() (map[string]string, error) {
@@ -354,15 +410,13 @@ func newRouterCreateCmd(gf *globalFlags) *cobra.Command {
 			if cmd.Flags().Changed("eval-score-imputation") {
 				body.EvalScoreImputation = &rf.evalScoreImputation
 			}
-			subscriptionProviders, apiFallbackModels, subscriptionModels := rf.subscriptionSettings(cmd)
-			if subscriptionModels != nil {
-				body.SubscriptionModels = *subscriptionModels
+			modelSources, err := rf.sources(cmd)
+			if err != nil {
+				return err
 			}
-			if subscriptionProviders != nil {
-				body.SubscriptionProviders = *subscriptionProviders
-			}
-			if apiFallbackModels != nil {
-				body.SubscriptionAPIFallbackModels = *apiFallbackModels
+			body.ModelSources = modelSources
+			if body.ResetMinHours, err = rf.resetHours(cmd); err != nil {
+				return err
 			}
 			keys, err := rf.providerKeys(cmd.ErrOrStderr())
 			if err != nil {
@@ -378,12 +432,15 @@ func newRouterCreateCmd(gf *globalFlags) *cobra.Command {
 			if len(credentialIDs) > 0 {
 				body.ProviderCredentialIDs = credentialIDs
 			}
-			sources := rf.providerKeySources()
-			if err := validateProviderCredentialSelections(keys, credentialIDs, sources); err != nil {
+			if err := validateProviderCredentialSelections(keys, credentialIDs); err != nil {
 				return err
 			}
-			if sources != nil {
-				body.ProviderKeySources = sources
+			managed := rf.managedProviders()
+			if body.ModelSources == nil && (len(keys) > 0 || len(credentialIDs) > 0 || len(managed) > 0) {
+				keyed := slices.Concat(slices.Collect(maps.Keys(keys)), slices.Collect(maps.Keys(credentialIDs)))
+				if body.ModelSources, err = keyedModelSources(cmd, gf, rf.models, keyed, managed, true); err != nil {
+					return err
+				}
 			}
 			var resp map[string]any
 			if err := orgKeyRequest(cmd, gf, http.MethodPost, "/v1/organizations/current/routers", body, &resp); err != nil {
@@ -428,7 +485,12 @@ func newRouterUpdateCmd(gf *globalFlags) *cobra.Command {
 			if cmd.Flags().Changed("native-compaction") {
 				body.NativeCompaction = &rf.nativeCompaction
 			}
-			body.SubscriptionProviders, body.SubscriptionAPIFallbackModels, body.SubscriptionModels = rf.subscriptionSettings(cmd)
+			if body.ModelSources, err = rf.sources(cmd); err != nil {
+				return err
+			}
+			if body.ResetMinHours, err = rf.resetHours(cmd); err != nil {
+				return err
+			}
 			if cmd.Flags().Changed("name") {
 				body.Name = strings.TrimSpace(name)
 			}
@@ -449,12 +511,15 @@ func newRouterUpdateCmd(gf *globalFlags) *cobra.Command {
 			if len(credentialIDs) > 0 {
 				body.ProviderCredentialIDs = credentialIDs
 			}
-			sources := rf.providerKeySources()
-			if err := validateProviderCredentialSelections(keys, credentialIDs, sources); err != nil {
+			if err := validateProviderCredentialSelections(keys, credentialIDs); err != nil {
 				return err
 			}
-			if sources != nil {
-				body.ProviderKeySources = sources
+			// --managed-key without --sources moves that provider's models
+			// onto Dari's managed key.
+			if managed := rf.managedProviders(); body.ModelSources == nil && len(managed) > 0 {
+				if body.ModelSources, err = keyedModelSources(cmd, gf, body.EnabledModels, nil, managed, false); err != nil {
+					return err
+				}
 			}
 			body.RoleModels = rf.roleModels(cmd, current.RoleModels)
 			body.RolePrompts = rf.rolePrompts(cmd, current.RolePrompts)
@@ -470,13 +535,10 @@ func newRouterUpdateCmd(gf *globalFlags) *cobra.Command {
 	return cmd
 }
 
-func validateProviderCredentialSelections(keys, credentialIDs, sources map[string]string) error {
+func validateProviderCredentialSelections(keys, credentialIDs map[string]string) error {
 	for provider := range credentialIDs {
 		if strings.TrimSpace(keys[provider]) != "" {
 			return fmt.Errorf("provider %s cannot use both --provider-credential and an inline provider key", provider)
-		}
-		if sources[provider] == "managed" {
-			return fmt.Errorf("provider %s cannot use both --provider-credential and --managed-key", provider)
 		}
 	}
 	return nil

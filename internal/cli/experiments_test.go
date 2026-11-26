@@ -112,12 +112,12 @@ func TestExperimentRelaunchKeepsTheCopysPayment(t *testing.T) {
 				case r.Method == http.MethodGet && r.URL.Path == "/v1/organizations/current/routers":
 					_ = json.NewEncoder(w).Encode(map[string]any{"routers": []map[string]any{{
 						"id": "rtr_copy", "client_key": "dari-experiment:deepseek-subagent", "enabled_models": []string{"openai/gpt"},
-						"model_providers": map[string]string{"openai/gpt": "openai"}, "provider_key_sources": map[string]string{"openai": "user"},
+						"model_providers": map[string]string{"openai/gpt": "openai"}, "model_sources": map[string][]string{"openai/gpt": {"key"}},
 					}}})
 				case strings.HasSuffix(r.URL.Path, "/apply"):
 					// The sync resets the payment to Dari Credits.
 					_ = json.NewEncoder(w).Encode(map[string]any{"id": "rtr_copy", "coding_agents": []string{}, "enabled_models": []string{"openai/gpt"},
-						"model_providers": map[string]string{"openai/gpt": "openai"}, "provider_key_sources": map[string]string{"openai": "managed"}})
+						"model_providers": map[string]string{"openai/gpt": "openai"}, "model_sources": map[string][]string{"openai/gpt": {"managed"}}})
 				case r.URL.Path == "/v1/organizations/current/routers/model-catalog":
 					_ = json.NewEncoder(w).Encode(map[string]any{"groups": []map[string]any{{
 						"provider": "openai", "provider_label": "OpenAI", "supports_managed_key": true,
@@ -196,8 +196,7 @@ func TestExperimentPaysThroughTheTemplatesProvider(t *testing.T) {
 	var put map[string]any
 	copyRouter := map[string]any{
 		"id": "rtr_copy", "client_key": "dari-experiment:flash", "coding_agents": []string{}, "enabled_models": []string{"deepseek/flash"},
-		"model_providers": map[string]string{"deepseek/flash": "opencode-go"}, "subscription_providers": []string{"opencode-go"},
-		"subscription_models": []string{"deepseek/flash"},
+		"model_providers": map[string]string{"deepseek/flash": "opencode-go"}, "model_sources": map[string][]string{"deepseek/flash": {"plan"}},
 	}
 	server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -225,8 +224,8 @@ func TestExperimentPaysThroughTheTemplatesProvider(t *testing.T) {
 	if _, err := applyAgentExperiment(context.Background(), client, "claude", experiment, strings.NewReader(""), io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if sources, _ := put["provider_key_sources"].(map[string]any); len(sources) != 0 {
-		t.Fatalf("provider_key_sources = %v", sources)
+	if _, sent := put["provider_key_sources"]; sent {
+		t.Fatalf("provider_key_sources sent: %v", put)
 	}
 }
 

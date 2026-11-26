@@ -18,7 +18,7 @@ import {
 } from "@mupt-ai/dari-router/policy-engine";
 import type { ImageCapabilityPrunedModel } from "../context/routing_context.js";
 import { HttpError, errorCode } from "../http/errors.js";
-import { executionProviderForModel } from "../models/execution_provider.js";
+import { executionProviderForModel, keySourceForModel } from "../models/execution_provider.js";
 import {
   isBackgroundRequest,
   type InteractionOutput,
@@ -396,8 +396,8 @@ export class RequestReporter {
       const selectedProvider = outcome.providerExecution?.provider ?? (selectedModel
         ? executionProviderForModel(a.credentials, selectedModel)
         : null);
-      const keySource = outcome.providerExecution?.providerKeySource ?? (selectedModel && selectedProvider
-        ? (a.credentials.provider_key_sources?.[selectedProvider] ?? "user")
+      const keySource = outcome.providerExecution?.providerKeySource ?? (selectedModel
+        ? keySourceForModel(a.credentials, selectedModel)
         : null);
       const selectedEstimate = a.costEstimates.find(
         (item) =>

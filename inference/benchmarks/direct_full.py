@@ -4,8 +4,8 @@ import argparse
 import runpy
 import sys
 
-from inkling import inkling_model
-from inkling.combined_candidate import DirectModel
+from dari_engine.engines.inkling import inkling_model
+from dari_engine.engines.inkling.combined_candidate import DirectModel
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)

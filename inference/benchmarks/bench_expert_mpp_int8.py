@@ -7,7 +7,7 @@ import mlx.core as mx
 
 from benchmarks.bench_expert_real import E, K, N, compute, dense, idx, n, x
 from experiments.shaders import load_shader
-from inkling.inkling_moe import activate
+from dari_engine.engines.inkling.inkling_moe import activate
 
 kernel = mx.fast.metal_kernel(
     name="inkling_i8_mpp_activation",

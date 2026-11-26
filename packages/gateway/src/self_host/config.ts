@@ -74,6 +74,8 @@ export type ProviderEndpointConfig = {
   api: string;
   // Environment variable holding the endpoint's API key; absent sends none.
   apiKeyEnv?: string;
+  contextWindow?: number;
+  maxOutputTokens?: number;
 };
 
 export type RouterConfig = {
@@ -205,7 +207,20 @@ function parseProvider(id: string, raw: unknown): ProviderEndpointConfig {
   if (raw.apiKeyEnv !== undefined && (typeof raw.apiKeyEnv !== "string" || !raw.apiKeyEnv.trim())) {
     throw new Error(`providers.${id}.apiKeyEnv must name an environment variable.`);
   }
+  const limits: Pick<ProviderEndpointConfig, "contextWindow" | "maxOutputTokens"> = {};
+  for (const field of ["contextWindow", "maxOutputTokens"] as const) {
+    const n = raw[field];
+    if (n === undefined) continue;
+    if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 1) {
+      throw new Error(`providers.${id}.${field} must be a positive token count.`);
+    }
+    limits[field] = n;
+  }
+  if (limits.contextWindow && limits.maxOutputTokens && limits.maxOutputTokens > limits.contextWindow) {
+    throw new Error(`providers.${id}.maxOutputTokens exceeds the context window.`);
+  }
   return {
+    ...limits,
     baseUrl: raw.baseUrl.replace(/\/+$/, ""),
     api: typeof raw.api === "string" ? raw.api.trim() : "openai-completions",
     ...(typeof raw.apiKeyEnv === "string" ? { apiKeyEnv: raw.apiKeyEnv.trim() } : {}),

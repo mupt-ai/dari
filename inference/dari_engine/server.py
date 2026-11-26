@@ -1,6 +1,7 @@
 """Loopback HTTP transports for the selected Dari model."""
 
 import json
+import os
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -203,4 +204,7 @@ def serve(name, model, snapshot, port, context_window):
             f"{name} ready on port {server.server_port}; context: {context_window:,} tokens; weights: {snapshot}",
             flush=True,
         )
+        if port_file := os.environ.get("DARI_SESSION_PORT_FILE"):
+            with open(port_file, "w", encoding="ascii") as ready:
+                ready.write(str(server.server_port))
         server.serve_forever()

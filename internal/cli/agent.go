@@ -39,7 +39,7 @@ var agentLaunchers = map[string]string{
 	"claude":   "Launch Claude Code through Dari; forward all following arguments (`dari setup claude` for setup)",
 	"codex":    "Launch Codex through Dari; forward all following arguments (`dari setup codex` for setup)",
 	"opencode": "Launch OpenCode through Dari; forward all following arguments (`dari setup opencode` for setup)",
-	"pi":       "Launch Pi through Dari; forward all following arguments (`dari setup pi` for setup)",
+	"pi":       "Launch Pi through Dari; forward all following arguments",
 	"muse":     "Launch Muse Code through Dari; forward all following arguments (`dari setup muse` for setup)",
 	"openclaw": "Launch OpenClaw, set up once with `dari setup openclaw --cli`; forward all following arguments",
 	"hermes":   "Launch Hermes Agent, set up once with `dari setup hermes --cli`; forward all following arguments",
@@ -49,7 +49,7 @@ func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, _ *globalFlags) {
 		for name, short := range agentLaunchers {
 			root.AddCommand(&cobra.Command{
-				Use:                name + " [args...]",
+				Use:                name + " [--include-local | --local MODEL] [args...]",
 				Short:              short,
 				DisableFlagParsing: true,
 				RunE: func(*cobra.Command, []string) error {
@@ -61,6 +61,8 @@ func init() {
 }
 
 type agentLaunch struct {
+	localModel   string
+	includeLocal bool
 	name         string
 	args         []string
 	setupCLI     bool
@@ -99,13 +101,11 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 	if _, ok := agentLaunchers[args[0]]; !ok {
 		return agentLaunch{}, false
 	}
-	launch := agentLaunch{name: args[0], args: []string{}}
-	for i, arg := range args[1:] {
-		if arg == "--" {
-			launch.args = append(launch.args, args[1+i:]...)
-			break
-		}
-		launch.args = append(launch.args, arg)
+	launch := agentLaunch{name: args[0], args: args[1:]}
+	if len(launch.args) > 0 && launch.args[0] == "--include-local" {
+		launch.includeLocal, launch.args = true, launch.args[1:]
+	} else if len(launch.args) >= 2 && launch.args[0] == "--local" && launch.args[1] != "" && !strings.HasPrefix(launch.args[1], "-") {
+		launch.localModel, launch.args = launch.args[1], launch.args[2:]
 	}
 	return launch, true
 }
@@ -118,6 +118,10 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 127
+	}
+
+	if launch.localModel != "" {
+		return runLocalHarness(ctx, path, launch, stdin, stdout, stderr)
 	}
 
 	if routesOnlyWhenSetUp[launch.name] && !agents.OnlyRequestsInfo(launch.args) {
@@ -198,6 +202,10 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 			return 1
 		}
 	}
+	return executeAgentCommand(ctx, launch.name, command, stdin, stdout, stderr)
+}
+
+func executeAgentCommand(ctx context.Context, name string, command agents.Command, stdin io.Reader, stdout, stderr io.Writer) int {
 	if command.CanReplace() && inheritsStdio(stdin, stdout, stderr) {
 		// The agent takes the launcher's place, so the pane's foreground process
 		// is the agent itself. Environ dedupes the variables as os/exec would,
@@ -205,7 +213,7 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		argv := append([]string{command.Path}, command.Args...)
 		env := (&exec.Cmd{Env: command.Env}).Environ()
 		if err := agents.ReplaceProcess(command.Path, argv, env); err != nil {
-			fmt.Fprintf(stderr, "start %s: %v\n", launch.name, &os.PathError{Op: "fork/exec", Path: command.Path, Err: err})
+			fmt.Fprintf(stderr, "start %s: %v\n", name, &os.PathError{Op: "fork/exec", Path: command.Path, Err: err})
 			return 1
 		}
 	}
@@ -223,7 +231,7 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		if errors.As(err, &exitErr) {
 			return exitErr.ExitCode()
 		}
-		fmt.Fprintf(stderr, "start %s: %v\n", launch.name, err)
+		fmt.Fprintf(stderr, "start %s: %v\n", name, err)
 		return 1
 	}
 	return 0

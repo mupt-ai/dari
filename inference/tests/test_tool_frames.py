@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from dari_engine.protocol import InvalidGeneration, prepare
-from inkling.chat_protocol import assistant_events
+from dari_engine.engines.inkling.chat_protocol import assistant_events
 
 
 @unittest.skipUnless(

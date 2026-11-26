@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import runpy, sys
-from inkling.inkling_model import Model
+from dari_engine.engines.inkling.inkling_model import Model
 
 if __name__ == "__main__":
     h = sys.argv.pop(1)

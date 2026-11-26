@@ -1,6 +1,6 @@
 # Fused prefill candidate
 
-`inkling.fused_candidate.FusedModel` is an experimental, single-request engine. It uses the same checkpoint, causal mask, eight experts per token and per-visit cache as `DirectModel`. It is not the serving default. It changes how tensors move through the GPU, not which prompt tokens are processed.
+`dari_engine.engines.inkling.fused_candidate.FusedModel` is an experimental, single-request engine. It uses the same checkpoint, causal mask, eight experts per token and per-visit cache as `DirectModel`. It is not the serving default. It changes how tensors move through the GPU, not which prompt tokens are processed.
 
 | Cost in the direct engine | What changes | Invariant |
 | --- | --- | --- |
@@ -32,7 +32,7 @@ The [separate 50k greedy ABBA](benchmarks/results/m4-pro-fused-50k-greedy-cache5
 
 ## Wider tiles for affine projections (`--engine affine`)
 
-`inkling.affine_candidate.AffineModel` changes the *attention projections*, not the routed expert GEMMs. It multiplies up to 64 prompt rows by 64 output channels per GPU tile, with 32 input channels per inner step. It reuses MLX’s installed 4-bit affine decoder (group size 64), matrix accumulation, and guarded edge writes. Narrow projections and decode use the original path. No expanded weight matrices are kept resident.
+`dari_engine.engines.inkling.affine_candidate.AffineModel` changes the *attention projections*, not the routed expert GEMMs. It multiplies up to 64 prompt rows by 64 output channels per GPU tile, with 32 input channels per inner step. It reuses MLX’s installed 4-bit affine decoder (group size 64), matrix accumulation, and guarded edge writes. Narrow projections and decode use the original path. No expanded weight matrices are kept resident.
 
 In a [fixed-input ABBA](benchmarks/results/m4-pro-affine-short-replay.txt), 16 tokens measured **+35.90% / +38.22%** and 1,008 tokens measured **+30.08% / +35.20%**. The [opposite-order BAAB replay](benchmarks/results/m4-pro-affine-short-replay-baab.txt) measured +35.92% / +41.38% at 16 and +31.65% / +37.02% at 1,008. The ABBA medium prefill margin is less than one token per second over the threshold: 544.25 vs 418.40 tok/s. Do not ascribe the longer-context FusedModel results above to this variant. Reproduce using the `short` replay command below with `--engine affine`.
 
@@ -46,7 +46,7 @@ AffineModel independently matched [67/67 established](benchmarks/results/m4-pro-
 
 ## Single-token message gate (`--engine gated`)
 
-`inkling.decode_message_gate.GatedModel` extends `AffineModel`. During decode, eight lanes split the 64 input channels of a forget/message gate pair. They reuse the same input and the prepacked BF16 weights, reduce the two dot products in FP32, and blend the two residuals before writing a single FP32 row. The existing weighted RMS still follows. Non-representable weights use the original FP32 path. This changes gate arithmetic order, not the number of experts, context length or KV precision.
+`dari_engine.engines.inkling.decode_message_gate.GatedModel` extends `AffineModel`. During decode, eight lanes split the 64 input channels of a forget/message gate pair. They reuse the same input and the prepacked BF16 weights, reduce the two dot products in FP32, and blend the two residuals before writing a single FP32 row. The existing weighted RMS still follows. Non-representable weights use the original FP32 path. This changes gate arithmetic order, not the number of experts, context length or KV precision.
 
 On [short fixed-input ABBA](benchmarks/results/m4-pro-gated-short-replay.txt), the packaged engine measured **+36.85% / +42.42%** at 16 tokens and **+32.80% / +41.26%** at 1,008 tokens. The [reverse-order short BAAB](benchmarks/results/m4-pro-gated-short-replay-baab.txt) measured +36.31% / +46.86% at 16 and +34.15% / +42.27% at 1,008. Predictions first differed at output 18 on the short prompt; all 64 agreed on the medium prompt. At [16,384 tokens](benchmarks/results/m4-pro-gated-16k-replay-cache512.jsonl), fixed-input ABBA measured **463.48 / 37.40 tok/s** vs **344.40 / 26.99 tok/s** (+34.58% / +38.53%). The [reverse-order BAAB](benchmarks/results/m4-pro-gated-16k-replay-baab-cache512.jsonl) gave **461.67 / 36.87 tok/s** vs **344.15 / 26.88 tok/s** (+34.15% / +37.16%). All 64 predictions agreed in both orders. The unused allocator cap was 512 MiB in both arms.
 

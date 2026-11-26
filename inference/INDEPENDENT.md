@@ -1,8 +1,8 @@
 # Independent text forward path (experimental)
 
-[Metal kernel source and reading guide](inkling/metal/README.md) · [Experimental shaders](experiments/metal/)
+[Metal kernel source and reading guide](dari_engine/engines/inkling/metal/README.md) · [Experimental shaders](experiments/metal/)
 
-`inkling/inkling_model.py` loads quantized text tensors directly from the pinned MLX snapshot. It computes the 6-layer prelude, three visits to the same 12-layer core, and 6-layer tail, with cross-pass message banks and a separate KV/short-convolution state per visit. The final head returns last-position raw logits over the unpadded vocabulary (sufficient for greedy decoding). The decoder uses `mlx.core`, not MLX-LM modules or Metal kernels from MLX-LM. The production Pi service has not been switched to it.
+`dari_engine/engines/inkling/inkling_model.py` loads quantized text tensors directly from the pinned MLX snapshot. It computes the 6-layer prelude, three visits to the same 12-layer core, and 6-layer tail, with cross-pass message banks and a separate KV/short-convolution state per visit. The final head returns last-position raw logits over the unpadded vocabulary (sufficient for greedy decoding). The decoder uses `mlx.core`, not MLX-LM modules or Metal kernels from MLX-LM. The production Pi service has not been switched to it.
 
 To reproduce on Apple Silicon, create a Python 3.12 virtual environment and install `requirements-independent.txt`. Place the pinned `mlx-community/Inkling-2-Mini-4bit` snapshot (revision `9c0e2960609ba7cb40daf92c6f7bf8ed56e1dd62`) in the Hugging Face cache first; the benchmark and quality runners use it offline. The optional Core ML experiments are not engine dependencies.
 
@@ -10,7 +10,7 @@ From this folder, with other models unloaded, run `.venv/bin/python -m benchmark
 
 ## Paired-gate result on the M4 Pro (48 GiB)
 
-One implementation, `inkling.decode_message_gate.GatedModel`, exceeded +30% in **both** phases at each of the four tested prompt lengths in **both** process orders. Each cell is the throughput gain over MLX-LM on identical decode inputs. This is a measured result for these workloads and allocator settings, not an accuracy-equivalence claim.
+One implementation, `dari_engine.engines.inkling.decode_message_gate.GatedModel`, exceeded +30% in **both** phases at each of the four tested prompt lengths in **both** process orders. Each cell is the throughput gain over MLX-LM on identical decode inputs. This is a measured result for these workloads and allocator settings, not an accuracy-equivalence claim.
 
 | Prompt tokens | ABBA: prefill / decode | BAAB: prefill / decode | Unused allocator pool (both arms) |
 | ---: | ---: | ---: | --- |
@@ -27,7 +27,7 @@ In a separate [50k default-allocator ABBA](benchmarks/results/m4-pro-gated-50k-r
 
 ## Where to start
 
-- `inkling/` is the inference library: load `inkling.inkling_model.Model` for the measured default, or `inkling.combined_candidate.DirectModel` for the direct-route candidate. Neither imports benchmark drivers or MLX-LM. Pass the local snapshot path to the constructor and a fresh list of 48 independent state dictionaries per request. Reuse that list only for subsequent chunks and tokens of that same request.
+- `dari_engine/engines/inkling/` is the inference library: load `dari_engine.engines.inkling.inkling_model.Model` for the measured default, or `dari_engine.engines.inkling.combined_candidate.DirectModel` for the direct-route candidate. Neither imports benchmark drivers or MLX-LM. Pass the local snapshot path to the constructor and a fresh list of 48 independent state dictionaries per request. Reuse that list only for subsequent chunks and tokens of that same request.
 - `benchmarks/` contains the reference adapter, held-out fixtures, timing harnesses, report readers and experimental comparisons. Run them as Python modules **from this directory**. `benchmarks/results/` contains the original measurements, not generated fixtures. See [benchmark protocols](benchmarks/README.md).
 - `native/` contains optional native build experiments; `docs/explainer/` contains the narrated video and its source. Neither is required to run the independent engine.
 
@@ -42,7 +42,7 @@ from pathlib import Path
 import mlx.core as mx
 from huggingface_hub import snapshot_download
 from tokenizers import Tokenizer
-from inkling.decode_message_gate import GatedModel
+from dari_engine.engines.inkling.decode_message_gate import GatedModel
 
 snapshot = Path(snapshot_download(
     "mlx-community/Inkling-2-Mini-4bit",
@@ -90,7 +90,7 @@ python3 -m benchmarks.report_held_out --prompts 8 --positions 157 benchmarks/res
 
 ## Direct-route candidate (not the default)
 
-The expansion kernel in `inkling/direct_routes.py` reads a token's normalized row directly into threadgroup memory. It does not first copy that row once for each of its eight routes. The contraction writes each result back to its original token and rank, so the weighted sum keeps its original order. In single-token NVFP4 decode, `inkling/direct_experts.py` combines contraction, expert weighting, causal filtering and residual addition in one GPU dispatch. FP8 decode uses the default implementation. Both paths preserve per-request history; neither reuses another request's work.
+The expansion kernel in `dari_engine/engines/inkling/direct_routes.py` reads a token's normalized row directly into threadgroup memory. It does not first copy that row once for each of its eight routes. The contraction writes each result back to its original token and rank, so the weighted sum keeps its original order. In single-token NVFP4 decode, `dari_engine/engines/inkling/direct_experts.py` combines contraction, expert weighting, causal filtering and residual addition in one GPU dispatch. FP8 decode uses the default implementation. Both paths preserve per-request history; neither reuses another request's work.
 
 | Prompt tokens | Prefill: direct / reference | Decode: direct / reference | Both ≥30%? |
 | ---: | ---: | ---: | :--- |
@@ -163,9 +163,9 @@ Packing the two output matrices of each cross-pass gate (as distinct from batchi
 
 On the same real first-layer expansion, using Metal Performance Primitives for fused activation (`benchmarks/bench_expert_mpp.py`) took 17.67 ms for a 32x128 tile without relaxed precision vs 19.16 ms for packed expansion plus activation. This requires decoded resident weights; it is a single-layer microbenchmark, not model throughput. Reading the packed FP4 weights directly via threadgroup dequantization (`benchmarks/bench_expert_mpp_fp4.py`) cost at least 21.62 vs 19.11 ms. Neither is on the runtime path.
 
-The fused weighted RMS-and-cast before attention and MoE projections (`inkling/inkling_norm.py`) agreed on 67/67 held-out top predictions, with independent mean NLL 0.00753 lower than reference on those targets. Its 1,008-token matched medians were 429.4 / 37.7 vs 417.05 / 30.7 tokens/s (+3.0% / +22.8%). Neither speed threshold was reached in this run, notwithstanding a 34.4% decode result on the previous matched run. The gate-pair experiment was reverted. Real-routing hybrid CPU/GPU expansion took at least 25.37 vs 18.83 ms; exact routing buckets with padded native GEMMs at least 22.87 vs 19.00 ms. INT8 MPP expansion plus activation was both slower and less accurate. A Steel FP4 fused register epilogue matched the native expansion plus separate activation at best, 19.10 ms each.
+The fused weighted RMS-and-cast before attention and MoE projections (`dari_engine/engines/inkling/inkling_norm.py`) agreed on 67/67 held-out top predictions, with independent mean NLL 0.00753 lower than reference on those targets. Its 1,008-token matched medians were 429.4 / 37.7 vs 417.05 / 30.7 tokens/s (+3.0% / +22.8%). Neither speed threshold was reached in this run, notwithstanding a 34.4% decode result on the previous matched run. The gate-pair experiment was reverted. Real-routing hybrid CPU/GPU expansion took at least 25.37 vs 18.83 ms; exact routing buckets with padded native GEMMs at least 22.87 vs 19.00 ms. INT8 MPP expansion plus activation was both slower and less accurate. A Steel FP4 fused register epilogue matched the native expansion plus separate activation at best, 19.10 ms each.
 
-Fusing the expert output gather, weighted reduction, FIR history and residual write (`inkling/inkling_expert_fir.py`) removed the full token-major expert intermediate. On the completed 1,008-token ABBA the medians were 431.65 / 37.05 vs 411.7 / 29.8 (+4.8% / +24.3%). Two standalone prefill runs at 451.3 / 459.7 were not the matched result. On six established prompts it matched 67/67 top predictions (mean NLL difference −0.00942). On eight additional cases fixed **after** this candidate was implemented (`benchmarks/eval_unseen.py`), it matched 153/157 (mean NLL difference −0.00320). There is no claim of identical logits or general quality equivalence.
+Fusing the expert output gather, weighted reduction, FIR history and residual write (`dari_engine/engines/inkling/inkling_expert_fir.py`) removed the full token-major expert intermediate. On the completed 1,008-token ABBA the medians were 431.65 / 37.05 vs 411.7 / 29.8 (+4.8% / +24.3%). Two standalone prefill runs at 451.3 / 459.7 were not the matched result. On six established prompts it matched 67/67 top predictions (mean NLL difference −0.00942). On eight additional cases fixed **after** this candidate was implemented (`benchmarks/eval_unseen.py`), it matched 153/157 (mean NLL difference −0.00320). There is no claim of identical logits or general quality equivalence.
 
 Optional Core ML feasibility probes use a separate temporary coremltools environment. The compute plan selected the Neural Engine for both constant and dynamic-weight 256x2304 by 2304x2304 products; Python prediction timings were 0.62 / 2.54 ms respectively. Offloading the hottest complete expert *expansion* to a precompiled model, including input/output copies and concurrent GPU processing of the remainder, reduced one-layer time from 18.83 to 17.59 ms. This is not a 30% gain, and does not include the residency cost of all expert models. Splitting just 256 of its rows was slower. No Core ML dependency was added to the engine.
 
@@ -191,7 +191,7 @@ Completed short-Steel ABBA: at 16 tokens, 126.90 / 41.65 vs 101.00 / 31.20 (+25.
 
 ### Mixed FP4/FP8 prefill (current default)
 
-`inkling/inkling_prefill_moe.py` uses warp-sized route plans for 8–32 tokens, a fixed short FP4 tile for 33–63 tokens, and grouped adaptive tail tiles for longer inputs and the remaining MXFP8 layers. Decode and fewer than eight rows retain the packed native path. These kernels do not require Core ML and do not cache activations across requests.
+`dari_engine/engines/inkling/inkling_prefill_moe.py` uses warp-sized route plans for 8–32 tokens, a fixed short FP4 tile for 33–63 tokens, and grouped adaptive tail tiles for longer inputs and the remaining MXFP8 layers. Decode and fewer than eight rows retain the packed native path. These kernels do not require Core ML and do not cache activations across requests.
 
 | M4 Pro, fresh-cache warm medians | Independent prefill / decode | MLX-LM prefill / decode | Relative prefill / decode |
 |---|---:|---:|---:|
@@ -254,7 +254,7 @@ On the separate, existing held-out corpus the combined candidate matched the ref
 
 ## Official Thinking Machines weights
 
-The independent text engine also accepts `thinkingmachines/Inkling-2-Mini` (tested revision `c9d028302cd0f035fdf8e7e91f089a4ce94d2195`). Pass the local snapshot directory to `GatedModel`; the index selects the layout. `inkling/checkpoint.py` maps the publisher's tensor names, convolution axes, cross-pass queries and packed expert metadata at load time. Dense embeddings, attention and output matrices stay dense; they are not requantized to the community checkpoint's affine 4-bit format. Expert kernels consume the original NVFP4/MXFP8 blocks. This is text inference only, not vision or DSpark.
+The independent text engine also accepts `thinkingmachines/Inkling-2-Mini` (tested revision `c9d028302cd0f035fdf8e7e91f089a4ce94d2195`). Pass the local snapshot directory to `GatedModel`; the index selects the layout. `dari_engine/engines/inkling/checkpoint.py` maps the publisher's tensor names, convolution axes, cross-pass queries and packed expert metadata at load time. Dense embeddings, attention and output matrices stay dense; they are not requantized to the community checkpoint's affine 4-bit format. Expert kernels consume the original NVFP4/MXFP8 blocks. This is text inference only, not vision or DSpark.
 
 Run the same quality check on both backends with a locally available snapshot:
 

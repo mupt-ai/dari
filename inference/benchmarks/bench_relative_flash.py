@@ -5,7 +5,7 @@ from statistics import median
 import mlx.core as mx
 from benchmarks.benchmark_lock import exclusive_gpu
 from benchmarks.inkling_relative_flash import flash
-from inkling.inkling_prefill import striped
+from dari_engine.engines.inkling.inkling_prefill import striped
 
 lock = exclusive_gpu()
 mx.random.seed(318)

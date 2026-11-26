@@ -7,7 +7,7 @@ import mlx.core as mx
 from huggingface_hub import snapshot_download
 from tokenizers import Tokenizer
 
-from inkling.inkling_model import Model
+from dari_engine.engines.inkling.inkling_model import Model
 
 p = Path(
     snapshot_download(

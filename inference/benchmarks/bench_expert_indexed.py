@@ -2,9 +2,9 @@ from statistics import median
 from time import perf_counter
 import mlx.core as mx
 from benchmarks.bench_expert_real import states, moe
-from inkling.inkling_adaptive_tiles import adaptive
+from dari_engine.engines.inkling.inkling_adaptive_tiles import adaptive
 from benchmarks.inkling_indexed_tiles import indexed_kernel
-from inkling.inkling_short_steel import compact
+from dari_engine.engines.inkling.inkling_short_steel import compact
 
 arms = [(False, adaptive()), (True, indexed_kernel())]
 for l in (32, 256, 1008):

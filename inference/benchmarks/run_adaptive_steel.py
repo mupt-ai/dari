@@ -3,11 +3,11 @@
 import runpy
 import sys
 from pathlib import Path
-from inkling.inkling_moe import InklingMoE
-from inkling.inkling_short_steel import compact
+from dari_engine.engines.inkling.inkling_moe import InklingMoE
+from dari_engine.engines.inkling.inkling_short_steel import compact
 
-from inkling.inkling_adaptive_tiles import adaptive
-from inkling.inkling_short_plan import direct
+from dari_engine.engines.inkling.inkling_adaptive_tiles import adaptive
+from dari_engine.engines.inkling.inkling_short_plan import direct
 
 program = adaptive()
 baseline = InklingMoE.__call__
@@ -32,7 +32,7 @@ if __name__ == "__main__":
         or sys.argv[1] != "ours"
     ):
         raise SystemExit("Expected harness and ours arm.")
-    from inkling.inkling_model import Model
+    from dari_engine.engines.inkling.inkling_model import Model
 
     Model.expert_class = InklingMoE
     InklingMoE.__call__ = forward

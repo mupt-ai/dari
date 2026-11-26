@@ -1,6 +1,6 @@
 # Dari Inference
 
-Run Inkling 2 Mini locally on Apple Silicon. The standalone `dari-inference` command serves the **Dari Metal engine** (`inkling.decode_message_gate.GatedModel`) with the **official Thinking Machines weights**. MLX-LM supplies tokenizer utilities, not the inference model. The server accepts one text chat at a time: streaming or non-streaming, 50,000 tokens including output by default. Function tools work in both streaming and non-streaming requests. Pi executes tools locally and sends their results back to the model. Generation uses the official draft head for speculative decoding. Image inputs are not supported.
+Run Inkling 2 Mini locally on Apple Silicon. The standalone `dari-inference` command serves the **Dari Metal engine** (`dari_engine.engines.inkling.decode_message_gate.GatedModel`) with the **official Thinking Machines weights**. MLX-LM supplies tokenizer utilities, not the inference model. The server accepts one text chat at a time: streaming or non-streaming, 50,000 tokens including output by default. Function tools work in both streaming and non-streaming requests. Pi executes tools locally and sends their results back to the model. Generation uses the official draft head for speculative decoding. Image inputs are not supported.
 
 ## Start the server
 
@@ -30,22 +30,27 @@ curl http://127.0.0.1:8081/api/generate -d '{"model":"inkling-2-mini","prompt":"
 
 `POST /api/chat` takes `messages` instead of `prompt`. Both native endpoints stream newline-delimited JSON by default. `num_ctx` overrides the server default for that request; `num_predict` caps output. These endpoints currently support text, not the entire Ollama API: registry operations, Modelfiles, structured output, images, and native tool calls are not implemented. For function tools use `/v1/chat/completions`.
 
-## Try Pi
+## Local coding harnesses
 
-Add this entry under `providers` in `~/.pi/agent/models.json`, preserving any existing providers. Match the port and `contextWindow` to your server (e.g. `100000` for the command above).
-
-```json
-"dari-metal": {
-  "api": "openai-completions",
-  "baseUrl": "http://127.0.0.1:8081/v1",
-  "apiKey": "local",
-  "models": [{"id": "inkling-2-mini", "contextWindow": 50000, "maxTokens": 8192}]
-}
-```
+With the harness installed, run these from your project directory:
 
 ```sh
-pi --model dari-metal/inkling-2-mini
+dari pi --include-local               # choose the route for this session
+# or: dari claude --include-local
+
+# Noninteractive alternative:
+dari pull inkling-2-mini              # once per CLI release; reuses cached weights
+dari pi --local inkling-2-mini        # no separate `dari run` needed
+# Or: dari codex --local inkling-2-mini exec 'Explain this project'
 ```
+
+The `--include-local` launch picker offers normal routing, each supported local model, and **Set Up a Local Model**. Opening the picker does not probe a listener, sign in, or download anything. Choose **Pull … and Launch** to explicitly install, or choose a model directly to use existing weights or an SSH-forwarded engine. The route applies to one launch; this does not mix providers inside the harness’s `/model` menu or change future defaults.
+
+`--local MODEL` goes immediately after `pi`, `codex`, `claude`, `opencode`, `muse`, `openclaw`, or `hermes`. Without it, the harness launches exactly as before. Native arguments follow the model. `--local` elsewhere is not interpreted by Dari.
+
+Dari first checks loopback port 8081 (`DARI_INFERENCE_PORT` to override). It borrows a server advertising the requested model, or starts a private copy on a free port when no engine is running or the model differs. Quitting stops only processes this launch started. For shared prefix caching across launches, leave `dari run inkling-2-mini` running. To borrow an engine on another machine, forward its port first, e.g. `ssh -N -L 8081:127.0.0.1:8081 user@other-mac`.
+
+No hosted router or account is needed. The release's `pull` also installs a matching protocol bridge for Codex, Claude Code, and Muse: only those sessions start it, on loopback, with one upstream and no hosted credentials. A source build can use a locally compiled `dari-gateway` via `DARI_INFERENCE_GATEWAY`. OpenClaw and Hermes use temporary agent profiles; their profile-local history and settings are not retained. Hermes requires at least 64,000 tokens; a private Hermes engine defaults to that size, and an existing shared server must already have a sufficient context window.
 
 Run Pi from the project you want it to work on. For example, ask it to read a file, edit it, and run its tests. This gives Pi its normal local permissions; for read-only review, start it with `--tools read,grep,find,ls`. The model server never executes commands itself.
 
@@ -88,9 +93,10 @@ The server picks each round's draft depth from measured round times and acceptan
 
 ## Add a model
 
-`dari_engine/catalog.py` is the source of truth for supported model names. A name selects one immutable checkpoint, its family backend, and its default context budget. The CLI and both HTTP APIs use the selected name. Each server process loads only that model and owns its prefix cache; to run two models at once, start them on different ports.
+Each engine lives in `dari_engine/engines/<engine>/`. Start with [Inkling](dari_engine/engines/inkling/models.json): its `models.json` declares the public model ID, official repository, pinned revision, Python adapter module, and default context window. The Python runtime discovers these manifests and the Go launcher embeds the same files for offline setup. No second model list or harness-specific registration is needed.
 
-- **Compatible checkpoint:** Add one `Model` entry to `MODELS` with the official `repository`, pinned commit `revision`, existing `backend`, and a tested `context_window`. No Go CLI, command parser, or HTTP changes. Confirm compatibility with the weight layout, kernel dimensions, tokenizer, and message format; sharing a publisher or family name alone is not sufficient.
-- **Different architecture:** Add a sibling package to `inkling/` with its own weight mapping, runtime, tokenizer logic, and kernels. Include the package and any shader files in `pyproject.toml`. Use `inkling/backend.py` as the adapter example: `resolve_snapshot(model, install)` checks local files unless explicitly pulling, `max_context(snapshot)` reads the checkpoint limit, and `load(snapshot, context_window)` returns the runtime. `inkling/runtime.py` shows the inference interface: `prompt`, `encode_raw`, and `events`, plus context and cached-token counts. Keep GPU initialization out of catalog imports so `list` and `show` remain lightweight.
+- **New architecture:** Create a Python package (including `__init__.py`) under `engines/`. Put its adapter, checkpoint loader, tokenizer, cache, runtime, and kernels there. Follow [the adapter](dari_engine/engines/inkling/backend.py): `resolve_snapshot(model, install)` must stay offline unless explicitly pulling; `max_context(snapshot)` reads the weight limit; `load(snapshot, context_window)` creates the runtime. See [the runtime](dari_engine/engines/inkling/runtime.py) for the shared HTTP contract. Manifests and `metal/*.metal` ship automatically; declare any other asset formats or new dependencies in `pyproject.toml`.
+- **Compatible checkpoint:** Add another model ID to the same manifest only after verifying its weight layout, tokenizer, and kernel dimensions. Point it at the same adapter if it needs no new engine code.
+- **Shared services:** Keep model-specific code out of `dari_engine/server.py`, the transport handlers, and the harness launchers. One server process serves one model and owns its prefix cache.
 
 Before publishing a new entry, explicitly pull it, disconnect from the network, run `show` and `run`, and verify that `/v1/models` advertises its name and `/v1/chat/completions` returns a real answer with that name. Check prefix reuse, output correctness, and peak memory at the default context length against a reference implementation before claiming performance.

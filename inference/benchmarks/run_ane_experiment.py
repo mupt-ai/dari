@@ -7,7 +7,7 @@ import sys
 
 if "INKLING_COREML_SITE" in os.environ:
     sys.path.append(os.environ["INKLING_COREML_SITE"])
-from inkling import inkling_model
+from dari_engine.engines.inkling import inkling_model
 from benchmarks.inkling_ane_experiment import Hybrid
 
 

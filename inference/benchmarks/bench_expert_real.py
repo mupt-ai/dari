@@ -9,8 +9,8 @@ import mlx.core as mx
 from huggingface_hub import snapshot_download
 from tokenizers import Tokenizer
 from benchmarks.benchmark_lock import exclusive_gpu
-from inkling.inkling_block import PreludeBlock, rms
-from inkling.inkling_top8 import top8
+from dari_engine.engines.inkling.inkling_block import PreludeBlock, rms
+from dari_engine.engines.inkling.inkling_top8 import top8
 
 lock = exclusive_gpu()
 p = Path(

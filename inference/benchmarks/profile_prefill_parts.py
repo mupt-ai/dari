@@ -6,7 +6,7 @@ from time import perf_counter
 import mlx.core as mx
 from tokenizers import Tokenizer
 from huggingface_hub import snapshot_download
-from inkling import inkling_model as im
+from dari_engine.engines.inkling import inkling_model as im
 from benchmarks.benchmark_lock import exclusive_gpu
 
 lock = exclusive_gpu()

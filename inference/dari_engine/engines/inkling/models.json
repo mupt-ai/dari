@@ -1,0 +1,8 @@
+{
+  "inkling-2-mini": {
+    "adapter": "dari_engine.engines.inkling.backend",
+    "repository": "thinkingmachines/Inkling-2-Mini",
+    "revision": "c9d028302cd0f035fdf8e7e91f089a4ce94d2195",
+    "context_window": 50000
+  }
+}

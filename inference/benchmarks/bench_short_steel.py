@@ -4,7 +4,7 @@ from statistics import median
 from time import perf_counter
 import mlx.core as mx
 from benchmarks.bench_expert_real import states, moe
-from inkling.inkling_short_steel import compact
+from dari_engine.engines.inkling.inkling_short_steel import compact
 
 arms = [
     None,

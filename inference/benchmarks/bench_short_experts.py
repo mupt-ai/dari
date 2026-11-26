@@ -4,8 +4,8 @@ from statistics import median
 from time import perf_counter
 import mlx.core as mx
 from benchmarks.bench_expert_real import moe, states
-from inkling.inkling_top8 import top8
-from inkling.inkling_moe import activate
+from dari_engine.engines.inkling.inkling_top8 import top8
+from dari_engine.engines.inkling.inkling_moe import activate
 
 
 def direct(x, gather):
@@ -41,7 +41,7 @@ def direct(x, gather):
 
 
 def aligned(x):
-    from inkling.inkling_group_routes import group_routes
+    from dari_engine.engines.inkling.inkling_group_routes import group_routes
 
     ids, weights = top8(x.astype(mx.float32) @ moe.router.T, moe.bias)
     order, inv, idx = group_routes(ids)

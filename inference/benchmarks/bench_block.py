@@ -6,7 +6,7 @@ from pathlib import Path
 import mlx.core as mx
 from huggingface_hub import snapshot_download
 from mlx_lm import load
-from inkling.inkling_block import PreludeBlock
+from dari_engine.engines.inkling.inkling_block import PreludeBlock
 
 p = Path(
     snapshot_download(

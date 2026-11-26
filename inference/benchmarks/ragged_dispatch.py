@@ -12,8 +12,8 @@ from time import perf_counter
 
 import mlx.core as mx
 
-from inkling.inkling_prefill_moe import PrefillMoE
-from inkling.ragged_dispatch import RaggedMoE
+from dari_engine.engines.inkling.inkling_prefill_moe import PrefillMoE
+from dari_engine.engines.inkling.ragged_dispatch import RaggedMoE
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
@@ -26,7 +26,7 @@ if __name__ == "__main__":
     if args.harness:
         if extra[:1] != ["ours"]:
             parser.error("use ours arm")
-        from inkling import inkling_model
+        from dari_engine.engines.inkling import inkling_model
 
         inkling_model.Model.expert_class = RaggedMoE
         sys.argv = [args.harness, *extra]

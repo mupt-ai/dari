@@ -21,7 +21,7 @@ from tokenizers import Tokenizer
 
 from benchmarks.benchmark_lock import exclusive_gpu
 from benchmarks.long_context import REVISION, prompt
-from inkling.inkling_model import Model
+from dari_engine.engines.inkling.inkling_model import Model
 
 
 def addr(a):

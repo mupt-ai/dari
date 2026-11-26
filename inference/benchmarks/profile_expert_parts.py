@@ -3,8 +3,8 @@
 from collections import defaultdict
 from time import perf_counter
 import mlx.core as mx
-from inkling.inkling_top8 import top8
-from inkling.inkling_moe import activate
+from dari_engine.engines.inkling.inkling_top8 import top8
+from dari_engine.engines.inkling.inkling_moe import activate
 from benchmarks.benchmark_lock import exclusive_gpu
 from pathlib import Path
 from huggingface_hub import snapshot_download
@@ -29,7 +29,7 @@ ids = mx.array(
         .ids
     ]
 )
-from inkling.inkling_model import Model
+from dari_engine.engines.inkling.inkling_model import Model
 
 totals = defaultdict(float)
 

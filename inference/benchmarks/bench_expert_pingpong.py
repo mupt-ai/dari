@@ -1,9 +1,9 @@
 """Alternate two threadgroup panels to reduce inner product synchronization."""
 
 from experiments.shaders import load_shader
-from inkling.inkling_adaptive_tiles import adaptive
-from inkling.inkling_partial_steel import tile_body
-from inkling.shaders import render
+from dari_engine.engines.inkling.inkling_adaptive_tiles import adaptive
+from dari_engine.engines.inkling.inkling_partial_steel import tile_body
+from dari_engine.engines.inkling.shaders import render
 
 
 def double_buffer(early):
@@ -28,7 +28,7 @@ if __name__ == "__main__":
     import mlx.core as mx
 
     from benchmarks.bench_expert_real import moe, states
-    from inkling.inkling_short_steel import compact
+    from dari_engine.engines.inkling.inkling_short_steel import compact
 
     arms = [
         (bm, k)

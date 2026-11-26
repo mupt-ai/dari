@@ -2,8 +2,8 @@ from statistics import median
 from time import perf_counter
 import mlx.core as mx
 from benchmarks.bench_expert_real import states, moe
-from inkling.inkling_short_steel import compact
-from inkling.inkling_short_plan import direct
+from dari_engine.engines.inkling.inkling_short_steel import compact
+from dari_engine.engines.inkling.inkling_short_plan import direct
 
 for n in (8, 16, 31, 32):
     x = states[:, :n]

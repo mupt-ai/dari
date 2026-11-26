@@ -7,8 +7,8 @@ import mlx.core as mx
 
 from benchmarks.bench_expert_real import E, K, N, compute, g, idx, n, s, w, x
 from experiments.shaders import load_shader
-from inkling.inkling_moe import activate
-from inkling.mlx_headers import expert_headers
+from dari_engine.engines.inkling.inkling_moe import activate
+from dari_engine.engines.inkling.mlx_headers import expert_headers
 
 kernel = mx.fast.metal_kernel(
     name="inkling_steel_fp4_epilogue",

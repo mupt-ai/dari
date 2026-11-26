@@ -9,7 +9,7 @@ import argparse
 import runpy
 import sys
 
-from inkling.chunk_cache import append
+from dari_engine.engines.inkling.chunk_cache import append
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
@@ -20,7 +20,7 @@ if __name__ == "__main__":
     args, extra = p.parse_known_args()
     if extra[:1] != ["ours"]:
         p.error("expected ours arm")
-    from inkling.inkling_model import Model
+    from dari_engine.engines.inkling.inkling_model import Model
 
     Model.global_prefill_store = staticmethod(append)
     sys.argv = [args.harness, *extra]

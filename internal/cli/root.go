@@ -5,6 +5,7 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -14,7 +15,7 @@ import (
 
 	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/auth"
-	"github.com/mupt-ai/dari/internal/cli/agents/codex"
+	"github.com/mupt-ai/dari/internal/cli/agents"
 	"github.com/mupt-ai/dari/internal/state"
 )
 
@@ -26,14 +27,23 @@ func Execute(version string) int {
 	}
 	if launch, ok := parseAgentLaunch(os.Args[1:]); ok {
 		ctx := context.Background()
-		if launch.name == "codex" || launch.name == "opencode" {
+		if launch.includeLocal && !agents.OnlyRequestsInfo(launch.args) {
+			if err := chooseLaunchRoute(ctx, &launch, os.Stdin, os.Stdout, os.Stderr); err != nil {
+				if errors.Is(err, errAgentChoiceCanceled) || errors.Is(err, errAgentQuit) {
+					return 0
+				}
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
+		if launch.localModel != "" || launch.name == "codex" || launch.name == "opencode" {
 			// Ctrl-C belongs to the agent (interrupt turn / exit), not the
 			// wrapper. Keep cleanup alive until its TUI exits.
 			interrupts := make(chan os.Signal, 1)
 			signal.Notify(interrupts, os.Interrupt)
 			defer signal.Stop(interrupts)
 			var cancel context.CancelFunc
-			ctx, cancel = signal.NotifyContext(ctx, codex.ShutdownSignals()...)
+			ctx, cancel = signal.NotifyContext(ctx, agents.ShutdownSignals()...)
 			defer cancel()
 		}
 		return runAgentLaunch(

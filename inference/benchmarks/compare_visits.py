@@ -55,7 +55,7 @@ def trace(backend, path, prompt):
                 ..., :200058
             ]
     else:
-        from inkling.inkling_model import Model
+        from dari_engine.engines.inkling.inkling_model import Model
 
         model = Model(p)
         original = model.block

@@ -2,7 +2,7 @@ from statistics import median
 from time import perf_counter
 import mlx.core as mx
 from benchmarks.bench_expert_real import ids
-from inkling.inkling_group_routes import group_routes
+from dari_engine.engines.inkling.inkling_group_routes import group_routes
 
 
 def standard(s):

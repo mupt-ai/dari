@@ -3,8 +3,8 @@
 from functools import lru_cache
 import numpy as np
 import mlx.core as mx
-from inkling.inkling_moe import activate
-from inkling.inkling_top8 import top8
+from dari_engine.engines.inkling.inkling_moe import activate
+from dari_engine.engines.inkling.inkling_top8 import top8
 
 
 @lru_cache(maxsize=4)

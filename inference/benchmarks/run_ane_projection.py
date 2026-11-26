@@ -12,7 +12,7 @@ import mlx.core as mx
 import numpy as np
 from coremltools.converters.mil import Builder as mb
 from coremltools.converters.mil.mil import types
-from inkling import inkling_model
+from dari_engine.engines.inkling import inkling_model
 
 base = inkling_model.linear
 models = {}

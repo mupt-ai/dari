@@ -4,8 +4,8 @@ import argparse
 import runpy
 import sys
 
-from inkling import inkling_model
-from inkling.fused_candidate import FusedModel
+from dari_engine.engines.inkling import inkling_model
+from dari_engine.engines.inkling.fused_candidate import FusedModel
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser(description=__doc__)
@@ -35,11 +35,11 @@ if __name__ == "__main__":
     if a.gated and a.affine:
         p.error("select just one engine variant")
     if a.gated:
-        from inkling.decode_message_gate import GatedModel
+        from dari_engine.engines.inkling.decode_message_gate import GatedModel
 
         inkling_model.Model = GatedModel
     elif a.affine:
-        from inkling.affine_candidate import AffineModel
+        from dari_engine.engines.inkling.affine_candidate import AffineModel
 
         inkling_model.Model = AffineModel
     else:

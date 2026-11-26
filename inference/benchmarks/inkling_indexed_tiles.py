@@ -1,8 +1,8 @@
 """Direct routed input panel loads: avoid token expansion and both padded copies."""
 
 from experiments.shaders import load_shader
-from inkling.inkling_adaptive_tiles import adaptive
-from inkling.inkling_partial_steel import tile_body
+from dari_engine.engines.inkling.inkling_adaptive_tiles import adaptive
+from dari_engine.engines.inkling.inkling_partial_steel import tile_body
 
 
 def indexed_kernel():

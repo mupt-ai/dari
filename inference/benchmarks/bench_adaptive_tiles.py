@@ -4,11 +4,11 @@ from statistics import median
 from time import perf_counter
 import mlx.core as mx
 from benchmarks.bench_expert_real import states, moe
-from inkling.inkling_partial_steel import kernel
-from inkling.inkling_short_steel import compact
+from dari_engine.engines.inkling.inkling_partial_steel import kernel
+from dari_engine.engines.inkling.inkling_short_steel import compact
 
 
-from inkling.inkling_adaptive_tiles import adaptive
+from dari_engine.engines.inkling.inkling_adaptive_tiles import adaptive
 
 if __name__ == "__main__":
     program = adaptive()

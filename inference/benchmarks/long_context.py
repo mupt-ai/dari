@@ -99,7 +99,7 @@ def main():
         ):
             parser.error("invalid reference trajectory")
     if args.arm == "ours":
-        from inkling.inkling_model import Model
+        from dari_engine.engines.inkling.inkling_model import Model
 
         forward = Model(path)
 

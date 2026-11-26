@@ -13,7 +13,7 @@ import struct
 import sys
 from pathlib import Path
 
-from inkling.projection_storage import compact
+from dari_engine.engines.inkling.projection_storage import compact
 
 REV = "9c0e2960609ba7cb40daf92c6f7bf8ed56e1dd62"
 PARTS = ("q", "r", "gate", "sink")
@@ -71,7 +71,7 @@ if __name__ == "__main__":
         sys.exit()
     if not args.harness or more[:1] != ["ours"]:
         parser.error("select a harness and the ours arm")
-    from inkling import inkling_model
+    from dari_engine.engines.inkling import inkling_model
 
     class CompactModel(inkling_model.Model):
         def __init__(self, path):

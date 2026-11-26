@@ -13,7 +13,7 @@ class Speculative(unittest.TestCase):
     def setUpClass(cls):
         import mlx.core as mx
 
-        from inkling.runtime import Runtime
+        from dari_engine.engines.inkling.runtime import Runtime
 
         mx.set_cache_limit(512 * 1024**2)
         cls.runtime = Runtime(
@@ -23,8 +23,8 @@ class Speculative(unittest.TestCase):
     def test_rewind_matches_a_shorter_forward(self):
         import mlx.core as mx
 
-        from inkling.inkling_model import rewind
-        from inkling.prefix_cache import Cursor
+        from dari_engine.engines.inkling.inkling_model import rewind
+        from dari_engine.engines.inkling.prefix_cache import Cursor
 
         model = self.runtime.model
         # Cross the 1024-token local window so the ring has wrapped.

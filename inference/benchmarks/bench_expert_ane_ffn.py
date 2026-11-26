@@ -9,8 +9,8 @@ from statistics import median
 import numpy as np
 import mlx.core as mx
 from benchmarks.bench_expert_real import states, moe, dense, E, K, N
-from inkling.inkling_top8 import top8
-from inkling.inkling_moe import activate
+from dari_engine.engines.inkling.inkling_top8 import top8
+from dari_engine.engines.inkling.inkling_moe import activate
 
 if "INKLING_COREML_SITE" in os.environ:
     sys.path.append(os.environ["INKLING_COREML_SITE"])

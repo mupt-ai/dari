@@ -143,8 +143,11 @@ Dari runs supported models on its own optimized Metal engine. No Ollama client, 
 ```sh
 dari pull inkling-2-mini       # Explicit download; skip if already installed
 dari run inkling-2-mini        # Start the local model API on port 8081
+# Or skip `dari run` and launch an installed coding harness directly:
+dari pi --include-local          # choose normal routing, a local engine, or setup
+# or: dari claude --include-local
 ```
 
 `run` keeps the model server in the foreground until you stop it with Ctrl-C. No separate `serve` step or terminal chat client is needed. Use `dari list` to see installed models and `dari show inkling-2-mini` to inspect the weights and context limit. Only `pull` installs or downloads. To configure a larger context, start with `dari run inkling-2-mini --context-window 100000` (or set `DARI_CONTEXT_LENGTH`); 50,000 is the benchmarked default.
 
-On Apple Silicon, install `uv` first (`brew install uv`). The first `dari pull` installs the [Python/Metal runtime](inference/README.md) from the same public Git tag as the CLI, then fetches the official weights. After a CLI upgrade, pull again to install the matching runtime; cached weights are reused. No PATH changes are needed. For a development build, set `DARI_INFERENCE_SOURCE` to the absolute path of `inference/` in this checkout. The standalone runtime works without the Go CLI. Pi can connect to `http://127.0.0.1:8081/v1`; native text clients can post to `/api/chat` or `/api/generate` on the same server.
+On Apple Silicon, install `uv` first (`brew install uv`). The first `dari pull` installs the [Python/Metal runtime](inference/README.md) from the same public Git tag as the CLI, then fetches the official weights. After a CLI upgrade, pull again to install the matching runtime; cached weights are reused. No PATH changes are needed. For a development build, set `DARI_INFERENCE_SOURCE` to the absolute path of `inference/` in this checkout. The standalone runtime works without the Go CLI. Use `dari <harness> --local inkling-2-mini` for Pi, Codex, Claude Code, OpenCode, Muse, OpenClaw, or Hermes. Bare harness commands keep their normal routing. [Local harness setup and SSH forwarding](inference/README.md#local-coding-harnesses). The local OpenAI-compatible API is at `http://127.0.0.1:8081/v1`; native text clients can post to `/api/chat` or `/api/generate` on the same server.

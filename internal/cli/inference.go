@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,11 +72,15 @@ func configureServe(cmd *cobra.Command) {
 }
 
 func inferenceExec(cmd *cobra.Command, args ...string) error {
-	engine, err := inferenceRuntime(cmd, args[0] == "pull")
+	return runInference(cmd.Context(), cmd.Root().Version, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), args...)
+}
+
+func runInference(ctx context.Context, version string, stdin io.Reader, stdout, stderr io.Writer, args ...string) error {
+	engine, err := inferenceRuntime(ctx, version, stderr, args[0] == "pull")
 	if err != nil {
 		return err
 	}
-	child := exec.CommandContext(cmd.Context(), engine, args...)
+	child := exec.CommandContext(ctx, engine, args...)
 	// A foreground server owns the CLI PID, so a supervisor stopping `dari`
 	// also releases the listener and model memory. The engine launcher execs Python.
 	if agents.CanReplaceProcess && (args[0] == "run" || args[0] == "serve") {
@@ -86,20 +92,26 @@ func inferenceExec(cmd *cobra.Command, args ...string) error {
 		}
 		return nil
 	}
-	child.Stdin, child.Stdout, child.Stderr = cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr()
-	return child.Run()
+	child.Stdin, child.Stdout, child.Stderr = stdin, stdout, stderr
+	if err := child.Run(); err != nil {
+		return err
+	}
+	if args[0] == "pull" {
+		return installInferenceBridge(ctx, version)
+	}
+	return nil
 }
 
 // A released CLI uses its matching engine, not whichever Python executable
 // happens to be on PATH. Only pull may bootstrap it or fetch weights.
-func inferenceRuntime(cmd *cobra.Command, install bool) (string, error) {
+func inferenceRuntime(ctx context.Context, version string, stderr io.Writer, install bool) (string, error) {
 	if source := os.Getenv("DARI_INFERENCE_SOURCE"); source != "" {
 		return filepath.Abs(filepath.Join(source, "dari-inference"))
 	}
 	if runtime.GOOS != "darwin" || runtime.GOARCH != "arm64" {
 		return "", errors.New("local inference requires an Apple Silicon Mac")
 	}
-	version := cmd.Root().Version
+
 	if !selfupdate.IsReleaseVersion(version) {
 		return "", errors.New("development build: set DARI_INFERENCE_SOURCE to the inference directory in your Dari checkout")
 	}
@@ -121,9 +133,9 @@ func inferenceRuntime(cmd *cobra.Command, install bool) (string, error) {
 		return "", errors.New("install uv first (brew install uv), then retry dari pull")
 	}
 	source := "git+https://github.com/mupt-ai/dari.git@" + tag + "#subdirectory=inference"
-	setup := exec.CommandContext(cmd.Context(), uv, "tool", "install", "--python", "3.12", source)
+	setup := exec.CommandContext(ctx, uv, "tool", "install", "--python", "3.12", source)
 	setup.Env = append(os.Environ(), "UV_TOOL_DIR="+filepath.Join(root, "tools"), "UV_TOOL_BIN_DIR="+filepath.Dir(engine))
-	setup.Stdout, setup.Stderr = cmd.ErrOrStderr(), cmd.ErrOrStderr()
+	setup.Stdout, setup.Stderr = stderr, stderr
 	if err := setup.Run(); err != nil {
 		return "", fmt.Errorf("install inference runtime for %s: %w", tag, err)
 	}

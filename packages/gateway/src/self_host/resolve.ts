@@ -400,9 +400,14 @@ function candidateConfig(
   }
   const served = providerModel(modelId, provider);
   const endpoint = deps.config.providers[provider];
+  const limits = {
+    ...(endpoint?.contextWindow !== undefined ? { context_window: endpoint.contextWindow } : {}),
+    ...(endpoint?.maxOutputTokens !== undefined ? { max_output_tokens: endpoint.maxOutputTokens } : {}),
+  };
   if (served !== undefined) {
     return {
       provider,
+      ...limits,
       native_model_id: served.native_model_id,
       api: endpoint?.api ?? served.api,
       base_url: endpoint?.baseUrl ?? served.base_url,
@@ -412,6 +417,7 @@ function candidateConfig(
   if (endpoint === undefined) return undefined;
   return {
     provider,
+    ...limits,
     native_model_id: nativeModelId(modelId),
     api: endpoint.api,
     base_url: endpoint.baseUrl,

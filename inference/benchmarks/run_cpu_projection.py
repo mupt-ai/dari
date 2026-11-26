@@ -3,7 +3,7 @@
 import sys, runpy
 from pathlib import Path
 import mlx.core as mx
-from inkling import inkling_model
+from dari_engine.engines.inkling import inkling_model
 
 base = inkling_model.linear
 

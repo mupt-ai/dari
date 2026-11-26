@@ -16,8 +16,8 @@ dependencies = [
 dari-inference = "dari_engine.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["dari_engine*", "inkling*"]
+include = ["dari_engine*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-inkling = ["metal/*.metal"]
+"*" = ["models.json", "metal/*.metal"]

@@ -59,7 +59,7 @@ def main():
     )
     tok = Tokenizer.from_file(str(p / "tokenizer.json"))
     if args.backend == "ours":
-        from inkling.inkling_model import Model
+        from dari_engine.engines.inkling.inkling_model import Model
 
         m = Model(p)
 

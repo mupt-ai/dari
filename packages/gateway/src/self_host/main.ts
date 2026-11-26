@@ -234,6 +234,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
       ...(hosted === null ? {} : { connected: { hosted_url: hosted.url, gateway_id: hosted.gatewayId } }),
     }),
   );
+  if (env.DARI_SESSION_PORT_FILE) await Bun.write(env.DARI_SESSION_PORT_FILE, String(server.port));
   sync?.start();
   const idleUsage = sync === null ? null : setInterval(() => {
     void refreshStaleUsage(subscriptions, { fetch, baseUrls });

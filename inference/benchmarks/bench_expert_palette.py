@@ -6,9 +6,9 @@ import mlx.core as mx
 import numpy as np
 
 from experiments.shaders import load_shader
-from inkling.inkling_adaptive_tiles import adaptive
-from inkling.inkling_partial_steel import tile_body
-from inkling.inkling_short_steel import compact
+from dari_engine.engines.inkling.inkling_adaptive_tiles import adaptive
+from dari_engine.engines.inkling.inkling_partial_steel import tile_body
+from dari_engine.engines.inkling.inkling_short_steel import compact
 
 encode = mx.fast.metal_kernel(
     name="inkling_encode_palette",

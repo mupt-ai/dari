@@ -1,6 +1,6 @@
 # Running the benchmarks
 
-Candidate Metal implementations live in [`experiments/metal/`](../experiments/metal/); the benchmark runners load them from there. For the model kernels and a guide to their launchers, see [`inkling/metal/`](../inkling/metal/README.md).
+Candidate Metal implementations live in [`experiments/metal/`](../experiments/metal/); the benchmark runners load them from there. For the model kernels and a guide to their launchers, see [`dari_engine/engines/inkling/metal/`](../dari_engine/engines/inkling/metal/README.md).
 
 Run commands from `inference/` in the environment described in [the engine guide](../INDEPENDENT.md). Keep the M4 Pro free of other GPU work. The model harnesses acquire a process lock. Select `ours` or `reference` in separate processes; the reference uses MLX-LM. The `direct_full` runner selects only an independent engine variant, not different inputs or decoding rules.
 

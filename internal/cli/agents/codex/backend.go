@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/mupt-ai/dari/internal/cli/agents"
 )
 
 // Keep the backend alive across UI reconnects so active turns aren't killed.
@@ -57,7 +58,7 @@ func (b *codexStatusBridge) connectBackend() (*websocket.Conn, error) {
 		command.Env = b.command.Env
 		command.Dir = b.directory
 		command.Stderr = io.Discard
-		cleanup, err := startCodexAppServerProcess(command)
+		cleanup, err := agents.StartIsolatedProcess(command)
 		if err != nil {
 			_ = os.Remove(path)
 			return nil, err

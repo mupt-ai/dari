@@ -12,7 +12,7 @@ class PrefixReuse(unittest.TestCase):
     def test_tool_turn_retry_and_edit(self):
         import mlx.core as mx
 
-        from inkling.runtime import Runtime
+        from dari_engine.engines.inkling.runtime import Runtime
 
         mx.set_cache_limit(512 * 1024**2)
         runtime = Runtime(

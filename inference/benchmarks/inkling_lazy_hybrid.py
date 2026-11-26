@@ -8,9 +8,9 @@ from _inkling_ane import Layer
 
 from benchmarks.inkling_ane_experiment import ane_model
 from experiments.shaders import load_shader
-from inkling.inkling_partial_steel import kernel
-from inkling.inkling_top8 import top8
-from inkling.shaders import expand_inputs
+from dari_engine.engines.inkling.inkling_partial_steel import kernel
+from dari_engine.engines.inkling.inkling_top8 import top8
+from dari_engine.engines.inkling.shaders import expand_inputs
 
 
 @lru_cache(maxsize=8)

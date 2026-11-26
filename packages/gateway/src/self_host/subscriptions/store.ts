@@ -130,18 +130,15 @@ const PROVIDER_LABELS: Record<SubscriptionProvider, string> = {
   vercel_token_pass: "Vercel Token Pass",
 };
 
+const PLACE_NAMES: Record<ConnectedAccount["place"], string> = {
+  dari: "on Dari",
+  this_computer: "on This Computer",
+  private: "Private on This Computer",
+};
+
 function connectedAccountMessage(account: ConnectedAccount): string {
-  const label = PROVIDER_LABELS[account.provider];
-  const handle = account.name ?? "NAME";
-  const asName = account.name === null ? "" : ` as ${handle}`;
-  switch (account.place) {
-    case "dari":
-      return `This ${label} account is already connected on Dari${asName}. Move it with \`dari accounts subscription move ${handle} --on computer\`, or disconnect it first.`;
-    case "this_computer":
-      return `This ${label} account is already connected on This Computer${asName}. Move it with \`dari accounts subscription move ${handle} --on dari\`, or disconnect it first.`;
-    case "private":
-      return `This ${label} account is already connected Private on This Computer${asName}. Move it with \`dari accounts subscription move ${handle} --on dari\` or \`--on computer\`, or disconnect it first.`;
-  }
+  const asName = account.name === null ? "" : ` as ${account.name}`;
+  return `This ${PROVIDER_LABELS[account.provider]} account is already connected ${PLACE_NAMES[account.place]}${asName}. Run \`dari accounts subscription connect\` again and choose Move, or disconnect it first.`;
 }
 
 const BASE_NAMES: Record<SubscriptionProvider, string> = {

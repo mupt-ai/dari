@@ -749,13 +749,15 @@ func connectAgentPersonalSubscription(
 	stderr io.Writer,
 	credentialName string,
 ) error {
-	return connectSubscription(ctx, provider, client, stdin, stderr, credentialName, false, "", provider.name+" subscription connected")
+	_, err := connectSubscription(ctx, provider, client, stdin, stderr, credentialName, false, "", provider.name+" subscription connected")
+	return err
 }
 
 // connectSubscription is connectAgentPersonalSubscription on a client that
 // may be a local gateway: private keeps the plan off hosted Dari there,
 // movingFrom names the plan a move replaces (as the client's side knows it),
-// and done is the line printed once it is connected.
+// and done, when set, is the line printed once it is connected. It returns
+// the plan the sign-in connected.
 func connectSubscription(
 	ctx context.Context,
 	provider agentSubscriptionProvider,
@@ -766,7 +768,7 @@ func connectSubscription(
 	private bool,
 	movingFrom string,
 	done string,
-) error {
+) (subscriptionCredential, error) {
 	body := map[string]any{"provider": provider.id}
 	if credentialName != "" {
 		body["credential_name"] = credentialName
@@ -787,15 +789,15 @@ func connectSubscription(
 		body,
 		&started,
 	); err != nil {
-		return api.HumanError(err)
+		return subscriptionCredential{}, api.HumanError(err)
 	}
 	if strings.TrimSpace(started.SessionToken) == "" || strings.TrimSpace(started.AuthorizationURL) == "" {
-		return fmt.Errorf("Dari returned an incomplete %s authorization session", provider.name)
+		return subscriptionCredential{}, fmt.Errorf("Dari returned an incomplete %s authorization session", provider.name)
 	}
 
 	if provider.deviceCode {
 		if strings.TrimSpace(started.UserCode) == "" {
-			return fmt.Errorf("Dari returned a %s authorization session without a device code", provider.name)
+			return subscriptionCredential{}, fmt.Errorf("Dari returned a %s authorization session without a device code", provider.name)
 		}
 		return connectAgentDeviceCodeSubscription(ctx, provider, client, stdin, stderr, started, done)
 	}
@@ -804,7 +806,7 @@ func connectSubscription(
 	if agentInputIsTerminal(stdin) {
 		authorizationResponse, err := runAgentCodeInputTUI(provider, stdin, stderr, started.AuthorizationURL, opened)
 		if err != nil {
-			return err
+			return subscriptionCredential{}, err
 		}
 		return completeAgentPersonalSubscription(ctx, provider, client, stderr, started.SessionToken, authorizationResponse, done)
 	}
@@ -817,7 +819,7 @@ func connectSubscription(
 	}
 	authorizationResponse, err := readAgentLine(stdin)
 	if err != nil {
-		return fmt.Errorf("read %s authorization code: %w", provider.name, err)
+		return subscriptionCredential{}, fmt.Errorf("read %s authorization code: %w", provider.name, err)
 	}
 	return completeAgentPersonalSubscription(ctx, provider, client, stderr, started.SessionToken, authorizationResponse, done)
 }
@@ -830,10 +832,13 @@ func connectAgentDeviceCodeSubscription(
 	stderr io.Writer,
 	started agentSubscriptionOAuthStart,
 	done string,
-) error {
+) (subscriptionCredential, error) {
 	opened := openAgentBrowser(started.AuthorizationURL)
+	var connected subscriptionCredential
 	complete := func() error {
-		return completeAgentPersonalSubscription(ctx, provider, client, stderr, started.SessionToken, "", done)
+		var err error
+		connected, err = completeAgentPersonalSubscription(ctx, provider, client, stderr, started.SessionToken, "", done)
+		return err
 	}
 	pending := func(err error) bool {
 		return err != nil && strings.HasPrefix(err.Error(), provider.vendor+" approval is still pending.")
@@ -841,14 +846,17 @@ func connectAgentDeviceCodeSubscription(
 	if agentInputIsTerminal(stdin) {
 		err := runAgentDeviceCodeTUI(provider, stdin, stderr, started.AuthorizationURL, started.UserCode, opened, func() (bool, error) {
 			// The result is reported after the prompt is erased.
-			err := completeAgentPersonalSubscriptionQuietly(ctx, client, started.SessionToken, "")
+			var err error
+			connected, err = completeAgentPersonalSubscriptionQuietly(ctx, client, started.SessionToken, "")
 			return pending(err), err
 		})
 		if err != nil {
-			return err
+			return connected, err
 		}
-		agentStep(stderr, done)
-		return nil
+		if done != "" {
+			agentStep(stderr, done)
+		}
+		return connected, nil
 	}
 	writeAgentOAuthInstructions(provider, stderr, started.AuthorizationURL, opened)
 	fmt.Fprintf(stderr, "Enter this code at %s: %s\n", provider.vendor, started.UserCode)
@@ -856,7 +864,7 @@ func connectAgentDeviceCodeSubscription(
 		fmt.Fprintln(stderr, "After approving access, press Enter here to finish connecting.")
 		if _, err := readAgentLine(stdin); err != nil {
 			if !errors.Is(err, io.EOF) {
-				return fmt.Errorf("read %s approval: %w", provider.name, err)
+				return connected, fmt.Errorf("read %s approval: %w", provider.name, err)
 			}
 			// No one is here to press Enter (an agent or a script): wait for
 			// the approval instead.
@@ -865,14 +873,14 @@ func connectAgentDeviceCodeSubscription(
 			for {
 				err := complete()
 				if !pending(err) {
-					return err
+					return connected, err
 				}
 				if time.Now().After(deadline) {
-					return fmt.Errorf("%s approval did not arrive in %s; run the command again", provider.vendor, agentApprovalWait)
+					return connected, fmt.Errorf("%s approval did not arrive in %s; run the command again", provider.vendor, agentApprovalWait)
 				}
 				select {
 				case <-ctx.Done():
-					return ctx.Err()
+					return connected, ctx.Err()
 				case <-time.After(agentApprovalPoll):
 				}
 			}
@@ -882,7 +890,7 @@ func connectAgentDeviceCodeSubscription(
 			fmt.Fprintln(stderr, err)
 			continue
 		}
-		return err
+		return connected, err
 	}
 }
 
@@ -894,18 +902,22 @@ func completeAgentPersonalSubscription(
 	sessionToken string,
 	authorizationResponse string,
 	done string,
-) error {
+) (subscriptionCredential, error) {
 	if strings.TrimSpace(authorizationResponse) == "" && !provider.deviceCode {
-		return fmt.Errorf("%s authorization was not completed", provider.name)
+		return subscriptionCredential{}, fmt.Errorf("%s authorization was not completed", provider.name)
 	}
-	if err := completeAgentPersonalSubscriptionQuietly(ctx, client, sessionToken, authorizationResponse); err != nil {
-		return err
+	connected, err := completeAgentPersonalSubscriptionQuietly(ctx, client, sessionToken, authorizationResponse)
+	if err != nil {
+		return connected, err
 	}
-	agentStep(stderr, done)
-	return nil
+	if done != "" {
+		agentStep(stderr, done)
+	}
+	return connected, nil
 }
 
-func completeAgentPersonalSubscriptionQuietly(ctx context.Context, client *api.Client, sessionToken, authorizationResponse string) error {
+func completeAgentPersonalSubscriptionQuietly(ctx context.Context, client *api.Client, sessionToken, authorizationResponse string) (subscriptionCredential, error) {
+	var connected subscriptionCredential
 	if err := client.Do(
 		ctx,
 		http.MethodPost,
@@ -914,11 +926,11 @@ func completeAgentPersonalSubscriptionQuietly(ctx context.Context, client *api.C
 			"session_token":          sessionToken,
 			"authorization_response": authorizationResponse,
 		},
-		nil,
+		&connected,
 	); err != nil {
-		return api.HumanError(err)
+		return connected, api.HumanError(err)
 	}
-	return nil
+	return connected, nil
 }
 
 func writeAgentOAuthInstructions(provider agentSubscriptionProvider, stderr io.Writer, authorizationURL string, opened bool) {

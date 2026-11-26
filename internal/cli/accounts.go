@@ -505,17 +505,20 @@ func (page accountsPage) addSubscription(ctx context.Context, subscriptions []su
 	// `dari accounts subscription connect`.
 	place := placeDari
 	if page.hosted {
-		if place, err = chooseSubscriptionPlace(stdin, stderr, selected.provider, "", ""); err != nil {
+		if place, err = chooseSubscriptionPlace(stdin, stderr, selected.provider, ""); err != nil {
 			if errors.Is(err, errAgentChoiceCanceled) {
 				err = nil
 			}
 			return agentSubscriptionProvider{}, false, err
 		}
 	}
-	if place == placeDari {
-		err = connectAgentPersonalSubscription(ctx, selected.provider, page.client, stdin, stderr, "")
+	if page.hosted {
+		// As `dari accounts subscription connect`, which first offers to move
+		// a plan already on Dari or on this computer.
+		// The same API the page lists from, --api-url included.
+		err = connectOrMove(ctx, &globalFlags{apiURL: page.client.BaseURL}, selected.provider, place, stdin, stderr)
 	} else {
-		err = connectOnComputer(ctx, selected.provider, place, "", stdin, stderr)
+		err = connectAgentPersonalSubscription(ctx, selected.provider, page.client, stdin, stderr, "")
 	}
 	if err != nil {
 		return agentSubscriptionProvider{}, false, err

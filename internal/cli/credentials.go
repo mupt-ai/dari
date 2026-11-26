@@ -369,7 +369,6 @@ func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
 		newSubscriptionResetsCmd(gf),
 		newSubscriptionUseResetCmd(gf),
 		newSubscriptionRenameCmd(gf),
-		newSubscriptionMoveCmd(gf),
 	)
 	return cmd
 }
@@ -428,7 +427,10 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connect <codex|claude-code|grok|muse-code|opencode-go|vercel-token-pass>",
 		Short: "Connect another subscription, or reconnect one with --reconnect",
-		Args:  cobra.ExactArgs(1),
+		Long: "Connects a subscription on Dari, on this computer (synced to Dari), or privately on this computer.\n" +
+			"A plan of the same provider already on Dari or on this computer is first offered to move there,\n" +
+			"since one account may be connected on Dari once and on this computer once.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			provider, ok := subscriptionProviders[strings.ToLower(strings.TrimSpace(args[0]))]
 			if !ok {
@@ -439,11 +441,11 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 				return err
 			}
 			if !viaGateway && reconnect == "" {
-				place, err := chooseSubscriptionPlace(cmd.InOrStdin(), cmd.ErrOrStderr(), provider, on, "")
+				place, err := chooseSubscriptionPlace(cmd.InOrStdin(), cmd.ErrOrStderr(), provider, on)
 				if err != nil {
 					return err
 				}
-				return connectSubscriptionAt(cmd.Context(), gf, provider, place, "", cmd.InOrStdin(), cmd.ErrOrStderr())
+				return connectOrMove(cmd.Context(), gf, provider, place, cmd.InOrStdin(), cmd.ErrOrStderr())
 			}
 			if !viaGateway {
 				// A plan reconnects where it lives; --on picks between Dari
@@ -532,41 +534,6 @@ func placedSubscriptionClient(cmd *cobra.Command, gf *globalFlags, arg, on strin
 	}
 	client, err := placedClient(cmd.Context(), gf, found, cmd.ErrOrStderr())
 	return client, found.Name, err
-}
-
-func newSubscriptionMoveCmd(gf *globalFlags) *cobra.Command {
-	var on, from string
-	cmd := &cobra.Command{
-		Use:   "move <claude-code|codex|NAME>",
-		Short: "Move a subscription between Dari, this computer, and private on this computer",
-		Long: "Moving between Dari and this computer signs in again where the plan goes, then disconnects it\n" +
-			"where it was. Moving between this computer and private changes only whether it syncs to Dari.",
-		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if selfHosted, err := selfHostedGateway(); err != nil || selfHosted {
-				return cmpErr(err, errNoPlaces)
-			}
-			all, err := listPlacedSubscriptions(cmd.Context(), gf, cmd.ErrOrStderr(), false)
-			if err != nil {
-				return err
-			}
-			found, err := findPlacedSubscription(all, args[0], from)
-			if err != nil {
-				return err
-			}
-			if on == "" && !agentInputIsTerminal(cmd.InOrStdin()) {
-				return errors.New("pass --on dari, computer, or private to move without a terminal")
-			}
-			to, err := chooseSubscriptionPlace(cmd.InOrStdin(), cmd.ErrOrStderr(), subscriptionProviderFor(found.OAuthProvider), on, found.place)
-			if err != nil {
-				return err
-			}
-			return moveSubscription(cmd.Context(), gf, found, to, cmd.InOrStdin(), cmd.ErrOrStderr())
-		},
-	}
-	cmd.Flags().StringVar(&on, "on", "", "where it goes: dari, computer (synced to Dari), or private; omit for the menu")
-	cmd.Flags().StringVar(&from, "from", "", "dari or computer, when the name is connected in both")
-	return cmd
 }
 
 // resolveSubscriptionName maps a provider alias to its only connected

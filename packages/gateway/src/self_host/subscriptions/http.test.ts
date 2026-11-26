@@ -167,7 +167,7 @@ describe("connecting", () => {
     expect(refused).toEqual({
       status: 409,
       body: {
-        detail: "This Claude account is already connected on Dari as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN. Move it with `dari accounts subscription move ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN --on computer`, or disconnect it first.",
+        detail: "This Claude account is already connected on Dari as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN. Run `dari accounts subscription connect` again and choose Move, or disconnect it first.",
       },
     });
     expect(g.store.list()).toHaveLength(0);

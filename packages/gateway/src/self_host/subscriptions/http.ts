@@ -164,7 +164,7 @@ async function startSession(deps: SubscriptionHttpDeps, body: Record<string, unk
   // A reconnected plan stays where it was unless the caller says otherwise.
   const isPrivate = body.private ?? reconnecting?.private ?? false;
   if (typeof isPrivate !== "boolean") throw new HttpError(400, "private must be true or false.");
-  // `dari accounts subscription move` names the hosted plan it moves here.
+  // `dari accounts subscription connect` names the hosted plan it moves here.
   const movingFrom = body.moving_from ?? null;
   if (movingFrom !== null && (typeof movingFrom !== "string" || !movingFrom.trim())) {
     throw new HttpError(400, "moving_from must be a non-empty string.");
@@ -297,13 +297,22 @@ function usageBody(credential: SubscriptionCredential, now: Date) {
   };
 }
 
+function safeMetadata(credential: SubscriptionCredential): Record<string, string> {
+  const metadata: Record<string, string> = {};
+  if (credential.accountEmail !== null) metadata.account_email = credential.accountEmail;
+  if (credential.accountId !== null) metadata.account_id = credential.accountId;
+  return metadata;
+}
+
 function credentialBody(credential: SubscriptionCredential, active: boolean, now: Date) {
   const held = isHeld(credential, now);
   return {
     id: credential.id,
     name: credential.name,
     label: credential.label,
-    safe_metadata: credential.accountEmail === null ? {} : { account_email: credential.accountEmail },
+    // The account, as hosted Dari shows a plan's: its email and, where the
+    // provider names one, its account (a ChatGPT workspace).
+    safe_metadata: safeMetadata(credential),
     // Hosted organizations also hold organization-scoped secrets; every
     // subscription here belongs to the gateway's one user.
     credential_scope: "user",

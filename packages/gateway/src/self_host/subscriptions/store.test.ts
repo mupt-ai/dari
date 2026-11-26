@@ -42,7 +42,7 @@ describe("connecting", () => {
     const { store, credentials } = connected("one@example.com");
     store.markUnavailable(credentials[0]!.id, later(60), "usage_limit", now);
     expect(() => store.connect(tokens({ accessToken: "fresh" }), null, later(1))).toThrow(
-      "This Claude account is already connected on This Computer as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN. Move it with `dari accounts subscription move ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN --on dari`, or disconnect it first.",
+      "This Claude account is already connected on This Computer as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN. Run `dari accounts subscription connect` again and choose Move, or disconnect it first.",
     );
     expect(store.list()).toHaveLength(1);
     expect(store.get(credentials[0]!.id)?.accessToken).toBe("access-0");
@@ -60,7 +60,7 @@ describe("connecting", () => {
       tokens({ provider: "openai_codex", accountId, accountEmail });
     const first = store.connect(codex("acct_1", "a@example.com"), null, now, null, true)!;
     expect(() => store.connect(codex("acct_1", "other@example.com"), null, later(1))).toThrow(
-      `This ChatGPT account is already connected Private on This Computer as ${first.name}. Move it with \`dari accounts subscription move ${first.name} --on dari\` or \`--on computer\`, or disconnect it first.`,
+      `This ChatGPT account is already connected Private on This Computer as ${first.name}. Run \`dari accounts subscription connect\` again and choose Move, or disconnect it first.`,
     );
     // Another workspace under the same email is another account.
     expect(store.connect(codex("acct_2", "a@example.com"), null, later(2))!.name).toBe("OPENAI_CODEX_OAUTH_TOKEN_2");
@@ -69,7 +69,7 @@ describe("connecting", () => {
   test("reconnecting a plan to an account another plan already holds is refused; to a new account it is allowed", () => {
     const { store, credentials: [a, b] } = connected("a@example.com", "b@example.com");
     expect(() => store.connect(tokens({ accountEmail: "b@example.com" }), a!.name, later(1))).toThrow(
-      "This Claude account is already connected on This Computer as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN_2. Move it with `dari accounts subscription move ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN_2 --on dari`, or disconnect it first.",
+      "This Claude account is already connected on This Computer as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN_2. Run `dari accounts subscription connect` again and choose Move, or disconnect it first.",
     );
     expect(store.get(a!.id)?.accountEmail).toBe("a@example.com");
     const moved = store.connect(tokens({ accountEmail: "c@example.com" }), a!.name, later(2))!;
@@ -96,7 +96,7 @@ describe("connecting", () => {
       name: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN",
     }];
     expect(() => store.connect(tokens(), null, now, null, false, dari)).toThrow(
-      "This Claude account is already connected on Dari as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN. Move it with `dari accounts subscription move ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN --on computer`, or disconnect it first.",
+      "This Claude account is already connected on Dari as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN. Run `dari accounts subscription connect` again and choose Move, or disconnect it first.",
     );
     // A different account on Dari does not block.
     expect(store.connect(tokens({ accountEmail: "two@example.com" }), null, now, null, false, dari)).not.toBeNull();

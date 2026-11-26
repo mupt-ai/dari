@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/state"
 )
 
@@ -26,6 +28,9 @@ func TestMain(m *testing.M) {
 	os.Setenv("GIT_CONFIG_VALUE_0", "false")
 	// No test reaches the real gateway on this computer.
 	launchGateway = func(context.Context, string, io.Writer) *gatewayConfig { return nil }
+	computerClient = func(context.Context, io.Reader, io.Writer, bool) (*api.Client, error) {
+		return nil, errors.New("tests never start this computer's gateway")
+	}
 	os.Exit(m.Run())
 }
 

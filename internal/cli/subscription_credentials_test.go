@@ -1,14 +1,11 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/mupt-ai/dari/internal/api"
 )
 
 func multipleSubscriptionsServer(t *testing.T, seen map[string]map[string]any) *httptest.Server {
@@ -219,26 +216,6 @@ func TestSubscriptionConnectAddsAnotherOrReconnectsOne(t *testing.T) {
 		if _, ok := seen["POST /v1/organizations/current/credentials/oauth/sessions/complete"]; !ok {
 			t.Fatalf("connect %v did not complete the session", tc.args)
 		}
-	}
-}
-
-func TestMovingASubscriptionNamesThePlanItReplaces(t *testing.T) {
-	useTestAPIKey(t)
-	original := openAgentBrowser
-	openAgentBrowser = func(string) bool { return false }
-	t.Cleanup(func() { openAgentBrowser = original })
-	seen := map[string]map[string]any{}
-	srv := multipleSubscriptionsServer(t, seen)
-	defer srv.Close()
-
-	err := connectSubscription(context.Background(), codexSubscription, api.New(srv.URL), strings.NewReader("\n"),
-		&strings.Builder{}, "", false, "cred_laptop", "connected")
-	if err != nil {
-		t.Fatal(err)
-	}
-	started := seen["POST /v1/organizations/current/credentials/oauth/sessions"]
-	if started["moving_from"] != "cred_laptop" {
-		t.Fatalf("start body = %#v, want moving_from", started)
 	}
 }
 

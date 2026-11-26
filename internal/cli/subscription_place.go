@@ -122,10 +122,12 @@ func subscriptionPlaces(provider agentSubscriptionProvider) []subscriptionPlace 
 	return places
 }
 
+// placeNames are the places as the user sees them.
+var placeNames = map[subscriptionPlace]string{placeDari: "Dari", placeComputer: "This Computer", placePrivate: "Private"}
+
 // chooseSubscriptionPlace is --on when given, else the picker in a terminal,
-// else the provider's default. current, when set, is tagged in place of the
-// default.
-func chooseSubscriptionPlace(stdin io.Reader, stderr io.Writer, provider agentSubscriptionProvider, flag string, current subscriptionPlace) (subscriptionPlace, error) {
+// else the provider's default.
+func chooseSubscriptionPlace(stdin io.Reader, stderr io.Writer, provider agentSubscriptionProvider, flag string) (subscriptionPlace, error) {
 	if flag != "" {
 		return parseSubscriptionPlace(flag)
 	}
@@ -137,13 +139,8 @@ func chooseSubscriptionPlace(stdin io.Reader, stderr io.Writer, provider agentSu
 	options := make([]agentChoiceOption, len(places))
 	for index, place := range places {
 		options[index] = placeOptions[place]
-		switch {
-		case current == place:
-			options[index].label += " (Current)"
-		case current == "" && index == 0:
-			options[index].label += " (Default)"
-		}
 	}
+	options[0].label += " (Default)"
 	choice, err := runAgentChoiceTUI(stdin, stderr, "Where Should "+provider.name+" Live?", []string{"You can change this later."}, options)
 	if err != nil {
 		return "", err
@@ -247,22 +244,69 @@ func thisComputer() string {
 	return hostname
 }
 
-// connectSubscriptionAt signs a plan in where it is to live.
-func connectSubscriptionAt(ctx context.Context, gf *globalFlags, provider agentSubscriptionProvider, place subscriptionPlace, movingFrom string, stdin io.Reader, stderr io.Writer) error {
+// computerClient is the API of this computer's gateway, started, and
+// connected to hosted Dari when needHosted. Tests replace it so none starts.
+var computerClient = func(ctx context.Context, stdin io.Reader, stderr io.Writer, needHosted bool) (*api.Client, error) {
+	gw, err := computerGateway(ctx, stdin, stderr, needHosted)
+	if err != nil {
+		return nil, err
+	}
+	return gatewayClient(gw), nil
+}
+
+// connectOrMove signs a plan in at place. The same account may be on Dari
+// once and on this computer once, so each plan of the provider already on
+// Dari or on this computer's other place is first offered to move there
+// instead.
+func connectOrMove(ctx context.Context, gf *globalFlags, provider agentSubscriptionProvider, place subscriptionPlace, stdin io.Reader, stderr io.Writer) error {
+	var all []placedSubscription
+	if signedIn() {
+		var err error
+		if all, err = listPlacedSubscriptions(ctx, gf, stderr, true); err != nil {
+			return err
+		}
+	}
+	for _, s := range all {
+		// Other computers' plans never block; one in the same place is a
+		// second plan, not a move.
+		if s.OAuthProvider != provider.id || s.place == "" || s.place == place {
+			continue
+		}
+		move, err := confirmMove(stdin, stderr, s, place)
+		if err != nil {
+			return err
+		}
+		if move {
+			return moveSubscription(ctx, gf, s, place, stdin, stderr)
+		}
+	}
 	if place == placeDari {
 		client, err := hostedSubscriptionClient(gf)
 		if err != nil {
 			return err
 		}
-		return connectSubscription(ctx, provider, client, stdin, stderr, "", false, movingFrom, provider.name+" subscription connected")
+		return connectAgentPersonalSubscription(ctx, provider, client, stdin, stderr, "")
 	}
-	return connectOnComputer(ctx, provider, place, movingFrom, stdin, stderr)
+	return connectOnComputer(ctx, provider, place, stdin, stderr)
+}
+
+// confirmMove asks whether to move s to place rather than connect another
+// account. Without a terminal it never asks, so a piped authorization code
+// is not read as the answer: another account connects, and a sign-in to the
+// same one is refused, saying how to move it. Tests replace it.
+var confirmMove = func(stdin io.Reader, stderr io.Writer, s placedSubscription, place subscriptionPlace) (bool, error) {
+	if !agentInputIsTerminal(stdin) {
+		return false, nil
+	}
+	question := "Move " + subscriptionName(s.subscriptionCredential) + " from " + s.where + " to " + placeNames[place] + "?"
+	choice, err := runAgentChoiceTUI(stdin, stderr, question, nil, []agentChoiceOption{{label: "Move"}, {label: "Connect Another Account"}})
+	return choice == 0, err
 }
 
 // connectOnComputer signs a plan in on this computer's gateway, synced to
 // Dari or private.
-func connectOnComputer(ctx context.Context, provider agentSubscriptionProvider, place subscriptionPlace, movingFrom string, stdin io.Reader, stderr io.Writer) error {
-	gw, err := computerGateway(ctx, stdin, stderr, place == placeComputer)
+func connectOnComputer(ctx context.Context, provider agentSubscriptionProvider, place subscriptionPlace, stdin io.Reader, stderr io.Writer) error {
+	client, err := computerClient(ctx, stdin, stderr, place == placeComputer)
 	if err != nil {
 		return err
 	}
@@ -270,7 +314,8 @@ func connectOnComputer(ctx context.Context, provider agentSubscriptionProvider, 
 	if place == placePrivate {
 		done = provider.name + " connected privately on this computer"
 	}
-	return connectSubscription(ctx, provider, gatewayClient(gw), stdin, stderr, "", place == placePrivate, movingFrom, done)
+	_, err = connectSubscription(ctx, provider, client, stdin, stderr, "", place == placePrivate, "", done)
+	return err
 }
 
 // computerSubscriptions are the plans on this computer's gateway, each with
@@ -292,7 +337,7 @@ func computerSubscriptions(ctx context.Context, raw []byte, stderr io.Writer) ([
 	if !synced && !gateway.HasDatabase() && !gateway.Healthy(ctx) {
 		return nil, nil, nil
 	}
-	placed, gw, err := readComputerPlans(ctx, stderr)
+	placed, client, err := readComputerPlans(ctx, stderr)
 	if err != nil {
 		// The page still shows and manages the hosted plans.
 		agentStep(stderr, fmt.Sprintf("Could not read the plans on this computer (%v)", err))
@@ -303,7 +348,7 @@ func computerSubscriptions(ctx context.Context, raw []byte, stderr io.Writer) ([
 		plans[i] = p.subscriptionCredential
 		plans[i].otherComputers = otherComputers(plans[i], hosted.LocalSubscriptions, settings.GatewayID)
 	}
-	return plans, gatewayClient(gw), nil
+	return plans, client, nil
 }
 
 // hasBankedResets reports whether the plan's provider banks limit resets.
@@ -337,7 +382,7 @@ func listPlacedSubscriptions(ctx context.Context, gf *globalFlags, stderr io.Wri
 		if err := gw.ensure(ctx, stderr); err != nil {
 			return nil, err
 		}
-		return localPlacedSubscriptions(ctx, gw)
+		return localPlacedSubscriptions(ctx, gatewayClient(gw))
 	}
 	client, err := hostedSubscriptionClient(gf)
 	if err != nil {
@@ -381,20 +426,20 @@ func listPlacedSubscriptions(ctx context.Context, gf *globalFlags, stderr io.Wri
 }
 
 // readComputerPlans starts this computer's gateway and lists its plans.
-func readComputerPlans(ctx context.Context, stderr io.Writer) ([]placedSubscription, *gatewayConfig, error) {
-	gw, err := computerGateway(ctx, nil, stderr, false)
+func readComputerPlans(ctx context.Context, stderr io.Writer) ([]placedSubscription, *api.Client, error) {
+	client, err := computerClient(ctx, nil, stderr, false)
 	if err != nil {
 		return nil, nil, err
 	}
-	placed, err := localPlacedSubscriptions(ctx, gw)
-	return placed, gw, err
+	placed, err := localPlacedSubscriptions(ctx, client)
+	return placed, client, err
 }
 
-func localPlacedSubscriptions(ctx context.Context, gw *gatewayConfig) ([]placedSubscription, error) {
+func localPlacedSubscriptions(ctx context.Context, client *api.Client) ([]placedSubscription, error) {
 	var listed struct {
 		Credentials []subscriptionCredential `json:"credentials"`
 	}
-	if err := gatewayClient(gw).Do(ctx, http.MethodGet, "/v1/organizations/current/credentials?refresh_usage=true", nil, &listed); err != nil {
+	if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials?refresh_usage=true", nil, &listed); err != nil {
 		return nil, api.HumanError(err)
 	}
 	placed := []placedSubscription{}
@@ -461,11 +506,7 @@ func placedClient(ctx context.Context, gf *globalFlags, s placedSubscription, st
 	if s.place == placeDari {
 		return hostedSubscriptionClient(gf)
 	}
-	gw, err := computerGateway(ctx, nil, stderr, false)
-	if err != nil {
-		return nil, err
-	}
-	return gatewayClient(gw), nil
+	return computerClient(ctx, nil, stderr, false)
 }
 
 func disconnectPlaced(ctx context.Context, client *api.Client, name string) error {
@@ -477,29 +518,30 @@ func disconnectPlaced(ctx context.Context, client *api.Client, name string) erro
 // disconnecting it where it was. Between this computer's two places only its
 // flag changes.
 func moveSubscription(ctx context.Context, gf *globalFlags, s placedSubscription, to subscriptionPlace, stdin io.Reader, stderr io.Writer) error {
-	provider := subscriptionProviderFor(s.OAuthProvider)
-	if to == s.place {
-		agentStep(stderr, provider.name+" already lives there")
-		return nil
-	}
+	moved := subscriptionName(s.subscriptionCredential) + " moved from " + s.where + " to " + placeNames[to]
 	if s.place != placeDari && to != placeDari {
-		gw, err := computerGateway(ctx, stdin, stderr, to == placeComputer)
+		client, err := computerClient(ctx, stdin, stderr, to == placeComputer)
 		if err != nil {
 			return err
 		}
-		if err := gatewayClient(gw).Do(ctx, http.MethodPut,
+		if err := client.Do(ctx, http.MethodPut,
 			"/v1/organizations/current/credentials/"+url.PathEscape(s.Name)+"/private",
 			map[string]bool{"private": to == placePrivate}, nil); err != nil {
 			return api.HumanError(err)
 		}
-		if to == placePrivate {
-			agentStep(stderr, provider.name+" is now private on this computer")
-		} else {
-			agentStep(stderr, provider.name+" now syncs to Dari from this computer ("+thisComputer()+")")
-		}
+		agentStep(stderr, moved)
 		return nil
 	}
 	from, err := placedClient(ctx, gf, s, stderr)
+	if err != nil {
+		return err
+	}
+	var dest *api.Client
+	if to == placeDari {
+		dest, err = hostedSubscriptionClient(gf)
+	} else {
+		dest, err = computerClient(ctx, stdin, stderr, to == placeComputer)
+	}
 	if err != nil {
 		return err
 	}
@@ -509,10 +551,33 @@ func moveSubscription(ctx context.Context, gf *globalFlags, s placedSubscription
 	if s.place != placeDari {
 		movingFrom = s.ID
 	}
-	if err := connectSubscriptionAt(ctx, gf, provider, to, movingFrom, stdin, stderr); err != nil {
+	provider := subscriptionProviderFor(s.OAuthProvider)
+	connected, err := connectSubscription(ctx, provider, dest, stdin, stderr, "", to == placePrivate, movingFrom, "")
+	if err != nil {
 		return err
 	}
-	return disconnectPlaced(ctx, from, s.Name)
+	// The browser may have been signed in to another account; the old plan
+	// then still holds its own and stays.
+	if !sameAccount(planAccount(connected), planAccount(s.subscriptionCredential)) {
+		agentStep(stderr, "Signed in to another account; kept "+subscriptionName(s.subscriptionCredential)+" on "+s.where)
+		return nil
+	}
+	if err := disconnectPlaced(ctx, from, s.Name); err != nil {
+		return err
+	}
+	agentStep(stderr, moved)
+	return nil
+}
+
+// planAccount is the account a plan holds, as sameAccount compares them.
+func planAccount(plan subscriptionCredential) localSubscription {
+	// A gateway names the account; hosted Dari names its workspace.
+	id := plan.SafeMetadata["account_id"]
+	if id == "" {
+		id = plan.SafeMetadata["workspace_id"]
+	}
+	email := plan.SafeMetadata["account_email"]
+	return localSubscription{Provider: plan.OAuthProvider, AccountID: &id, AccountEmail: &email}
 }
 
 var errNoPlaces = errors.New("with a local or self-hosted gateway every subscription lives on it; there is no place to choose")

@@ -98,14 +98,13 @@ export type AccountRef = {
 };
 
 /**
- * A plan of the same user that already holds an account, wherever it lives.
- * `name` is the plan's handle where it is known; `gatewayName` names the other
- * computer for an `other_computer` plan.
+ * A plan of the same user that already holds an account: on hosted Dari, or
+ * on this computer. The same account may also be on any number of the user's
+ * other computers. `name` is the plan's handle.
  */
 export type ConnectedAccount = AccountRef & {
-  place: "dari" | "this_computer" | "private" | "other_computer";
+  place: "dari" | "this_computer" | "private";
   name: string | null;
-  gatewayName: string | null;
 };
 
 /** Connecting an account the same user already has connected; the message says where it lives and how to move it. */
@@ -142,8 +141,6 @@ function connectedAccountMessage(account: ConnectedAccount): string {
       return `This ${label} account is already connected on This Computer${asName}. Move it with \`dari accounts subscription move ${handle} --on dari\`, or disconnect it first.`;
     case "private":
       return `This ${label} account is already connected Private on This Computer${asName}. Move it with \`dari accounts subscription move ${handle} --on dari\` or \`--on computer\`, or disconnect it first.`;
-    case "other_computer":
-      return `This ${label} account is already connected on another computer${account.gatewayName ? ` (${account.gatewayName})` : ""}. Disconnect it there, or move it to Dari there with \`dari accounts subscription move\`.`;
   }
 }
 
@@ -572,7 +569,6 @@ export class SubscriptionStore {
         accountEmail: local.accountEmail,
         place: local.private ? "private" : "this_computer",
         name: local.name,
-        gatewayName: null,
       }));
     }
     const other = elsewhere.find((account) => sameConnectedAccount(account, tokens));

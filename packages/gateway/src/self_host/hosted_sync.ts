@@ -212,15 +212,18 @@ export class HostedSync {
 }
 
 /**
- * The user's plans hosted Dari holds on other computers and on Dari, for the
- * check before a sign-in connects an account: `GET /v1/gateway/accounts`
- * returns each one's provider, account identity, and where it lives, never a token.
+ * The user's plans on hosted Dari, for the check before a sign-in connects an
+ * account: `GET /v1/gateway/accounts` returns each one's provider, account
+ * identity, and name, never a token. Other computers may hold the same
+ * account, so only Dari's plans count.
  */
 export async function readHostedAccounts(
   hosted: HostedConnection,
   fetchImpl: typeof globalThis.fetch,
 ): Promise<ConnectedAccount[]> {
   const response = await fetchImpl(
+    // Hosted Dari before this release requires gateway_id; it leaves this
+    // gateway's own plans out.
     `${hosted.url}/v1/gateway/accounts?gateway_id=${encodeURIComponent(hosted.gatewayId)}`,
     {
       headers: { authorization: `Bearer ${hosted.apiKey}` },
@@ -230,20 +233,22 @@ export async function readHostedAccounts(
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
   const body = await response.json() as { accounts?: unknown };
   if (!Array.isArray(body.accounts)) throw new Error("hosted accounts response has no accounts list");
-  return body.accounts.map((entry: Record<string, unknown>) => {
+  const accounts: ConnectedAccount[] = [];
+  for (const entry of body.accounts as Array<Record<string, unknown>>) {
+    // Hosted Dari before this release also listed other computers' plans.
+    if (entry.where !== "dari") continue;
     if (!SUBSCRIPTION_PROVIDERS.includes(entry.provider as SubscriptionProvider)) {
       throw new Error(`hosted accounts response names an unknown provider ${JSON.stringify(entry.provider)}`);
     }
-    const dari = entry.where === "dari";
-    return {
-      provider: entry.provider as SubscriptionProvider,
-      accountId: typeof entry.account_id === "string" ? entry.account_id : null,
-      accountEmail: typeof entry.account_email === "string" ? entry.account_email : null,
-      place: dari ? "dari" : "other_computer",
-      name: typeof entry.name === "string" ? entry.name : null,
-      gatewayName: typeof entry.gateway_name === "string" ? entry.gateway_name : null,
-    };
-  });
+    let accountId: string | null = null;
+    if (typeof entry.account_id === "string") accountId = entry.account_id;
+    let accountEmail: string | null = null;
+    if (typeof entry.account_email === "string") accountEmail = entry.account_email;
+    let name: string | null = null;
+    if (typeof entry.name === "string") name = entry.name;
+    accounts.push({ provider: entry.provider as SubscriptionProvider, accountId, accountEmail, place: "dari", name });
+  }
+  return accounts;
 }
 
 function backoff(failures: number): number {

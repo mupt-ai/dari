@@ -161,7 +161,6 @@ describe("connecting", () => {
       accountEmail: "me@example.com",
       place: "dari",
       name: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN",
-      gatewayName: null,
     };
     const g = gateway([claudeToken("me@example.com")], async () => [hosted]);
     const refused = await connectClaude(g);
@@ -181,7 +180,6 @@ describe("connecting", () => {
       accountEmail: "me@example.com",
       place: "dari",
       name,
-      gatewayName: null,
     });
     const move = async (movingFrom: string) => {
       const g = gateway([claudeToken("me@example.com")], async () => [onDari("ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN_2")]);

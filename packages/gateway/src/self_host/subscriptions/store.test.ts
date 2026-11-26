@@ -94,17 +94,12 @@ describe("connecting", () => {
       accountEmail: "one@example.com",
       place: "dari" as const,
       name: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN",
-      gatewayName: null,
     }];
     expect(() => store.connect(tokens(), null, now, null, false, dari)).toThrow(
       "This Claude account is already connected on Dari as ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN. Move it with `dari accounts subscription move ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN --on computer`, or disconnect it first.",
     );
-    const laptop = [{ ...dari[0]!, place: "other_computer" as const, name: null, gatewayName: "Laptop" }];
-    expect(() => store.connect(tokens(), null, now, null, false, laptop)).toThrow(
-      "This Claude account is already connected on another computer (Laptop). Disconnect it there, or move it to Dari there with `dari accounts subscription move`.",
-    );
-    // A different account on Dari or another computer does not block.
-    expect(store.connect(tokens({ accountEmail: "two@example.com" }), null, now, null, false, laptop)).not.toBeNull();
+    // A different account on Dari does not block.
+    expect(store.connect(tokens({ accountEmail: "two@example.com" }), null, now, null, false, dari)).not.toBeNull();
   });
 
   test("reconnect replaces the named subscription in place", () => {

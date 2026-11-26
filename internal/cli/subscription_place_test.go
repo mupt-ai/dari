@@ -71,3 +71,27 @@ func TestPlansOnThisComputerCountAsConnected(t *testing.T) {
 		t.Fatalf("connected = %+v, %v", connected, err)
 	}
 }
+
+func TestSubscriptionWhereListsEveryComputerHoldingTheAccount(t *testing.T) {
+	id := "acct-1"
+	email, upper, other := "me@example.com", "Me@Example.com", "other@example.com"
+	plan := subscriptionCredential{
+		ID:            "local-1",
+		OAuthProvider: "openai_codex",
+		SafeMetadata:  map[string]string{"account_email": "me@example.com"},
+		place:         placeComputer,
+	}
+	reported := []localSubscription{
+		{GatewayID: "here", GatewayName: "mac.higgins.home", LocalID: "local-1", Provider: "openai_codex", AccountID: &id, AccountEmail: &email},
+		{GatewayID: "mini", GatewayName: "Mac mini", Provider: "openai_codex", AccountID: &id},
+		{GatewayID: "laptop", GatewayName: "Laptop", Provider: "openai_codex", AccountEmail: &upper},
+		{GatewayID: "studio", GatewayName: "Studio", Provider: "openai_codex", AccountEmail: &other},
+		{GatewayID: "box", GatewayName: "Box", Provider: "anthropic_claude_code", AccountID: &id},
+	}
+	plan.otherComputers = otherComputers(plan, reported, "here")
+	// The laptop's copy has no id, so its email matches in any case.
+	want := " " + ansiGray + "This Computer · Laptop · Mac mini" + ansiReset
+	if got := subscriptionWhere(plan); got != want {
+		t.Fatalf("subscriptionWhere = %q, want %q", got, want)
+	}
+}

@@ -285,6 +285,9 @@ type subscriptionCredential struct {
 	// place is where the plan lives when the page shows plans from both
 	// hosted Dari and this computer; empty for a listing from one API.
 	place subscriptionPlace
+	// otherComputers name the user's other computers holding the same
+	// account, so the accounts page shows it once.
+	otherComputers []string
 }
 
 // subscriptionUsage is the tightest window's share used and reset, and every

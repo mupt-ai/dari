@@ -34,6 +34,56 @@ type localSubscription struct {
 	GatewayName string `json:"gateway_name"`
 	LocalID     string `json:"local_id"`
 	Provider    string `json:"provider"`
+	// AccountID and AccountEmail say which vendor account it is; the same
+	// account may be connected on several computers.
+	AccountID    *string `json:"account_id"`
+	AccountEmail *string `json:"account_email"`
+}
+
+// sameAccount is whether two computers' copies are one account: the same
+// provider and account id, or, when either has no id, the same email in any
+// case. A copy with neither is only ever itself.
+func sameAccount(left, right localSubscription) bool {
+	if left.Provider != right.Provider {
+		return false
+	}
+	leftID, rightID := deref(left.AccountID), deref(right.AccountID)
+	if leftID != "" && rightID != "" {
+		return leftID == rightID
+	}
+	leftEmail, rightEmail := deref(left.AccountEmail), deref(right.AccountEmail)
+	if leftEmail == "" || rightEmail == "" {
+		return false
+	}
+	return strings.EqualFold(leftEmail, rightEmail)
+}
+
+func deref(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+// otherComputers names the other computers that hold the same account as
+// this computer's plan, sorted. Hosted Dari's report of this computer's own
+// copy carries the account id; before it syncs, the plan's email stands in.
+func otherComputers(plan subscriptionCredential, reported []localSubscription, thisGateway string) []string {
+	email := plan.SafeMetadata["account_email"]
+	own := localSubscription{Provider: plan.OAuthProvider, AccountEmail: &email}
+	for _, local := range reported {
+		if local.GatewayID == thisGateway && local.LocalID == plan.ID {
+			own = local
+		}
+	}
+	names := []string{}
+	for _, local := range reported {
+		if local.GatewayID != thisGateway && sameAccount(own, local) {
+			names = append(names, local.GatewayName)
+		}
+	}
+	slices.Sort(names)
+	return names
 }
 
 var placeOptions = map[subscriptionPlace]agentChoiceOption{
@@ -265,6 +315,7 @@ func computerSubscriptions(ctx context.Context, raw []byte, stderr io.Writer) ([
 	plans := make([]subscriptionCredential, len(placed))
 	for i, p := range placed {
 		plans[i] = p.subscriptionCredential
+		plans[i].otherComputers = otherComputers(plans[i], hosted.LocalSubscriptions, settings.GatewayID)
 	}
 	return plans, gatewayClient(gw), nil
 }

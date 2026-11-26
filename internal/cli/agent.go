@@ -315,10 +315,8 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 	if gw != nil {
 		listURL, listKey = gw.url+strings.TrimPrefix(baseURL, routingBaseURL), gw.key
 	}
-	// Hosted routers fall back to managed keys for a plan's provider, so they
-	// list its models for every client; naming the agent there would also
-	// drop them while the plan is held. Only gateways need the agent.
-	models, err := routerModels(ctx, listURL, listKey, "")
+	// Discovery must use the same agent identity as the requests it will make.
+	models, err := routerModels(ctx, listURL, listKey, launch.name)
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}

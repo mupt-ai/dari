@@ -483,7 +483,7 @@ func existingAgentRouting(ctx context.Context, name string, stdin io.Reader, std
 		return "", "", agents.Models{}, errors.New("it has no hosted router yet")
 	}
 	baseURL := agentRoutingBaseURL(router.ID)
-	models, err := routerModels(ctx, baseURL, access.key, "")
+	models, err := routerModels(ctx, baseURL, access.key, name)
 	return access.key, baseURL, models, err
 }
 

@@ -41,9 +41,8 @@ func routerModels(ctx context.Context, baseURL, key, agent string) (agents.Model
 		return agents.Models{}, err
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
-	// The gateway lists what it serves this agent: the agent's own models
-	// when it has some, and a subscription that serves only its own agent
-	// (Claude Code, Muse Code) only for that agent.
+	// Both hosted and gateway routers need the agent identity to list models
+	// served by agent-specific subscriptions (Claude Code, Muse Code).
 	if client := agentSetups[agent].codingAgent; client != "" {
 		req.Header.Set(agents.ClientHarnessHeader, client)
 	}
@@ -65,6 +64,9 @@ func routerModels(ctx context.Context, baseURL, key, agent string) (agents.Model
 		}
 		if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 			return agents.Models{}, errRouterKeyRefused
+		}
+		if failure.Error.Message != "" {
+			return agents.Models{}, fmt.Errorf("list router models: %s (HTTP %d)", failure.Error.Message, resp.StatusCode)
 		}
 		return agents.Models{}, fmt.Errorf("list router models: HTTP %d", resp.StatusCode)
 	}

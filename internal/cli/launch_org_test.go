@@ -359,3 +359,39 @@ func TestLaunchOrgIsRefusedForAgentsThatRouteOnTheirSetup(t *testing.T) {
 		t.Fatalf("an agent started with --org: %v", err)
 	}
 }
+
+func TestHostedLaunchListsModelsForEachHarness(t *testing.T) {
+	for _, tc := range []struct{ name, harness string }{
+		{"claude", "claude_code"}, {"codex", "codex"}, {"muse", "muse_code"},
+		{"opencode", "opencode"}, {"pi", "pi"}, {"openclaw", "openclaw"}, {"hermes", "hermes"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			routing := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("X-Dari-Client-Harness") != tc.harness {
+					w.WriteHeader(http.StatusFailedDependency)
+					return
+				}
+				_, _ = io.WriteString(w, `{"models":[{"slug":"dari/model/anthropic/claude"}]}`)
+			}))
+			defer routing.Close()
+			routingServedBy(t, routing)
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/organizations/current/api-keys":
+					_, _ = io.WriteString(w, `{"api_key":"route_a"}`)
+				case "/v1/organizations/current/routers":
+					_, _ = io.WriteString(w, `{"routers":[{"id":"rtr_a","name":"Test"}]}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer api.Close()
+			signInToTwoOrgs(t, api.URL)
+			launch := agentLaunch{name: tc.name, args: []string{"--router", "rtr_a"}}
+			_, _, models, err := resolveAgentRouting(t.Context(), &launch, strings.NewReader(""), io.Discard)
+			if err != nil || len(models.Enabled) != 1 || models.Enabled[0] != "anthropic/claude" {
+				t.Fatalf("models = %+v, err = %v", models, err)
+			}
+		})
+	}
+}

@@ -2,8 +2,9 @@ constexpr uint state_width = 64;
 constexpr uint lanes_per_channel = 8;
 constexpr uint features_per_lane = state_width / lanes_per_channel;
 uint lane = thread_index_in_simdgroup % lanes_per_channel;
-uint channel = thread_position_in_grid.x / lanes_per_channel;
+uint channel = thread_position_in_grid.x / lanes_per_channel, row = thread_position_in_grid.y;
 uint first_feature = lane * features_per_lane;
+gate_state += row * state_width;
 
 // Each channel has adjacent weight rows for the forget and incoming gates.
 auto forget_weights = packed_weights + channel * (2 * state_width) + first_feature;
@@ -19,7 +20,7 @@ logits += simd_shuffle_down(logits, 4);
 logits += simd_shuffle_down(logits, 2);
 logits += simd_shuffle_down(logits, 1);
 if (lane == 0) {
-    float previous = float(hidden[channel * hidden_strides[2]]);
-    float incoming = float(message[channel * message_strides[2]]);
-    output[channel] = (1.f - tanh(logits.x)) * previous + tanh(logits.y) * incoming;
+    float previous = float(hidden[row * hidden_strides[1] + channel * hidden_strides[2]]);
+    float incoming = float(message[row * message_strides[1] + channel * message_strides[2]]);
+    output[row * 2304 + channel] = (1.f - tanh(logits.x)) * previous + tanh(logits.y) * incoming;
 }

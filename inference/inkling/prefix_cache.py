@@ -1,6 +1,6 @@
 """Bounded, in-memory prefix checkpoints for a single serialized model server."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import mlx.core as mx
 
@@ -10,6 +10,7 @@ class Cursor:
     tokens: list[int]
     layers: list[dict]
     logits: mx.array | None = None  # Next-token logits after consuming *tokens*.
+    draft: dict = field(default_factory=dict)  # Draft head context for *tokens*.
 
     def checkpoint(self):
         # FIR histories are replaced, but KV buffers use MLX indexed assignment.
@@ -21,7 +22,10 @@ class Cursor:
             if "storage" in saved:
                 saved["storage"] = tuple(buffer[:] for buffer in saved["storage"])
             layers.append(saved)
-        return Cursor(self.tokens.copy(), layers, self.logits)
+        draft = dict(self.draft)
+        if "kv" in draft:
+            draft["kv"] = [tuple(z[:] for z in pair) for pair in draft["kv"]]
+        return Cursor(self.tokens.copy(), layers, self.logits, draft)
 
 
 class PrefixCache:

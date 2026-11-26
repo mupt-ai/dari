@@ -6,7 +6,7 @@ import mlx.core as mx
 
 from inkling.checkpoint import load_text_weights
 from inkling.inkling_block import rms
-from inkling.inkling_conv import dynamic_fir, static_fir
+from inkling.inkling_conv import dynamic_fir, fir_history, static_fir
 from inkling.inkling_depth import depth
 from inkling.inkling_expert_fir import decode_expert_fir, expert_fir
 from inkling.inkling_heads import normalize
@@ -51,6 +51,42 @@ def attention_gate(h, gate):
     return (h.astype(mx.float32) * mx.sigmoid(gate.astype(mx.float32))).astype(h.dtype)
 
 
+def local_window(past, off, k, v):
+    """Chronological keys for new rows, and the 1024-slot ring that keeps them."""
+    end = off + k.shape[2]
+    if past is not None:
+        n = min(off, 1024)
+        prev = [z[:, :, :n] for z in past]
+        if off > 1024:
+            prev = [mx.roll(z, -(off % 1024), axis=2) for z in prev]
+        k, v = [mx.concatenate([a, b], axis=2) for a, b in zip(prev, (k, v))]
+    keep = min(1024, end)
+    ring = [z[:, :, -keep:] for z in (k, v)]
+    if end > 1024:
+        ring = [mx.roll(z, end % 1024, axis=2) for z in ring]
+    ring = tuple(mx.pad(z, [(0, 0), (0, 0), (0, 1024 - keep), (0, 0)]) for z in ring)
+    return k, v, ring
+
+
+def rewind(cache, journal, keep):
+    """Keep the first *keep* rows of a journaled forward in every visit's state.
+
+    Global KV rows past the offset are dead and later overwritten. Local ring
+    slots get back what the dropped rows replaced, and FIR histories are
+    rebuilt from the state before the forward.
+    """
+    for state, entry in zip(cache, journal, strict=True):
+        state["offset"] = entry["offset"] + keep
+        for key, (history, z) in entry["fir"].items():
+            state[key] = fir_history(history, z[:, :keep])
+        if "ring" in entry and keep < entry["ring"][0].size:
+            slots, saved = entry["ring"]
+            ring = tuple(z[:] for z in state["storage"])
+            for z, old in zip(ring, saved):
+                z[:, :, slots[keep:]] = old[:, :, keep:]
+            state["storage"] = ring
+
+
 class Model:
     decode_message_mix = None
     project_linear = staticmethod(linear)
@@ -60,6 +96,7 @@ class Model:
     prefill_attention = None
     global_prefill_store = None
     long_decode_attention = None
+    long_rows_attention = None
     compact_message_bank = False
     expert_class = PrefillMoE
 
@@ -96,7 +133,7 @@ class Model:
                     )
         self.experts = [self.expert_class(self.w, i) for i in range(24)]
 
-    def block(self, i, x, bank, cache, msg, *, last_only=False):
+    def block(self, i, x, bank, cache, msg, *, last_only=False, journal=None):
         linear = self.project_linear
         w = self.layers[i]
         L = x.shape[1]
@@ -133,7 +170,7 @@ class Model:
                 m = msg[..., j, :]
                 pair = gate_input(v, m, down_dtype)
             z = linear(w, p + "down_proj", pair)
-            if L == 1 and self.decode_message_mix is not None:
+            if L <= 8 and self.decode_message_mix is not None:
                 packed = w.get(p + "packed_pair")
                 if packed is not None and z.dtype == mx.bfloat16:
                     return rms_cast(
@@ -167,6 +204,8 @@ class Model:
 
         def conv(p, z, context=None):
             history = cache.get(p)
+            if journal is not None:
+                journal["fir"][p] = history, z
             if context is None:
                 out, cache[p] = static_fir(z, history, w[p + ".conv1d.weight"])
                 return out
@@ -210,6 +249,8 @@ class Model:
             )
         off = cache.get("offset", 0)
         cache["offset"] = off + L
+        if journal is not None:
+            journal["offset"] = off
         if not local and off + L > 8192:
             tau = (1 + 0.1 * mx.log(mx.maximum((mx.arange(L) + off + 1) / 8192, 1)))[
                 None, :, None, None
@@ -217,7 +258,22 @@ class Model:
             q = (q.astype(mx.float32) * tau).astype(dtype)
             r = (r.astype(mx.float32) * tau).astype(dtype)
         k, v = k.transpose(0, 2, 1, 3), v.transpose(0, 2, 1, 3)
-        if L == 1 and "storage" in cache:
+        rows = None
+        if journal is not None and local:
+            # Attend over the ring as it was plus the block's own rows, then
+            # write the rows into their ring slots, keeping what they replace.
+            ring = cache.get("storage") or tuple(
+                mx.zeros((1, 8, 1024, 128), dtype) for _ in range(2)
+            )
+            slots = (off + mx.arange(L)) % 1024
+            journal["ring"] = slots, tuple(z[:, :, slots] for z in ring)
+            rows = k, v
+            stored = tuple(z[:] for z in ring)
+            for z, new in zip(stored, rows):
+                z[:, :, slots] = new
+            cache["storage"] = stored
+            k, v = ring
+        elif L == 1 and "storage" in cache:
             store_k, store_v = cache["storage"]
             slot = off % 1024 if local else off
             if slot == store_k.shape[2]:
@@ -235,27 +291,19 @@ class Model:
                 cache.get("storage"), k, v, off
             )
             d = mx.arange(L)[:, None] + off - mx.arange(off + L)
+        elif local:
+            k, v, cache["storage"] = local_window(cache.get("storage"), off, k, v)
+            d = mx.arange(L)[:, None] + k.shape[2] - L - mx.arange(k.shape[2])
         else:
+            assert journal is None, "rewind needs the paged global store"
             past = cache.get("storage")
             if past is not None:
-                n = min(off, 1024) if local else off
-                prev = [z[:, :, :n] for z in past]
-                if local and off > 1024:
-                    prev = [mx.roll(z, -(off % 1024), axis=2) for z in prev]
+                prev = [z[:, :, :off] for z in past]
                 k, v = [mx.concatenate([a, b], axis=2) for a, b in zip(prev, (k, v))]
             end = off + L
-            if local:
-                keep = min(1024, end)
-                pair = [z[:, :, -keep:] for z in (k, v)]
-                if end > 1024:
-                    pair = [mx.roll(z, end % 1024, axis=2) for z in pair]
-                capacity = 1024
-            else:
-                keep = end
-                capacity = ((end + 255) // 256) * 256
-                pair = (k, v)
+            capacity = ((end + 255) // 256) * 256
             cache["storage"] = tuple(
-                mx.pad(z, [(0, 0), (0, 0), (0, capacity - keep), (0, 0)]) for z in pair
+                mx.pad(z, [(0, 0), (0, 0), (0, capacity - end), (0, 0)]) for z in (k, v)
             )
             d = mx.arange(L)[:, None] + k.shape[2] - L - mx.arange(k.shape[2])
         use_strips = L >= 256
@@ -282,6 +330,8 @@ class Model:
             and self.long_decode_attention is not None
         ):
             h = self.long_decode_attention(q, k, v, rel, sinks, 256)
+        elif journal is not None:
+            h = self.long_rows_attention(q, k, v, rel, sinks, rows, off + L)
         else:
             if L == 1:
                 mask = decode_mask(rel, off, k.shape[2], local)
@@ -373,7 +423,7 @@ class Model:
                 out, coeff, cache.get(key), w[key + ".conv1d.weight"], res
             )
             return y, bank
-        if L >= 8:
+        if L >= 8 and journal is None:
             routed = self.experts[i](normalized, return_routed=True)
             key = "post_mlp_convolution"
             y, cache[key] = expert_fir(
@@ -383,9 +433,8 @@ class Model:
         h = self.experts[i](normalized)
         return (res + conv("post_mlp_convolution", h)).astype(dtype), bank
 
-    def __call__(self, ids, cache):
-        p = "model.language_model."
-        e = p + "embed_tokens."
+    def embed(self, ids):
+        e = "model.language_model.embed_tokens."
         x = self.w[e + "weight"][ids]
         if e + "scales" in self.w:
             x = mx.dequantize(
@@ -395,11 +444,36 @@ class Model:
                 bits=4,
                 group_size=64,
             )
-        x = rms(x, self.w[p + "embed_norm.weight"])
+        return rms(x, self.w["model.language_model.embed_norm.weight"])
+
+    def __call__(self, ids, cache, *, taps=False, journal=None):
+        """Logits for the last row, or for every row of a journaled forward.
+
+        A journal (one dict per visit, see ``rewind``) records what is needed to
+        keep only a prefix of the rows afterwards. With ``taps``, also return
+        the draft head's features for every row: the residual entering visits
+        5, 23 and 41, then the normalized final hidden state.
+        """
+        p = "model.language_model."
+        assert journal is None or ids.shape[1] <= 8, (
+            "journals cover verification blocks"
+        )
+        x = self.embed(ids)
+        features = []
+        visit = 0
+
+        def run(i, x, bank, msg, **kw):
+            nonlocal visit
+            if taps and visit in (5, 23, 41):
+                features.append(x)
+            entry = None if journal is None else journal[visit]
+            out = self.block(i, x, bank, cache[visit], msg, journal=entry, **kw)
+            visit += 1
+            return out
+
         bank = []
-        visits = iter(cache)
         for i in range(6):
-            x, bank = self.block(i, x, bank, next(visits), None)
+            x, bank = run(i, x, bank, None)
         seed = x, bank
         messages = None
         for turn in range(3):
@@ -426,13 +500,17 @@ class Model:
                         else messages[:, :, i - 6]
                     )
                 )
-                x, bank = self.block(i, x, bank, next(visits), msg)
+                x, bank = run(i, x, bank, msg)
         for i in range(18, 23):
-            x, bank = self.block(i, x, bank, next(visits), None)
-        x, bank = self.block(23, x, bank, next(visits), None, last_only=True)
+            x, bank = run(i, x, bank, None)
+        every = taps or journal is not None
+        x, bank = run(23, x, bank, None, last_only=not every)
         h = mix(bank + [rms(x.astype(mx.float32))], self.w[p + "final_input.query"])[
             ..., 0, :
         ]
-        return linear(
-            self.w, "lm_head", rms(h, self.w[p + "norm.weight"]).astype(x.dtype)[:, -1:]
-        )[..., :200058]
+        h = rms(h, self.w[p + "norm.weight"]).astype(x.dtype)
+        logits = linear(self.w, "lm_head", h if journal is not None else h[:, -1:])
+        logits = logits[..., :200058]
+        if taps:
+            return logits, mx.concatenate([*features, h], axis=-1)
+        return logits

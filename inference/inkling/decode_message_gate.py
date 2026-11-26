@@ -1,4 +1,4 @@
-"""Two gate dot products per channel from one 64-element decode state.
+"""Two gate dot products per channel from each row's 64-element decode state.
 
 Eight lanes cooperate on each pair of packed BF16 weight rows. The gate
 logits, nonlinearities and message blend stay FP32. Packing and its exact
@@ -21,8 +21,8 @@ kernel = mx.fast.metal_kernel(
 
 def project(z, packed, v, msg):
     return kernel(
-        inputs=[z, packed, v, msg],
-        grid=(2304 * 8, 1, 1),
+        inputs=[mx.contiguous(z), packed, v, msg],
+        grid=(2304 * 8, z.shape[1], 1),
         threadgroup=(128, 1, 1),
         output_shapes=[v.shape],
         output_dtypes=[mx.float32],
@@ -30,6 +30,6 @@ def project(z, packed, v, msg):
 
 
 class GatedModel(AffineModel):
-    """Use the checked BF16 gate weights for single-token execution as well."""
+    """Use the checked BF16 gate weights for decode and verification rows as well."""
 
     decode_message_mix = staticmethod(project)

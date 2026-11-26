@@ -5,6 +5,7 @@ from inkling.inkling_moe import InklingMoE
 from inkling.inkling_partial_steel import tile_body
 from inkling.inkling_short_plan import direct
 from inkling.inkling_short_steel import compact
+from inkling.routed_experts import routed
 
 _fp4 = adaptive()
 _fp8 = adaptive(tile_body("mxfp8"), name="inkling_adaptive_fp8")
@@ -13,8 +14,11 @@ _fp8 = adaptive(tile_body("mxfp8"), name="inkling_adaptive_fp8")
 class PrefillMoE(InklingMoE):
     def __call__(self, x, *, return_routed=False):
         length = x.shape[1]
-        if length < 8:
+        if length == 1:
             return super().__call__(x, return_routed=return_routed)
+        if length <= 8:
+            # Verification blocks: read each selected expert once.
+            return routed(self, x, return_routed=return_routed)
         if length <= 32:
             return direct(self, x, return_routed=return_routed)
         if length < 64 and self.mode == "nvfp4":

@@ -4,6 +4,17 @@ import mlx.core as mx
 
 from inkling.shaders import load_shader
 
+
+def fir_history(history, z):
+    """The three trailing inputs a kernel-4 causal FIR carries after *z*."""
+    length = z.shape[1]
+    if history is None:
+        history = mx.zeros((1, 3, z.shape[2]), z.dtype)
+    if length >= 3:
+        return mx.contiguous(z[:, -3:])
+    return mx.contiguous(mx.concatenate([history[:, length:], z], axis=1))
+
+
 _fir = mx.fast.metal_kernel(
     name="inkling_fir4",
     input_names=["z", "prior", "w"],
@@ -25,10 +36,7 @@ def static_fir(z, history, weight):
         output_shapes=[z.shape],
         output_dtypes=[z.dtype],
     )[0]
-    saved = (
-        z[:, -3:] if length >= 3 else mx.concatenate([history[:, length:], z], axis=1)
-    )
-    return output, mx.contiguous(saved)
+    return output, fir_history(history, z)
 
 
 _dynamic = mx.fast.metal_kernel(
@@ -52,7 +60,4 @@ def dynamic_fir(z, history, weight, delta):
         output_shapes=[z.shape],
         output_dtypes=[z.dtype],
     )[0]
-    saved = (
-        z[:, -3:] if length >= 3 else mx.concatenate([history[:, length:], z], axis=1)
-    )
-    return out, mx.contiguous(saved)
+    return out, fir_history(history, z)

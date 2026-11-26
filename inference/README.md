@@ -1,6 +1,6 @@
 # Dari Inference
 
-Run Inkling 2 Mini locally on Apple Silicon. The standalone `dari-inference` command serves the **Dari Metal engine** (`inkling.decode_message_gate.GatedModel`) with the **official Thinking Machines weights**. MLX-LM supplies tokenizer utilities, not the inference model. The server accepts one text chat at a time: streaming or non-streaming, 50,000 tokens including output by default. Function tools work in both streaming and non-streaming requests. Pi executes tools locally and sends their results back to the model. Image inputs and speculative decoding are not supported.
+Run Inkling 2 Mini locally on Apple Silicon. The standalone `dari-inference` command serves the **Dari Metal engine** (`inkling.decode_message_gate.GatedModel`) with the **official Thinking Machines weights**. MLX-LM supplies tokenizer utilities, not the inference model. The server accepts one text chat at a time: streaming or non-streaming, 50,000 tokens including output by default. Function tools work in both streaming and non-streaming requests. Pi executes tools locally and sends their results back to the model. Generation uses the official draft head for speculative decoding. Image inputs are not supported.
 
 ## Start the server
 
@@ -72,6 +72,12 @@ curl --fail-with-body http://127.0.0.1:8081/v1/chat/completions \
 The server retains model state in memory across requests; clients still send the full conversation. Inspect `usage.prompt_tokens_details.cached_tokens` to see how many input tokens skipped prefill. For streaming, request `stream_options: {"include_usage": true}`. The total prompt count still includes cached input.
 
 One active conversation is retained, with checkpoints at the decoded tip, the original prompt, and a preceding prefill boundary when available. Only exact token prefixes are reused. This lets a tool result reuse the previous prompt even if Pi reformats the assistant’s tool call. An edit before all retained checkpoints, switching to an unrelated prompt, or restarting the process causes a cold prefill. No cache is written to disk.
+
+## Speculative decoding
+
+The checkpoint ships a draft head (`mtp.safetensors`, fetched by `install` and `pull`). Each round it proposes up to seven tokens from the target's hidden states, and the target checks them in one forward pass: it keeps the proposals that match its own choice, then adds its next token. Greedy output follows the target's own choices, except where batched and single-token kernels round a near-tie differently; sampling uses rejection sampling, so the output distribution is the target's.
+
+The server picks each round's draft depth from measured round times and acceptance, so text the draft predicts well gets deeper proposals and long contexts get shallower ones. A client that stops mid-round keeps a prefix cache that matches exactly what it received.
 
 ## Weights, implementation and benchmarks
 

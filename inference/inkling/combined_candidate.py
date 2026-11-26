@@ -5,7 +5,7 @@ from inkling.chunk_cache import append
 from inkling.direct_experts import DirectExperts
 from inkling.projection_storage import compact
 from inkling.ragged_dispatch import RaggedMoE
-from inkling.shared_decode import decode
+from inkling.shared_decode import decode, decode_rows
 from inkling.sparse_prefill import attention
 
 
@@ -18,6 +18,7 @@ class Candidate(inkling_model.Model):
     expert_class = CandidateExperts
     global_prefill_store = staticmethod(append)
     long_decode_attention = staticmethod(decode)
+    long_rows_attention = staticmethod(decode_rows)
 
     def __init__(self, path):
         super().__init__(path)

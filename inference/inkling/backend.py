@@ -36,7 +36,7 @@ def resolve_snapshot(model, install):
             )
         )
 
-    # The engine only needs the text shards, not auxiliary model heads.
+    # The engine needs the text shards and the draft head, not vision weights.
     metadata = [
         "config.json",
         "model.safetensors.index.json",
@@ -54,9 +54,11 @@ def resolve_snapshot(model, install):
     if "model.llm.embed.weight" not in weights:
         raise ValueError("Expected the official Inkling text checkpoint")
     shards = sorted({v for k, v in weights.items() if k.startswith("model.llm.")})
+    # The official draft head enables speculative decoding.
+    files = [*shards, "mtp.safetensors"]
     if install:
-        fetch(shards)
-    for name in shards:
+        fetch(files)
+    for name in files:
         if not (root / name).is_file():
             raise FileNotFoundError(name)
     return root

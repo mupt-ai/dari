@@ -15,7 +15,7 @@ import { SubscriptionStore } from "./subscriptions/index.js";
 // hosted Dari and Anthropic.
 const HOSTED_KEY = "dari-user-key";
 const SESSION_ID = crypto.randomUUID();
-const hostedCalls: Array<{ method: string; path: string; authorization: string | null; body: string }> = [];
+const hostedCalls: Array<{ method: string; path: string; authorization: string | null; gatewayId: string | null; body: string }> = [];
 const providerTokens: string[] = [];
 let stub: ReturnType<typeof Bun.serve>;
 let gateway: ReturnType<typeof Bun.spawn>;
@@ -35,6 +35,7 @@ beforeAll(async () => {
         method: request.method,
         path: pathname,
         authorization: request.headers.get("authorization"),
+        gatewayId: request.headers.get("x-dari-gateway-id"),
         body: await request.text(),
       });
       if (pathname === "/rtr_1/v1/models") {
@@ -148,6 +149,8 @@ test("serves a model its plan serves locally and sends the request to hosted Act
   expect(response.status).toBe(200);
   expect(await response.text()).toContain("hi");
   expect(providerTokens).toEqual(["sk-ant-oat01-local"]);
+  // Hosted lists the router's models this gateway's plans serve, though it holds none.
+  expect(hosted("/rtr_1/v1/models")[0]!.gatewayId).toBe("gw_test");
   expect(hosted("/rtr_1/v1/messages")).toEqual([]);
 
   await waitFor(() => hosted("/v1/gateway/requests").length > 0);

@@ -5,7 +5,7 @@ import { anthropicToken, bearerToken } from "../http/auth.js";
 import { errorResponse, HttpError } from "../http/errors.js";
 import { anthropicErrorResponse } from "../ingress/anthropic_messages.js";
 import type { GatewayPlatform } from "../platform/platform.js";
-import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
+import { DEFAULT_ROUTER_ALIAS, GATEWAY_ID_HEADER } from "../platform/routing_contract.js";
 import { explicitModelId } from "../protocol/input/router_model.js";
 import { parseGatewayConfig, type RouterConfig } from "./config.js";
 import type { HostedSync } from "./hosted_sync.js";
@@ -116,7 +116,8 @@ function hostedRouters(hosted: HostedConnection, fetchImpl: typeof fetch) {
 async function readHostedRouter(hosted: HostedConnection, fetchImpl: typeof fetch, routerId: string): Promise<RouterConfig> {
   const prefix = routerId === DEFAULT_ROUTER_ALIAS ? "" : `/${encodeURIComponent(routerId)}`;
   const response = await fetchImpl(`${hosted.url}${prefix}/v1/models`, {
-    headers: { authorization: `Bearer ${hosted.apiKey}` },
+    // Lists the models this gateway's plans serve, though hosted holds none.
+    headers: { authorization: `Bearer ${hosted.apiKey}`, [GATEWAY_ID_HEADER]: hosted.gatewayId },
     signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -219,6 +220,8 @@ async function forward(
     headers.delete(name);
   }
   headers.set("authorization", `Bearer ${deps.hosted.apiKey}`);
+  // An agent's model list includes the models this gateway's plans serve.
+  headers.set(GATEWAY_ID_HEADER, deps.hosted.gatewayId);
   let response: Response;
   try {
     response = await deps.fetch(`${deps.hosted.url}${url.pathname}${url.search}`, {

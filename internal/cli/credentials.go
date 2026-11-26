@@ -264,6 +264,7 @@ var subscriptionProviders = map[string]agentSubscriptionProvider{
 }
 
 type subscriptionCredential struct {
+	ID                string            `json:"id"`
 	Name              string            `json:"name"`
 	Label             *string           `json:"label"`
 	SafeMetadata      map[string]string `json:"safe_metadata"`
@@ -442,7 +443,7 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 				if err != nil {
 					return err
 				}
-				return connectSubscriptionAt(cmd.Context(), gf, provider, place, cmd.InOrStdin(), cmd.ErrOrStderr())
+				return connectSubscriptionAt(cmd.Context(), gf, provider, place, "", cmd.InOrStdin(), cmd.ErrOrStderr())
 			}
 			if !viaGateway {
 				// A plan reconnects where it lives; --on picks between Dari

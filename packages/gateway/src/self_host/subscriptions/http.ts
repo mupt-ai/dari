@@ -170,6 +170,11 @@ async function startSession(deps: SubscriptionHttpDeps, body: Record<string, unk
   // A reconnected plan stays where it was unless the caller says otherwise.
   const isPrivate = body.private ?? reconnecting?.private ?? false;
   if (typeof isPrivate !== "boolean") throw new HttpError(400, "private must be true or false.");
+  // `dari accounts subscription move` names the hosted plan it moves here.
+  const movingFrom = body.moving_from ?? null;
+  if (movingFrom !== null && (typeof movingFrom !== "string" || !movingFrom.trim())) {
+    throw new HttpError(400, "moving_from must be a non-empty string.");
+  }
   const authorization = await startOAuth(provider as SubscriptionProvider, { fetch: deps.fetch, now });
   const session = deps.store.createSession(
     {
@@ -178,6 +183,7 @@ async function startSession(deps: SubscriptionHttpDeps, body: Record<string, unk
       credentialName,
       owner: null,
       private: isPrivate,
+      movingFrom,
       expiresAt: authorization.expiresAt,
     },
     now,
@@ -216,7 +222,8 @@ async function completeSession(deps: SubscriptionHttpDeps, body: Record<string, 
   let elsewhere: ConnectedAccount[] = [];
   if (deps.hostedAccounts !== undefined && !reconnectsSameAccount) {
     try {
-      elsewhere = await deps.hostedAccounts();
+      elsewhere = (await deps.hostedAccounts()).filter((account) =>
+        !(account.place === "dari" && account.name === session.movingFrom));
     } catch (error) {
       // The provider code is spent: keep the sign-in, checked against this
       // gateway's own plans only, rather than make the user start over.

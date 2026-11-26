@@ -176,6 +176,29 @@ describe("connecting", () => {
     expect(g.store.list()).toHaveLength(0);
   });
 
+  test("moving a hosted plan here signs its account in, though hosted Dari still holds it", async () => {
+    const onDari = (name: string): ConnectedAccount => ({
+      provider: "anthropic_claude_code",
+      accountId: null,
+      accountEmail: "me@example.com",
+      place: "dari",
+      name,
+      gatewayName: null,
+    });
+    const move = async (movingFrom: string) => {
+      const g = gateway([claudeToken("me@example.com")], async () => [onDari("ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN_2")]);
+      const started = await g.call("POST", "/oauth/sessions", { provider: "anthropic_claude_code", moving_from: movingFrom });
+      const state = new URL(started!.body.authorization_url).searchParams.get("state");
+      return g.call("POST", "/oauth/sessions/complete", {
+        session_token: started!.body.session_token,
+        authorization_response: `pasted-code#${state}`,
+      });
+    };
+    expect((await move("ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN_2"))!.status).toBe(200);
+    // Moving another plan does not excuse a second copy of this one.
+    expect((await move("ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN"))!.status).toBe(409);
+  });
+
   test("reconnecting a plan to the account it holds does not read hosted Dari", async () => {
     let read = 0;
     const g = gateway([claudeToken("me@example.com")], async () => {

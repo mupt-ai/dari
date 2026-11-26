@@ -212,20 +212,20 @@ func thisComputer() string {
 }
 
 // connectSubscriptionAt signs a plan in where it is to live.
-func connectSubscriptionAt(ctx context.Context, gf *globalFlags, provider agentSubscriptionProvider, place subscriptionPlace, stdin io.Reader, stderr io.Writer) error {
+func connectSubscriptionAt(ctx context.Context, gf *globalFlags, provider agentSubscriptionProvider, place subscriptionPlace, movingFrom string, stdin io.Reader, stderr io.Writer) error {
 	if place == placeDari {
 		client, err := hostedSubscriptionClient(gf)
 		if err != nil {
 			return err
 		}
-		return connectAgentPersonalSubscription(ctx, provider, client, stdin, stderr, "")
+		return connectSubscription(ctx, provider, client, stdin, stderr, "", false, movingFrom, provider.name+" subscription connected")
 	}
-	return connectOnComputer(ctx, provider, place, stdin, stderr)
+	return connectOnComputer(ctx, provider, place, movingFrom, stdin, stderr)
 }
 
 // connectOnComputer signs a plan in on this computer's gateway, synced to
 // Dari or private.
-func connectOnComputer(ctx context.Context, provider agentSubscriptionProvider, place subscriptionPlace, stdin io.Reader, stderr io.Writer) error {
+func connectOnComputer(ctx context.Context, provider agentSubscriptionProvider, place subscriptionPlace, movingFrom string, stdin io.Reader, stderr io.Writer) error {
 	gw, err := computerGateway(ctx, stdin, stderr, place == placeComputer)
 	if err != nil {
 		return err
@@ -234,7 +234,7 @@ func connectOnComputer(ctx context.Context, provider agentSubscriptionProvider, 
 	if place == placePrivate {
 		done = provider.name + " connected privately on this computer"
 	}
-	return connectSubscription(ctx, provider, gatewayClient(gw), stdin, stderr, "", place == placePrivate, done)
+	return connectSubscription(ctx, provider, gatewayClient(gw), stdin, stderr, "", place == placePrivate, movingFrom, done)
 }
 
 // computerSubscriptions are the plans on this computer's gateway, each with
@@ -466,7 +466,13 @@ func moveSubscription(ctx context.Context, gf *globalFlags, s placedSubscription
 	if err != nil {
 		return err
 	}
-	if err := connectSubscriptionAt(ctx, gf, provider, to, stdin, stderr); err != nil {
+	// Hosted Dari knows a computer's plan by its gateway's id for it; the
+	// gateway knows a Dari plan by name.
+	movingFrom := s.Name
+	if s.place != placeDari {
+		movingFrom = s.ID
+	}
+	if err := connectSubscriptionAt(ctx, gf, provider, to, movingFrom, stdin, stderr); err != nil {
 		return err
 	}
 	return disconnectPlaced(ctx, from, s.Name)

@@ -87,6 +87,9 @@ export type PendingOAuthSession = {
   owner: string | null;
   // Whether the plan connects as private (see SubscriptionCredential).
   private: boolean;
+  // The plan on hosted Dari this sign-in moves here, by name: its account is
+  // not a second copy, since the caller disconnects it there next.
+  movingFrom: string | null;
   expiresAt: Date;
 };
 
@@ -202,6 +205,7 @@ type SessionRow = {
   credential_name: string | null;
   owner: string | null;
   private: number | null;
+  moving_from: string | null;
   expires_at: number;
 };
 
@@ -268,12 +272,13 @@ export class SubscriptionStore {
       credential_name TEXT,
       owner TEXT,
       private INTEGER,
+      moving_from TEXT,
       expires_at INTEGER NOT NULL
     )`);
     const sessionColumns = new Set(
       db.query<{ name: string }, []>("PRAGMA table_info(subscription_oauth_sessions)").all().map((column) => column.name),
     );
-    for (const [column, type] of [["owner", "TEXT"], ["private", "INTEGER"]] as const) {
+    for (const [column, type] of [["owner", "TEXT"], ["private", "INTEGER"], ["moving_from", "TEXT"]] as const) {
       if (!sessionColumns.has(column)) db.run(`ALTER TABLE subscription_oauth_sessions ADD COLUMN ${column} ${type}`);
     }
     this.encryptStored();
@@ -711,8 +716,8 @@ export class SubscriptionStore {
     const token = randomBytes(32).toString("base64url");
     this.db.run("DELETE FROM subscription_oauth_sessions WHERE expires_at <= ?", [now.getTime()]);
     this.db.run(
-      `INSERT INTO subscription_oauth_sessions (token, provider, flow_json, credential_name, owner, private, expires_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO subscription_oauth_sessions (token, provider, flow_json, credential_name, owner, private, moving_from, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         token,
         session.provider,
@@ -720,6 +725,7 @@ export class SubscriptionStore {
         session.credentialName,
         session.owner,
         session.private ? 1 : 0,
+        session.movingFrom,
         session.expiresAt.getTime(),
       ],
     );
@@ -739,6 +745,7 @@ export class SubscriptionStore {
       credentialName: row.credential_name,
       owner: row.owner,
       private: row.private === 1,
+      movingFrom: row.moving_from,
       expiresAt: new Date(row.expires_at),
     };
   }

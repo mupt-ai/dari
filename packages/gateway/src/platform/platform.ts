@@ -512,6 +512,10 @@ export type ResolveRouterRequest = {
   conversationId?: string;
   includePublicEvalCatalog?: boolean;
   clientHarness?: ClientHarness;
+  // The connected gateway listing this router's models: a model a plan on
+  // that gateway serves is listed though hosted Dari holds no plan for it.
+  // Model lists only; that gateway serves those models itself.
+  gatewayId?: string;
   // A later resolve with this request's `conversationId` replaces this one's
   // credentials, so none from it serve the request: a platform should not
   // mark a credential used or refresh it for this resolve.

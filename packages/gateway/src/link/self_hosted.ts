@@ -121,6 +121,7 @@ export function selfHostedLink(
         credentialName: null,
         owner: newSubject(),
         private: false,
+        movingFrom: null,
         expiresAt: authorization.expiresAt,
       });
       return { session: session.token, authorizationUrl: authorization.authorizationUrl, userCode: authorization.userCode };

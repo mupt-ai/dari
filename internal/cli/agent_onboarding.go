@@ -808,12 +808,13 @@ func connectAgentPersonalSubscription(
 	stderr io.Writer,
 	credentialName string,
 ) error {
-	return connectSubscription(ctx, provider, client, stdin, stderr, credentialName, false, provider.name+" subscription connected")
+	return connectSubscription(ctx, provider, client, stdin, stderr, credentialName, false, "", provider.name+" subscription connected")
 }
 
 // connectSubscription is connectAgentPersonalSubscription on a client that
-// may be a local gateway: private keeps the plan off hosted Dari there, and
-// done is the line printed once it is connected.
+// may be a local gateway: private keeps the plan off hosted Dari there,
+// movingFrom names the plan a move replaces (as the client's side knows it),
+// and done is the line printed once it is connected.
 func connectSubscription(
 	ctx context.Context,
 	provider agentSubscriptionProvider,
@@ -822,6 +823,7 @@ func connectSubscription(
 	stderr io.Writer,
 	credentialName string,
 	private bool,
+	movingFrom string,
 	done string,
 ) error {
 	body := map[string]any{"provider": provider.id}
@@ -830,6 +832,11 @@ func connectSubscription(
 	}
 	if private {
 		body["private"] = true
+	}
+	// The plan being moved still holds the account until the move disconnects
+	// it; naming it keeps the sign-in from being refused as a second copy.
+	if movingFrom != "" {
+		body["moving_from"] = movingFrom
 	}
 	var started agentSubscriptionOAuthStart
 	if err := client.Do(

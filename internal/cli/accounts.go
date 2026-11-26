@@ -515,7 +515,7 @@ func (page accountsPage) addSubscription(ctx context.Context, subscriptions []su
 	if place == placeDari {
 		err = connectAgentPersonalSubscription(ctx, selected.provider, page.client, stdin, stderr, "")
 	} else {
-		err = connectOnComputer(ctx, selected.provider, place, stdin, stderr)
+		err = connectOnComputer(ctx, selected.provider, place, "", stdin, stderr)
 	}
 	if err != nil {
 		return agentSubscriptionProvider{}, false, err

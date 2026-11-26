@@ -19,6 +19,7 @@ import { anthropicModelsResponse } from "./anthropic_models.js";
 import { namedClientHarness } from "./client_harness.js";
 import { codexModelsEtag, codexModelsResponse } from "./codex_models.js";
 import { CANONICAL_ROUTER_MODEL, explicitModelSlug, LINK_CHILD_TOKEN_PREFIX } from "../protocol/input/router_model.js";
+import { GATEWAY_ID_HEADER } from "../platform/routing_contract.js";
 
 export async function handleModels(request: Request, routerId: string): Promise<Response> {
   // Anthropic SDK clients always send anthropic-version, and API-key probes
@@ -39,9 +40,15 @@ export async function handleModels(request: Request, routerId: string): Promise<
     // names its own version in the query, as only Codex does.
     const codexDirect = !anthropicClient && query.has("client_version");
     const clientHarness = namedClientHarness(request.headers) ?? (codexDirect ? "codex" : undefined);
+    const gatewayId = request.headers.get(GATEWAY_ID_HEADER)?.trim();
     let router;
     try {
-      router = await resolveRouter({ routerId, apiKey, ...(clientHarness ? { clientHarness } : {}) });
+      router = await resolveRouter({
+        routerId,
+        apiKey,
+        ...(clientHarness ? { clientHarness } : {}),
+        ...(gatewayId ? { gatewayId } : {}),
+      });
     } catch (error) {
       // A Dari Link grant that can serve this client nothing now lists no
       // models; a child token still lists its one model.

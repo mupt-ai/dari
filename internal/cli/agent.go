@@ -299,10 +299,18 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 		return "", "", agents.Models{}, err
 	}
 	baseURL := agentRoutingBaseURL(routerID)
+	// A plan the agent uses on this computer serves there; the gateway sends
+	// what it cannot serve on to the same router here. It also lists the
+	// router's models, counting its own plans, which hosted Dari alone does not.
+	listURL, listKey := baseURL, access.key
+	gw := computerPlanGateway(ctx, client, launch.name, access.key, stderr)
+	if gw != nil {
+		listURL, listKey = gw.url+strings.TrimPrefix(baseURL, routingBaseURL), gw.key
+	}
 	// Hosted routers fall back to managed keys for a plan's provider, so they
 	// list its models for every client; naming the agent there would also
 	// drop them while the plan is held. Only gateways need the agent.
-	models, err := routerModels(ctx, baseURL, access.key, "")
+	models, err := routerModels(ctx, listURL, listKey, "")
 	if err != nil {
 		return "", "", agents.Models{}, err
 	}
@@ -319,11 +327,9 @@ func resolveAgentRouting(ctx context.Context, launch *agentLaunch, stdin io.Read
 	if !launch.setup() && choice.org == "" && (launch.reconfigure || choice.makeDefault || (choice.name != "" && agentUsesRouter(ctx, client, launch.name, routerID, stderr))) {
 		syncAgentSetup(ctx, launch.name, access.key, baseURL, models, stderr)
 	}
-	// A plan the agent uses on this computer serves there; the gateway sends
-	// what it cannot serve on to the same router here.
-	if gw := computerPlanGateway(ctx, client, launch.name, access.key, stderr); gw != nil {
+	if gw != nil {
 		launch.onComputer = true
-		return gw.key, gw.url + strings.TrimPrefix(baseURL, routingBaseURL), models, nil
+		return listKey, listURL, models, nil
 	}
 	return access.key, baseURL, models, nil
 }

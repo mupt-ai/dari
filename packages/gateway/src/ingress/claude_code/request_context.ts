@@ -5,6 +5,23 @@ const REQUEST_CLASSES = new Set<AgentRequestClass>([
   "main", "subagent", "workflow", "auxiliary", "compaction", "side_reply",
 ]);
 
+const LEGACY_CLAUDE_CODE_BETA = "claude-code-20250219";
+
+/** Whether a request carries Claude Code's own headers. */
+export function isClaudeCodeRequest(headers: Headers): boolean {
+  const userAgent = headers.get("user-agent")?.trim().toLowerCase() ?? "";
+  const app = headers.get("x-app")?.trim().toLowerCase();
+  const betas = (headers.get("anthropic-beta") ?? "").toLowerCase().split(",").map((beta) => beta.trim());
+  return (
+    userAgent.startsWith("claude-cli/") &&
+    (app === "cli" || app === "cli-bg") &&
+    (
+      Boolean(headers.get("x-claude-code-session-id")?.trim()) ||
+      betas.includes(LEGACY_CLAUDE_CODE_BETA)
+    )
+  );
+}
+
 // These are client-supplied routing hints, not authentication claims. Never
 // infer them from prompt text: a user can legitimately paste any such prompt.
 export function claudeCodeRequestContext(headers: Headers): AgentRequestContext {

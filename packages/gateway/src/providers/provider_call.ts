@@ -52,6 +52,7 @@ import {
 } from "./pi.js";
 import { promptTokenEstimateFor, type PromptTokenEstimate } from "./cancel_estimate.js";
 import { withSystemPromptSuffix } from "../interaction/system_prompt.js";
+import { HOSTED_DARI_PROVIDER } from "../platform/routing_contract.js";
 
 type ProviderCallConfig = {
   model: string;
@@ -158,7 +159,8 @@ export function prepareProviderExecution(args: {
       : args.conversationId,
     reasoningEffort: args.decision.reasoningEffort,
     promptEstimate,
-    ...(args.systemPromptSuffix ? { systemPromptSuffix: args.systemPromptSuffix } : {}),
+    // Hosted Dari serving the model appends the router's role prompt itself.
+    ...(args.systemPromptSuffix && provider !== HOSTED_DARI_PROVIDER ? { systemPromptSuffix: args.systemPromptSuffix } : {}),
     ...(supplied?.baseUrl || supplied?.headers
       ? { endpoint: { baseUrl: supplied.baseUrl, headers: supplied.headers } }
       : {}),

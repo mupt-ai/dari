@@ -7,15 +7,8 @@ import { chatCompletionsToInteraction } from "../protocol/input/chat_completions
 import { linkTokenModel } from "../protocol/input/router_model.js";
 import { handleRoutedCompletion } from "../runtime/routed_completion.js";
 import type { SelectorBackend } from "../strategies/routing.js";
-import {
-  chatCompletionsConversationIdentity,
-  openCodeRequestContext,
-  piRequestContext,
-} from "../runtime/harness_identity/index.js";
-import type { ClientHarness } from "../types.js";
-import { claimedClientHarness } from "./client_harness.js";
+import { harnessRequest } from "./harness_request.js";
 import { parseJsonRequest } from "./json.js";
-import { museCodeClientId } from "./muse_code.js";
 
 export async function handleChatCompletions(
   request: Request,
@@ -30,34 +23,26 @@ export async function handleChatCompletions(
       model: linkTokenModel(apiKey, payload.model),
       source_protocol: "openai_chat",
     });
-    const piContext = piRequestContext(request.headers);
-    const openCodeContext = openCodeRequestContext(request.headers);
-    const agentContext = piContext ?? openCodeContext;
-    const museClientId = museCodeClientId(request.headers);
-    // OpenClaw and Hermes send nothing of their own that tells them apart,
-    // so the Dari CLI sets them up to name themselves.
-    const clientHarness: ClientHarness | undefined = museClientId !== undefined ? "muse_code"
-      : piContext !== undefined ? "pi"
-      : openCodeContext !== undefined ? "opencode"
-      : claimedClientHarness(request.headers);
+    const harness = harnessRequest(request.headers, {
+      sourceProtocol: "openai_chat",
+      payload: payload as unknown as Record<string, unknown>,
+      promptCacheKey: payload.prompt_cache_key,
+    });
     return await handleRoutedCompletion({
       request,
       routerId,
       apiKey,
       payload: {
         ...interaction,
-        ...(agentContext === undefined ? {} : { agentContext }),
-        ...(museClientId === undefined ? {} : { museCodeClientId: museClientId }),
+        ...(harness.agentContext === undefined ? {} : { agentContext: harness.agentContext }),
+        ...(harness.museCodeClientId === undefined ? {} : { museCodeClientId: harness.museCodeClientId }),
       },
       responseBody: chatCompletionResponse,
       streamBody: chatCompletionsSseStream,
       errorResponse,
       selectorBackend,
-      clientHarness,
-      harnessConversationIdentity: chatCompletionsConversationIdentity(
-        request.headers,
-        payload.prompt_cache_key,
-      ),
+      clientHarness: harness.clientHarness,
+      harnessConversationIdentity: harness.conversationIdentity,
     });
   } catch (error) {
     const response = errorResponse(error);

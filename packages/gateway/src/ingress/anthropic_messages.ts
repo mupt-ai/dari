@@ -9,12 +9,7 @@ import { anthropicMessagesToInteraction } from "../protocol/input/anthropic_mess
 import { CANONICAL_ROUTER_MODEL, explicitModelId, isLinkToken, linkTokenModel } from "../protocol/input/router_model.js";
 import { handleRoutedCompletion } from "../runtime/routed_completion.js";
 import type { SelectorBackend } from "../strategies/routing.js";
-import { claudeCodeRequestContext } from "./claude_code/request_context.js";
-import { claimedClientHarness } from "./client_harness.js";
-import {
-  claudeCodeConversationIdentity,
-  piRequestContext,
-} from "../runtime/harness_identity/index.js";
+import { harnessRequest } from "./harness_request.js";
 import { parseJsonRequest } from "./json.js";
 import { anthropicWebSearchTool } from "../interaction/capabilities.js";
 import { isBackgroundRequest } from "../interaction/types.js";
@@ -28,7 +23,6 @@ type AnthropicErrorType =
   | "api_error"
   | "invalid_request_error";
 
-const LEGACY_CLAUDE_CODE_BETA = "claude-code-20250219";
 const SAFEGUARDS_BETA_PREFIX = "dangerous-tool-use-";
 const CONTEXT_MANAGEMENT_BETA_PREFIX = "context-management-";
 
@@ -41,13 +35,17 @@ export async function handleAnthropicMessages(
     const apiKey = anthropicToken(request.headers);
     const rawPayload = await parseJsonRequest<Record<string, unknown>>(request);
     const interaction = anthropicMessagesToInteraction({ ...rawPayload, model: linkTokenModel(apiKey, rawPayload.model) });
-    const isClaudeCode = isClaudeCodeRequest(request.headers);
-    const anthropicSafeguards = safeguardsFrom(rawPayload, request.headers);
-    const anthropicContextManagement = contextManagementFrom(rawPayload, request.headers);
     // Pi's turns arrive as chat completions; the Dari extension's web search
     // tool sends its search here, marked as Pi's.
-    const piContext = isClaudeCode ? undefined : piRequestContext(request.headers);
-    const agentContext = isClaudeCode ? claudeCodeRequestContext(request.headers) : piContext;
+    const harness = harnessRequest(request.headers, {
+      sourceProtocol: "anthropic_messages",
+      payload: rawPayload,
+      promptCacheKey: interaction.promptCacheKey,
+    });
+    const isClaudeCode = harness.clientHarness === "claude_code";
+    const agentContext = harness.agentContext;
+    const anthropicSafeguards = safeguardsFrom(rawPayload, request.headers);
+    const anthropicContextManagement = contextManagementFrom(rawPayload, request.headers);
     // Claude Code runs a web search as a background request that names one of
     // the session's models, and Pi's search tool as one that asks for routing.
     // Like other background work, Dari serves it on the cheapest model that
@@ -74,7 +72,12 @@ export async function handleAnthropicMessages(
             ? { requestPurpose: "tool_continuation" as const } : {}),
           claudeCodeUserAgent: request.headers.get("user-agent")!.trim(),
         }
-      : { ...forwarded, ...(agentContext === undefined ? {} : { agentContext }) };
+      : {
+          ...forwarded,
+          ...(agentContext === undefined ? {} : { agentContext }),
+          ...(harness.requestPurpose === undefined ? {} : { requestPurpose: harness.requestPurpose }),
+          ...(harness.museCodeClientId === undefined ? {} : { museCodeClientId: harness.museCodeClientId }),
+        };
     return await handleRoutedCompletion({
       request,
       routerId,
@@ -84,15 +87,8 @@ export async function handleAnthropicMessages(
       streamBody: anthropicMessagesSseStream,
       errorResponse: anthropicErrorResponse,
       selectorBackend,
-      clientHarness: isClaudeCode ? "claude_code"
-        : piContext !== undefined ? "pi"
-        : claimedClientHarness(request.headers),
-      harnessConversationIdentity: isClaudeCode
-        ? claudeCodeConversationIdentity(
-            request.headers,
-            payload.promptCacheKey,
-          )
-        : undefined,
+      clientHarness: harness.clientHarness,
+      harnessConversationIdentity: harness.conversationIdentity,
     });
   } catch (error) {
     const response = anthropicErrorResponse(error);
@@ -158,20 +154,6 @@ function anthropicBetas(headers: Headers): Set<string> {
       .split(",")
       .map((value) => value.trim().toLowerCase())
       .filter(Boolean),
-  );
-}
-
-function isClaudeCodeRequest(headers: Headers): boolean {
-  const userAgent = headers.get("user-agent")?.trim().toLowerCase() ?? "";
-  const app = headers.get("x-app")?.trim().toLowerCase();
-  const betas = anthropicBetas(headers);
-  return (
-    userAgent.startsWith("claude-cli/") &&
-    (app === "cli" || app === "cli-bg") &&
-    (
-      Boolean(headers.get("x-claude-code-session-id")?.trim()) ||
-      betas.has(LEGACY_CLAUDE_CODE_BETA)
-    )
   );
 }
 

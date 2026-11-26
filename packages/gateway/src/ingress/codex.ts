@@ -5,19 +5,11 @@ import { captureRequestError } from "../observability/errors.js";
 import { openAIResponsesResponse } from "../protocol/output/openai_responses.js";
 import { openAIResponsesSseStream } from "../protocol/output/openai_responses_stream.js";
 import { openAIResponsesToInteraction } from "../protocol/input/openai_responses.js";
-import { claimedClientHarness } from "./client_harness.js";
 import { codexModelsEtag } from "./codex_models.js";
+import { harnessRequest } from "./harness_request.js";
 import { parseJsonRequest } from "./json.js";
-import { museCodeClientId } from "./muse_code.js";
 import { handleRoutedCompletion } from "../runtime/routed_completion.js";
 import type { SelectorBackend } from "../strategies/routing.js";
-import {
-  codexConversationIdentity,
-  codexRequestPurpose,
-  codexRequestContext,
-  museCodeConversationIdentity,
-  piRequestContext,
-} from "../runtime/harness_identity/index.js";
 
 export async function handleResponses(
   request: Request,
@@ -28,37 +20,27 @@ export async function handleResponses(
     const apiKey = bearerToken(request.headers);
     const rawPayload = await parseJsonRequest<Record<string, unknown>>(request);
     const interaction = openAIResponsesToInteraction({ ...rawPayload, model: linkTokenModel(apiKey, rawPayload.model) });
-    const requestPurpose = codexRequestPurpose(request.headers, rawPayload);
-    const codexContext = codexRequestContext(request.headers, rawPayload);
     // Pi's turns arrive as chat completions; the Dari extension's web search
     // tool sends an OpenAI hosted search here, marked as Pi's.
-    const piContext = codexContext === undefined ? piRequestContext(request.headers) : undefined;
-    const agentContext = codexContext ?? piContext;
-    const museClientId = museCodeClientId(request.headers);
+    const harness = harnessRequest(request.headers, { sourceProtocol: "openai_responses", payload: rawPayload });
     const payload = {
       ...interaction,
-      ...(requestPurpose === undefined ? {} : { requestPurpose }),
-      ...(agentContext === undefined ? {} : { agentContext }),
-      ...(museClientId === undefined ? {} : { museCodeClientId: museClientId }),
+      ...(harness.requestPurpose === undefined ? {} : { requestPurpose: harness.requestPurpose }),
+      ...(harness.agentContext === undefined ? {} : { agentContext: harness.agentContext }),
+      ...(harness.museCodeClientId === undefined ? {} : { museCodeClientId: harness.museCodeClientId }),
     };
-    const codexIdentity = codexConversationIdentity(request.headers, rawPayload);
     // Codex and Muse Code apply their session effort to custom model
     // providers. That preference describes a direct model, not a heterogeneous
     // router, so let Dari select the reasoning effort for their routed turns;
     // a `dari/model/<id>` keeps the chosen effort. Parsing above still
     // validates malformed Responses reasoning controls.
-    const harness = codexIdentity !== undefined || museClientId !== undefined;
-    if (harness && explicitModelId(payload.model) === null) {
+    const sessionEffort = harness.conversationIdentity?.kind === "codex_thread" || harness.museCodeClientId !== undefined;
+    if (sessionEffort && explicitModelId(payload.model) === null) {
       // Keep only an explicit thinking-off; a session effort must not force thinking on.
       payload.reasoning = payload.reasoning?.enabled === false ? { enabled: false } : undefined;
     }
-    const harnessConversationIdentity = codexIdentity
-      ?? (museClientId === undefined ? undefined : museCodeConversationIdentity(request.headers));
-    const clientHarness = museClientId !== undefined ? "muse_code"
-      // Codex describes every request in its turn metadata.
-      : codexContext !== undefined ? "codex"
-      : piContext !== undefined ? "pi"
-      : claimedClientHarness(request.headers);
+    const clientHarness = harness.clientHarness;
+    const harnessConversationIdentity = harness.conversationIdentity;
     return await handleRoutedCompletion({
       request,
       routerId,

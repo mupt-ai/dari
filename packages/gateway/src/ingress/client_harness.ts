@@ -12,13 +12,40 @@ export const CLIENT_HARNESSES: readonly string[] = [
   "hermes",
 ] satisfies ClientHarness[];
 
-// The headers a coding agent names itself with: Claude Code's user agent,
-// app, session, and betas, and Muse Code's client id.
-const CLIENT_HEADERS = ["user-agent", "x-app", "x-claude-code-session-id", "anthropic-beta", "x-client-id"];
+// The headers a coding agent describes itself and each request with: which
+// agent it is, its session, and what the request is for. harness_request.ts
+// reads every one of them.
+const CLIENT_HEADERS = [
+  // Claude Code
+  "user-agent",
+  "x-app",
+  "anthropic-beta",
+  "x-claude-code-session-id",
+  "x-claude-code-request-class",
+  "x-claude-code-agent-id",
+  "x-claude-code-parent-agent-id",
+  "x-claude-code-agent-type",
+  // Codex
+  "x-codex-turn-metadata",
+  "thread-id",
+  // Muse Code
+  "x-client-id",
+  "x-tbh-thread-id",
+  // OpenCode, with the `dari opencode` plugin's request kind and agent
+  "x-opencode-session-id",
+  "x-opencode-parent-session-id",
+  "x-opencode-request-kind",
+  "x-opencode-agent",
+  "x-session-affinity",
+  // Pi
+  "x-pi-session-id",
+  "x-pi-request-kind",
+];
 
 /**
  * The headers of `CLIENT_HEADERS` the request carries, as the client sent
- * them, so hosted Dari serving it for a connected gateway sees the same client.
+ * them, so hosted Dari serving it for a connected gateway sees the same
+ * agent, session, and kind of request.
  */
 export function clientHeaders(headers: Headers): Record<string, string> {
   const found: Record<string, string> = {};

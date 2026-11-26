@@ -49,6 +49,21 @@ test("each resolve names the coding agent the request comes from", async () => {
   expect(await named("/v1/messages", { "x-dari-client-harness": "openclaw", ...ANTHROPIC }, MESSAGES)).toEqual(["openclaw"]);
   expect(await named("/v1/chat/completions", {}, CHAT)).toEqual([undefined]);
 
+  // An agent is the same agent on an API it does not speak itself: a gateway
+  // connected to hosted Dari passes its headers on over the served model's API.
+  const claudeCode = { "user-agent": "claude-cli/2.1.300 (external, cli)", "x-app": "cli", "x-claude-code-session-id": THREAD_ID };
+  expect(await named("/v1/messages", { ...claudeCode, ...ANTHROPIC }, MESSAGES)).toEqual(["claude_code"]);
+  expect(await named("/v1/responses", claudeCode, { model: "dari/routing", input: "hello" })).toEqual(["claude_code"]);
+  expect(await named(
+    "/v1/messages",
+    { "thread-id": THREAD_ID, "x-codex-turn-metadata": JSON.stringify({ thread_id: THREAD_ID }), ...ANTHROPIC },
+    MESSAGES,
+  )).toEqual(["codex"]);
+  expect(await named("/v1/messages", { "x-opencode-session-id": "ses_1", ...ANTHROPIC }, MESSAGES)).toEqual(["opencode"]);
+  expect(await named("/v1/responses", { "x-opencode-session-id": "ses_1" }, { model: "dari/routing", input: "hello" })).toEqual(["opencode"]);
+  expect(await named("/v1/responses", { "x-pi-session-id": "pi-session" }, { model: "dari/routing", input: "hello" })).toEqual(["pi"]);
+  expect(await named("/v1/messages", { "x-client-id": "tbh:exec", ...ANTHROPIC }, MESSAGES)).toEqual(["muse_code"]);
+
   // Claiming to be Claude Code does not make a request Claude Code's.
   expect(await named("/v1/chat/completions", { "x-dari-client-harness": "claude_code" }, CHAT)).toEqual([undefined]);
   expect(await named("/v1/messages", { "x-dari-client-harness": "claude_code", ...ANTHROPIC }, MESSAGES)).toEqual([undefined]);

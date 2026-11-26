@@ -18,17 +18,24 @@ const SESSION_ID = crypto.randomUUID();
 const SONNET = "anthropic/claude-sonnet-5-5";
 const GPT = "openai/gpt-6.2-astra";
 const OPUS = "anthropic/claude-opus-5-5";
+const SOL = "openai/gpt-6.1-sol";
 type HostedCall = {
   method: string;
   path: string;
   authorization: string | null;
   apiKey: string | null;
-  harness: string | null;
-  userAgent: string | null;
-  app: string | null;
-  sessionId: string | null;
+  headers: Record<string, string>;
   body: string;
 };
+// A subagent's request, as Claude Code marks it.
+const SUBAGENT = {
+  "x-claude-code-request-class": "subagent",
+  "x-claude-code-agent-id": "agent-1",
+  "x-claude-code-parent-agent-id": "agent-0",
+  "x-claude-code-agent-type": "Explore",
+};
+const ROLE_PROMPT = "Delegate exploration to subagents.";
+const providerBodies: string[] = [];
 const hostedCalls: HostedCall[] = [];
 const providerTokens: string[] = [];
 let stub: ReturnType<typeof Bun.serve>;
@@ -43,6 +50,7 @@ beforeAll(async () => {
       const { pathname } = new URL(request.url);
       if (pathname.startsWith("/anthropic/")) {
         providerTokens.push((request.headers.get("authorization") ?? "").replace(/^Bearer /, ""));
+        providerBodies.push(await request.text());
         return anthropicReply();
       }
       if (pathname === "/backend-api/codex/responses") {
@@ -56,10 +64,7 @@ beforeAll(async () => {
         path: pathname,
         authorization: request.headers.get("authorization"),
         apiKey: request.headers.get("x-api-key"),
-        harness: request.headers.get("x-dari-client-harness"),
-        userAgent: request.headers.get("user-agent"),
-        app: request.headers.get("x-app"),
-        sessionId: request.headers.get("x-claude-code-session-id"),
+        headers: Object.fromEntries(request.headers),
         body: await request.text(),
       });
       if (pathname === "/v1/gateway/routers/rtr_1") {
@@ -68,6 +73,7 @@ beforeAll(async () => {
             { id: SONNET, thinking: null, sources: ["plan", "key"] },
             { id: GPT, thinking: ["low", "high"], sources: ["plan", "key"] },
             { id: OPUS, thinking: null, sources: ["managed"] },
+            { id: SOL, thinking: null, sources: ["managed"] },
           ],
           reset_min_hours: 24,
           native_compaction: true,
@@ -75,7 +81,7 @@ beforeAll(async () => {
           session_pinning: false,
           retries: 1,
           role_models: {},
-          role_prompts: {},
+          role_prompts: { subagent: ROLE_PROMPT },
           custom_rules: false,
         });
       }
@@ -94,6 +100,7 @@ beforeAll(async () => {
       }
       // Hosted Dari serving a model it was asked for.
       if (pathname === "/rtr_1/v1/messages") return anthropicReply();
+      if (pathname === "/rtr_1/v1/responses") return codexReply("gpt-6.1-sol");
       if (pathname === "/v1/gateway/subscriptions") return Response.json({ subscriptions: [] });
       if (pathname === "/v1/gateway/requests") return Response.json({ stored: ["x"], rejected: [] });
       return Response.json({ served_by: "hosted" });
@@ -160,7 +167,7 @@ afterAll(async () => {
   await stub.stop(true);
 });
 
-const claudeCode = (model: string, key = "local-key", fields: Record<string, unknown> = {}) =>
+const claudeCode = (model: string, key = "local-key", fields: Record<string, unknown> = {}, headers: Record<string, string> = {}) =>
   fetch(`${baseUrl}/rtr_1/v1/messages`, {
     method: "POST",
     headers: {
@@ -170,6 +177,7 @@ const claudeCode = (model: string, key = "local-key", fields: Record<string, unk
       "user-agent": "claude-cli/2.1.300 (external, cli)",
       "x-app": "cli",
       "x-claude-code-session-id": SESSION_ID,
+      ...headers,
     },
     body: JSON.stringify({ model, max_tokens: 64, stream: true, messages: [{ role: "user", content: "hi" }], ...fields }),
   });
@@ -222,11 +230,13 @@ test("sends a model only Dari serves to hosted Dari as that model, with the Dari
   expect(await response.text()).toContain("hi");
   const [served] = hosted("/rtr_1/v1/messages");
   expect(served!.apiKey).toBe(HOSTED_KEY);
-  expect(served!.harness).toBe("claude_code");
   // Hosted Dari tells Claude Code by its own headers, passed on unchanged.
-  expect(served!.userAgent).toBe("claude-cli/2.1.300 (external, cli)");
-  expect(served!.app).toBe("cli");
-  expect(served!.sessionId).toBe(SESSION_ID);
+  expect(served!.headers).toMatchObject({
+    "x-dari-client-harness": "claude_code",
+    "user-agent": "claude-cli/2.1.300 (external, cli)",
+    "x-app": "cli",
+    "x-claude-code-session-id": SESSION_ID,
+  });
   const body = JSON.parse(served!.body);
   expect(body.model).toBe(`dari/model/${OPUS}`);
   expect(body.output_config).toEqual({ effort: "high" });
@@ -240,6 +250,36 @@ test("serves a private plan, whose requests stay on this computer", async () => 
   // Neither this request nor the one hosted Dari served syncs.
   await Bun.sleep(2_500);
   expect(syncedModels()).toEqual([SONNET]);
+});
+
+test("hosted Dari is told what a request it serves is for, and adds the role's prompt itself", async () => {
+  const before = hosted("/rtr_1/v1/messages").length;
+  expect((await claudeCode(`dari/model/${OPUS}`, "local-key", {}, SUBAGENT)).status).toBe(200);
+  const served = hosted("/rtr_1/v1/messages")[before]!;
+  // Without these hosted Dari files every request under an unknown class,
+  // and a subagent under its parent.
+  expect(served.headers).toMatchObject(SUBAGENT);
+  // Hosted Dari runs the same router: sent the prompt, it would add it twice.
+  expect(served.body).not.toContain(ROLE_PROMPT);
+
+  // A plan on this computer is the provider, so the prompt goes with the call.
+  providerBodies.length = 0;
+  expect((await claudeCode(`dari/model/${SONNET}`, "local-key", {}, SUBAGENT)).status).toBe(200);
+  expect(providerBodies).toHaveLength(1);
+  expect(providerBodies[0]).toContain(ROLE_PROMPT);
+});
+
+test("a request with OpenAI's web search goes to hosted Dari for an OpenAI model only Dari serves", async () => {
+  const response = await fetch(`${baseUrl}/rtr_1/v1/responses`, {
+    method: "POST",
+    headers: { authorization: "Bearer local-key", "content-type": "application/json" },
+    body: JSON.stringify({ model: `dari/model/${SOL}`, stream: true, input: "hi", tools: [{ type: "web_search" }] }),
+  });
+  // Codex asks for the search on every turn; refused here, its session fails.
+  expect(response.status).toBe(200);
+  expect(await response.text()).toContain("hi");
+  const [served] = hosted("/rtr_1/v1/responses");
+  expect(JSON.parse(served!.body).tools).toEqual([expect.objectContaining({ type: "web_search" })]);
 });
 
 test("lists every model of the router itself", async () => {

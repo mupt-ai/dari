@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { isBackgroundRequest, type InteractionRequest } from "../interaction/types.js";
+import { PRIVATE_HEADER } from "../platform/routing_contract.js";
 import { explicitModelId } from "../protocol/input/router_model.js";
 import { captureRequestError } from "../observability/errors.js";
 import type { SelectorBackend } from "../strategies/routing.js";
@@ -42,6 +43,7 @@ export async function handleRoutedCompletion(args: {
     requestId,
     clientRequestId,
     tagsHeader: args.request.headers.get("x-dari-tags"),
+    privateRequest: args.request.headers.get(PRIVATE_HEADER) === "true",
     clientHarness: args.clientHarness,
     clientHeaders: clientHeaders(args.request.headers),
     harnessConversationIdentity: args.harnessConversationIdentity,

@@ -24,7 +24,6 @@ const CLI_CREDENTIAL_FIELDS = [
   "model_holds",
   "subscription_active",
   "usage",
-  "private",
 ];
 
 function gateway(
@@ -46,11 +45,10 @@ function gateway(
   return { store, fetch, call };
 }
 
-async function connectClaude(g: ReturnType<typeof gateway>, credentialName?: string, isPrivate?: boolean) {
+async function connectClaude(g: ReturnType<typeof gateway>, credentialName?: string) {
   const started = await g.call("POST", "/oauth/sessions", {
     provider: "anthropic_claude_code",
     ...(credentialName === undefined ? {} : { credential_name: credentialName }),
-    ...(isPrivate === undefined ? {} : { private: isPrivate }),
   });
   const state = new URL(started!.body.authorization_url).searchParams.get("state");
   return g.call("POST", "/oauth/sessions/complete", {
@@ -63,22 +61,6 @@ const claudeToken = (email: string) =>
   jsonResponse({ access_token: "sk-ant-oat01-a", refresh_token: "r", expires_in: 3600, account: { email_address: email } });
 
 describe("connecting", () => {
-  test("a plan connects private, and moves on and off hosted Dari", async () => {
-    const g = gateway([claudeToken("me@example.com")]);
-    const connected = await connectClaude(g, undefined, true);
-    expect(connected!.body.private).toBe(true);
-    const path = `/${connected!.body.name}/private`;
-    expect((await g.call("PUT", path, { private: false }))!.body.private).toBe(false);
-    expect((await g.call("GET", ""))!.body.credentials[0].private).toBe(false);
-    expect((await g.call("PUT", path, { private: "yes" }))!.status).toBe(400);
-  });
-
-  test("a reconnected plan keeps its place unless the caller names one", async () => {
-    const g = gateway([claudeToken("me@example.com"), claudeToken("me@example.com")]);
-    const name = (await connectClaude(g, undefined, true))!.body.name;
-    expect((await connectClaude(g, name))!.body.private).toBe(true);
-  });
-
   test("Claude Code start and complete match the CLI's shapes", async () => {
     const g = gateway([claudeToken("me@example.com")]);
     const started = await g.call("POST", "/oauth/sessions", { provider: "anthropic_claude_code" });
@@ -105,7 +87,6 @@ describe("connecting", () => {
         safe_metadata: { account_email: "me@example.com" },
         credential_scope: "user",
         oauth_provider: "anthropic_claude_code",
-        private: false,
         created_at: "2026-10-20T12:00:00.000Z",
         last_used_at: null,
         unavailable_until: null,

@@ -387,8 +387,8 @@ func subagentStatusLines(transcriptPath string, now time.Time) []string {
 			continue
 		}
 		status, _ := lastRouting(transcript)
-		// The session's line carries the Activity link.
-		status.RequestID = ""
+		// The session's line carries the Activity link, or says it is private.
+		status.RequestID, status.Private = "", false
 		text := status.String()
 		if text == "" {
 			continue

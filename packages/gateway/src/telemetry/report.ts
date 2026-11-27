@@ -650,6 +650,7 @@ export class RequestReporter {
       gatewayPlatform().recordRequest({
         ...(link === undefined ? {} : { link }),
         ...(subscriptionCredentialId === undefined ? {} : { subscriptionCredentialId }),
+        private: a.credentials.private === true,
         router: requestRecordRouter(a.credentials),
         candidates: a.candidates.map(({ model, reasoningEffort }) => ({ model, reasoningEffort })),
         ...(a.sessionPinKey === undefined ? {} : { sessionPinKey: a.sessionPinKey }),

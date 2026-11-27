@@ -16,15 +16,13 @@ import (
 	"github.com/mupt-ai/dari/internal/gateway"
 )
 
-// subscriptionPlace is where a plan's token lives: on hosted Dari, on this
-// computer's gateway with its Activity synced to Dari, or on this computer's
-// gateway privately.
+// subscriptionPlace is where a plan's token lives: on hosted Dari (Cloud) or
+// on this computer's gateway (Local).
 type subscriptionPlace string
 
 const (
 	placeDari     subscriptionPlace = "dari"
 	placeComputer subscriptionPlace = "computer"
-	placePrivate  subscriptionPlace = "private"
 )
 
 // planAccount is the account a plan holds: its provider, id, and email.
@@ -57,17 +55,22 @@ func sameAccount(left, right planAccount) bool {
 }
 
 var placeOptions = map[subscriptionPlace]agentChoiceOption{
-	placeComputer: {label: "On This Computer", description: "Token stays here; Activity syncs to Dari"},
-	placeDari:     {label: "On Dari", description: "Works everywhere, including Link apps and cloud agents"},
-	placePrivate:  {label: "Private", description: "Nothing leaves this computer"},
+	placeComputer: {label: "Local", description: "Token stays on this computer; Activity syncs to Dari"},
+	placeDari:     {label: "Cloud", description: "Works everywhere, including Link apps and cloud agents"},
 }
 
+// parseSubscriptionPlace reads --on: cloud or local, with dari and computer
+// kept as aliases for scripts.
 func parseSubscriptionPlace(value string) (subscriptionPlace, error) {
-	switch place := subscriptionPlace(strings.ToLower(strings.TrimSpace(value))); place {
-	case placeDari, placeComputer, placePrivate:
-		return place, nil
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "cloud", "dari":
+		return placeDari, nil
+	case "local", "computer":
+		return placeComputer, nil
+	case "private":
+		return "", errors.New("plans are Cloud or Local; to keep this computer's requests out of Activity, run `dari private on`")
 	}
-	return "", fmt.Errorf("--on must be dari, computer, or private, got %q", value)
+	return "", fmt.Errorf("--on must be cloud or local, got %q", value)
 }
 
 // defaultSubscriptionPlace keeps Claude Code and Muse Code plans on this
@@ -83,17 +86,14 @@ func defaultSubscriptionPlace(provider agentSubscriptionProvider) subscriptionPl
 // default first.
 func subscriptionPlaces(provider agentSubscriptionProvider) []subscriptionPlace {
 	first := defaultSubscriptionPlace(provider)
-	places := []subscriptionPlace{first}
-	for _, place := range []subscriptionPlace{placeComputer, placeDari, placePrivate} {
-		if place != first {
-			places = append(places, place)
-		}
+	if first == placeComputer {
+		return []subscriptionPlace{placeComputer, placeDari}
 	}
-	return places
+	return []subscriptionPlace{placeDari, placeComputer}
 }
 
 // placeNames are the places as the user sees them.
-var placeNames = map[subscriptionPlace]string{placeDari: "Dari", placeComputer: "This Computer", placePrivate: "Private"}
+var placeNames = map[subscriptionPlace]string{placeDari: "Cloud", placeComputer: "Local"}
 
 // chooseSubscriptionPlace is --on when given, else the picker in a terminal,
 // else the provider's default.
@@ -258,7 +258,7 @@ func connectOrMove(ctx context.Context, gf *globalFlags, provider agentSubscript
 		}
 		return connectAgentPersonalSubscription(ctx, provider, client, stdin, stderr, "")
 	}
-	return connectOnComputer(ctx, provider, place, stdin, stderr)
+	return connectOnComputer(ctx, provider, stdin, stderr)
 }
 
 // confirmMove asks whether to move s to place rather than connect another
@@ -274,18 +274,14 @@ var confirmMove = func(stdin io.Reader, stderr io.Writer, s placedSubscription, 
 	return choice == 0, err
 }
 
-// connectOnComputer signs a plan in on this computer's gateway, synced to
-// Dari or private.
-func connectOnComputer(ctx context.Context, provider agentSubscriptionProvider, place subscriptionPlace, stdin io.Reader, stderr io.Writer) error {
-	client, err := computerClient(ctx, stdin, stderr, place == placeComputer)
+// connectOnComputer signs a plan in on this computer's gateway.
+func connectOnComputer(ctx context.Context, provider agentSubscriptionProvider, stdin io.Reader, stderr io.Writer) error {
+	client, err := computerClient(ctx, stdin, stderr, true)
 	if err != nil {
 		return err
 	}
-	done := provider.name + " connected on this computer (" + thisComputer() + ")"
-	if place == placePrivate {
-		done = provider.name + " connected privately on this computer"
-	}
-	_, err = connectSubscription(ctx, provider, client, stdin, stderr, "", place == placePrivate, "", done)
+	done := provider.name + " connected locally on this computer (" + thisComputer() + ")"
+	_, err = connectSubscription(ctx, provider, client, stdin, stderr, "", "", done)
 	return err
 }
 
@@ -329,8 +325,7 @@ func hasBankedResets(subscription subscriptionCredential) bool {
 type placedSubscription struct {
 	subscriptionCredential
 	place subscriptionPlace
-	// where names the place: Dari, This Computer, Private, or a self-hosted
-	// Gateway.
+	// where names the place: Cloud, Local, or a self-hosted Gateway.
 	where string
 }
 
@@ -362,7 +357,7 @@ func listPlacedSubscriptions(ctx context.Context, gf *globalFlags, stderr io.Wri
 	}
 	placed := []placedSubscription{}
 	for _, credential := range personalSubscriptions(hosted.Credentials) {
-		placed = append(placed, placedSubscription{credential, placeDari, "Dari"})
+		placed = append(placed, placedSubscription{credential, placeDari, placeNames[placeDari]})
 	}
 	if settings.LocalKey != "" && (gateway.HasDatabase() || gateway.Healthy(ctx)) {
 		local, _, err := readComputerPlans(ctx, stderr)
@@ -396,20 +391,14 @@ func localPlacedSubscriptions(ctx context.Context, client *api.Client) ([]placed
 	}
 	placed := []placedSubscription{}
 	for _, credential := range personalSubscriptions(listed.Credentials) {
-		if credential.Private {
-			credential.place = placePrivate
-			placed = append(placed, placedSubscription{credential, placePrivate, "Private"})
-		} else {
-			credential.place = placeComputer
-			placed = append(placed, placedSubscription{credential, placeComputer, "This Computer"})
-		}
+		credential.place = placeComputer
+		placed = append(placed, placedSubscription{credential, placeComputer, placeNames[placeComputer]})
 	}
 	return placed, nil
 }
 
 // findPlacedSubscription finds the plan a name or provider alias means,
-// among those in on's place when given (dari, or computer for both of this
-// computer's places).
+// among those in on's place when given.
 func findPlacedSubscription(all []placedSubscription, arg, on string) (placedSubscription, error) {
 	if on != "" {
 		place, err := parseSubscriptionPlace(on)
@@ -417,7 +406,7 @@ func findPlacedSubscription(all []placedSubscription, arg, on string) (placedSub
 			return placedSubscription{}, err
 		}
 		all = slices.DeleteFunc(slices.Clone(all), func(s placedSubscription) bool {
-			return (place == placeDari) != (s.place == placeDari)
+			return s.place != place
 		})
 	}
 	provider, alias := subscriptionProviders[strings.ToLower(strings.TrimSpace(arg))]
@@ -433,14 +422,14 @@ func findPlacedSubscription(all []placedSubscription, arg, on string) (placedSub
 	case len(matches) == 0:
 		return placedSubscription{}, fmt.Errorf("no subscription %q is connected here", arg)
 	}
-	places := map[bool]bool{}
+	places := map[subscriptionPlace]bool{}
 	names := []string{}
 	for _, s := range matches {
-		places[s.place == placeDari] = true
+		places[s.place] = true
 		names = append(names, s.Name)
 	}
 	if len(places) == 2 {
-		return placedSubscription{}, fmt.Errorf("%q is connected both on Dari and on this computer; pass --on dari or --on computer", arg)
+		return placedSubscription{}, fmt.Errorf("%q is connected both on Cloud and Local; pass --on cloud or --on local", arg)
 	}
 	return placedSubscription{}, fmt.Errorf("%d subscriptions match %q; pass one of: %s", len(matches), arg, strings.Join(names, ", "))
 }
@@ -464,23 +453,9 @@ func disconnectPlaced(ctx context.Context, client *api.Client, name string) erro
 }
 
 // moveSubscription moves a plan to another place: signing in there, then
-// disconnecting it where it was. Between this computer's two places only its
-// flag changes.
+// disconnecting it where it was.
 func moveSubscription(ctx context.Context, gf *globalFlags, s placedSubscription, to subscriptionPlace, stdin io.Reader, stderr io.Writer) error {
 	moved := subscriptionName(s.subscriptionCredential) + " moved from " + s.where + " to " + placeNames[to]
-	if s.place != placeDari && to != placeDari {
-		client, err := computerClient(ctx, stdin, stderr, to == placeComputer)
-		if err != nil {
-			return err
-		}
-		if err := client.Do(ctx, http.MethodPut,
-			"/v1/organizations/current/credentials/"+url.PathEscape(s.Name)+"/private",
-			map[string]bool{"private": to == placePrivate}, nil); err != nil {
-			return api.HumanError(err)
-		}
-		agentStep(stderr, moved)
-		return nil
-	}
 	from, err := placedClient(ctx, gf, s, stderr)
 	if err != nil {
 		return err
@@ -489,7 +464,7 @@ func moveSubscription(ctx context.Context, gf *globalFlags, s placedSubscription
 	if to == placeDari {
 		dest, err = hostedSubscriptionClient(gf)
 	} else {
-		dest, err = computerClient(ctx, stdin, stderr, to == placeComputer)
+		dest, err = computerClient(ctx, stdin, stderr, true)
 	}
 	if err != nil {
 		return err
@@ -501,7 +476,7 @@ func moveSubscription(ctx context.Context, gf *globalFlags, s placedSubscription
 		movingFrom = s.Name
 	}
 	provider := subscriptionProviderFor(s.OAuthProvider)
-	connected, err := connectSubscription(ctx, provider, dest, stdin, stderr, "", to == placePrivate, movingFrom, "")
+	connected, err := connectSubscription(ctx, provider, dest, stdin, stderr, "", movingFrom, "")
 	if err != nil {
 		return err
 	}

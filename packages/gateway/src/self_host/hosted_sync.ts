@@ -94,7 +94,7 @@ export class HostedSync {
       const onDari = await readHostedAccounts(this.hosted, this.fetch);
       this.accountsFailures = 0;
       for (const plan of this.subscriptions.list()) {
-        if (plan.owner !== null || plan.private || plan.accountId === null) continue;
+        if (plan.owner !== null || plan.accountId === null) continue;
         const moved = onDari.some((account) => account.provider === plan.provider
           && account.accountId === plan.accountId
           && account.connectedAt !== undefined && account.connectedAt > plan.createdAt);

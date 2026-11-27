@@ -5,10 +5,11 @@ import { anthropicToken, bearerToken } from "../http/auth.js";
 import { errorResponse, HttpError } from "../http/errors.js";
 import { anthropicErrorResponse } from "../ingress/anthropic_messages.js";
 import type { GatewayPlatform } from "../platform/platform.js";
-import { DEFAULT_ROUTER_ALIAS, HOSTED_DARI_PROVIDER } from "../platform/routing_contract.js";
+import { DEFAULT_ROUTER_ALIAS, HOSTED_DARI_PROVIDER, PRIVATE_HEADER } from "../platform/routing_contract.js";
 import type { Source } from "../models/sources.js";
 import { parseGatewayConfig, type RouterConfig } from "./config.js";
 import type { HostedSync } from "./hosted_sync.js";
+import type { PrivateMode } from "./private_mode.js";
 import { createSelfHostedPlatform } from "./platform.js";
 import { gatewayKeyIndex, resolveSelfHostedRouter } from "./resolve.js";
 
@@ -28,9 +29,11 @@ import { gatewayKeyIndex, resolveSelfHostedRouter } from "./resolve.js";
  *   reports, goes to hosted with the user's Dari key.
  * - The requests served here sync to hosted Activity (hosted_sync.ts), each
  *   naming the plan that served it. The plans themselves never leave this
- *   computer. A private plan's requests do not sync either; requests hosted
- *   Dari served are hosted's to log. Dari Link and Activity are hosted's, not
- *   served here.
+ *   computer. Requests hosted Dari served are hosted's to log. Dari Link and
+ *   Activity are hosted's, not served here.
+ * - In private mode (private_mode.ts) every request is private
+ *   (PRIVATE_HEADER): none syncs, and hosted Dari keeps only what billing
+ *   needs of those it serves.
  */
 export type HostedConnection = {
   // The hosted routing service, e.g. https://routing.dari.dev.
@@ -81,14 +84,9 @@ export function createConnectedPlatform(deps: SelfHostedPlatformDeps & {
     },
     recordRequest(record) {
       console.info("routing request", JSON.stringify(record.summary));
-      // Hosted Dari logs the requests it served itself.
-      if (record.summary.selected_provider === HOSTED_DARI_PROVIDER) return;
-      // A private plan's requests stay on this computer, as the plan does; so
-      // does one whose plan is gone, since it may have been private.
-      if (record.subscriptionCredentialId !== undefined) {
-        const plan = deps.subscriptions.get(record.subscriptionCredentialId);
-        if (plan === null || plan.private) return;
-      }
+      // Hosted Dari logs the requests it served itself, and private ones
+      // stay on this computer.
+      if (record.summary.selected_provider === HOSTED_DARI_PROVIDER || record.private) return;
       try {
         deps.sync.enqueue(record.row);
       } catch (error) {
@@ -185,9 +183,15 @@ export function connectedHandler(deps: {
   gatewayKeys: readonly string[];
   hosted: HostedConnection;
   hostedRouter: HostedRouters;
+  privateMode: PrivateMode;
   fetch: typeof fetch;
 }): (request: Request) => Promise<Response> {
   return async (request) => {
+    if (deps.privateMode.on) {
+      const headers = new Headers(request.headers);
+      headers.set(PRIVATE_HEADER, "true");
+      request = new Request(request, { headers });
+    }
     const { pathname } = new URL(request.url);
     if (pathname === "/healthz" || pathname === "/health" || pathname === "/api/hello") {
       return await deps.gateway(request);

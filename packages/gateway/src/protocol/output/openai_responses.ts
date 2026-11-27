@@ -15,6 +15,7 @@ export function openAIResponsesResponse(args: {
   request: InteractionRequest;
   routing: RoutingDecision;
   conversationId?: string;
+  private?: boolean;
 }): Record<string, unknown> {
   return {
     id: openAIResponsesResponseId(args.id),
@@ -26,7 +27,7 @@ export function openAIResponsesResponse(args: {
     // As on Chat Completions. Null means unpriced, never a fabricated free request.
     usage: { ...openAIResponsesUsage(args.output), cost: args.modelCost ?? null },
     parallel_tool_calls: args.request.parallelToolCalls ?? true,
-    dari_routing: openAIResponsesRouting(args.routing, args.id, args.conversationId),
+    dari_routing: openAIResponsesRouting(args.routing, args.id, args.conversationId, args.private),
   };
 }
 import type { RoutingDecision } from "@mupt-ai/dari-router/policy-engine";

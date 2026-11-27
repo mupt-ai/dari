@@ -1,6 +1,7 @@
 package agents
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 )
@@ -104,5 +105,26 @@ func TestStableModelIgnoresSavedPick(t *testing.T) {
 	noRouting := Models{Enabled: []string{"a/one", "b/two"}, Saved: "dari/model/b/two"}
 	if got := noRouting.Stable(); got != "dari/model/a/one" {
 		t.Errorf("without routing, Stable() = %q, want the first model", got)
+	}
+}
+
+// A private request never reaches Activity, so it shows private instead of
+// the link, from the header or the transcript's routing metadata.
+func TestStatusPrivate(t *testing.T) {
+	headers := http.Header{}
+	headers.Set("x-dari-selected-model", "m")
+	headers.Set("x-request-id", "req_1")
+	headers.Set("x-dari-private", "true")
+	t.Setenv(NoActivityLinkEnv, "")
+	t.Setenv(GatewayURLEnv, "")
+	if got := StatusFromHeaders(headers).String(); got != "m · private" {
+		t.Fatal(got)
+	}
+	var status Status
+	if err := json.Unmarshal([]byte(`{"selected_model":"m","request_id":"req_1","private":true}`), &status); err != nil {
+		t.Fatal(err)
+	}
+	if got := status.String(); got != "m · private" {
+		t.Fatal(got)
 	}
 }

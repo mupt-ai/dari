@@ -206,6 +206,9 @@ export type ResolvedRouter = {
   // Tags a Dari Link child token carries onto every request it makes.
   link_tags?: Record<string, string> | null;
   zdr?: boolean;
+  // The request asked to stay out of Activity (`x-dari-private: true`): the
+  // platform records only what billing needs, and the response says so.
+  private?: boolean;
   allow_long_context?: boolean;
   speculative_routing?: boolean;
   // Route each session's (and each subagent's) first turn, then serve that

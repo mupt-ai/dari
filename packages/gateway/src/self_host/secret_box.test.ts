@@ -25,7 +25,6 @@ test("with a key, no token, pending sign-in, or API key is readable in the datab
     credentialName: null,
     owner: "lu_1",
     movingFrom: null,
-    private: false,
     expiresAt: new Date(Date.now() + 60_000),
   });
   const key = links.addKey("lu_1", "openrouter", "sk-or-secret");

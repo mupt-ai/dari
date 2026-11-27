@@ -10,7 +10,7 @@ import {
 } from "@mupt-ai/dari-router/policy-engine";
 import { HttpError } from "../http/errors.js";
 import type { ResolveRouterRequest } from "../platform/platform.js";
-import { DEFAULT_ROUTER_ALIAS, HOSTED_DARI_PROVIDER } from "../platform/routing_contract.js";
+import { DEFAULT_ROUTER_ALIAS, HOSTED_DARI_PROVIDER, PRIVATE_HEADER } from "../platform/routing_contract.js";
 import { explicitModelSlug } from "../protocol/input/router_model.js";
 import { CLIENT_HARNESS_HEADER } from "../ingress/client_harness.js";
 import {
@@ -461,7 +461,8 @@ function candidateConfig(
  * called for `dari/model/<id>` with the user's Dari key, in Anthropic's API
  * for Anthropic's models and OpenAI's Responses API for the rest, with the
  * client's own identifying headers and the coding agent it named, so hosted
- * sees the same client. Hosted Dari bills and logs what it serves.
+ * sees the same client. Hosted Dari bills and logs what it serves; a private
+ * request asks it to keep only what billing needs.
  */
 function hostedCandidate(hosted: HostedConnection, request: ResolveRouterRequest, modelId: string): Candidate {
   let routerUrl = hosted.url;
@@ -475,6 +476,7 @@ function hostedCandidate(hosted: HostedConnection, request: ResolveRouterRequest
   }
   const headers: Record<string, string> = { ...request.clientHeaders };
   if (request.clientHarness !== undefined) headers[CLIENT_HARNESS_HEADER] = request.clientHarness;
+  if (request.private === true) headers[PRIVATE_HEADER] = "true";
   return {
     provider: HOSTED_DARI_PROVIDER,
     key: hosted.apiKey,

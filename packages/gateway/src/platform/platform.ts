@@ -507,6 +507,9 @@ export type ResolveRouterRequest = {
   // The client's own identifying headers (ingress/client_harness.ts), for a
   // platform that hands the request on.
   clientHeaders?: Record<string, string>;
+  // The request asked to stay out of Activity, as ResolvedRouter.private; a
+  // platform that hands it on asks the same.
+  private?: boolean;
   // A later resolve with this request's `conversationId` replaces this one's
   // credentials, so none from it serve the request: a platform should not
   // mark a credential used or refresh it for this resolve.
@@ -614,6 +617,9 @@ export type RequestRecord = {
   link?: { grantId: string; thinking: string | null; costUsd: number | null; credentialId: string | null };
   // The user's plan that served the request, when one did.
   subscriptionCredentialId?: string;
+  // The request asked to stay out of Activity (ResolvedRouter.private): only
+  // what billing needs may be kept.
+  private: boolean;
   // The router's non-secret routing settings, for embedders that compare or
   // replay routing decisions.
   router: RequestRecordRouter;

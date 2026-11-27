@@ -29,6 +29,7 @@ type StreamArgs = {
   source: ProviderIdentity;
   request: InteractionRequest;
   conversationId?: string;
+  private?: boolean;
   onFinal?: (outcome: ProviderStreamOutcome) => void;
   modelCost?: (message: Record<string, unknown>, failed: boolean) => number | null;
   // Optional terminal barrier. Streaming deltas are unaffected, but the
@@ -623,7 +624,7 @@ function responseEnvelope(
     parallel_tool_calls: args.request.parallelToolCalls ?? true,
     // `cost` as on Chat Completions: null means unpriced.
     ...(interaction ? { usage: { ...openAIResponsesUsage(interaction), cost: cost ?? null } } : {}),
-    dari_routing: openAIResponsesRouting(args.routing, args.id, args.conversationId),
+    dari_routing: openAIResponsesRouting(args.routing, args.id, args.conversationId, args.private),
   };
 }
 

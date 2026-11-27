@@ -10,6 +10,7 @@ export type RoutedCompletionResponseArgs = {
   request: InteractionRequest;
   routing: RoutingDecision;
   conversationId?: string;
+  private?: boolean;
 };
 
 export type RoutedCompletionStreamArgs = {
@@ -20,6 +21,7 @@ export type RoutedCompletionStreamArgs = {
   source: ProviderIdentity;
   request: InteractionRequest;
   conversationId?: string;
+  private?: boolean;
   onFinal?: (outcome: ProviderStreamOutcome) => void;
   modelCost?: (message: Record<string, unknown>, failed: boolean) => number | null;
   beforeClose?: (outcome: ProviderStreamOutcome) => Promise<void> | void;

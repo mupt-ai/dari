@@ -120,15 +120,15 @@ beforeAll(async () => {
     accountId: null,
     accountEmail: "me@example.com",
   }, null)!.id;
-  // A private ChatGPT plan: it serves GPT here, and stays off hosted Dari.
+  // A ChatGPT plan: it serves GPT here.
   store.connect({
     provider: "openai_codex",
-    accessToken: CODEX_PRIVATE_TOKEN,
+    accessToken: CODEX_TOKEN,
     refreshToken: "r",
     expiresAt,
     accountId: "acct",
     accountEmail: "me@example.com",
-  }, null, new Date(), null, true);
+  }, null, new Date());
   const configPath = join(dir, "dari-gateway.yaml");
   writeFileSync(configPath, `
 routers:
@@ -241,14 +241,30 @@ test("sends a model only Dari serves to hosted Dari as that model, with the Dari
   expect(body.output_config).toEqual({ effort: "high" });
 });
 
-test("serves a private plan, whose requests stay on this computer", async () => {
-  const response = await claudeCode(`dari/model/${GPT}`);
-  expect(response.status).toBe(200);
-  expect(await response.text()).toContain("hi");
-  expect(providerTokens).toContain(CODEX_PRIVATE_TOKEN);
-  // Neither this request nor the one hosted Dari served syncs.
+test("in private mode no request syncs, and hosted Dari is asked to keep only what billing needs", async () => {
+  const setPrivate = async (on: boolean) => (await fetch(`${baseUrl}/v1/gateway/private`, {
+    method: "PUT",
+    headers: { authorization: "Bearer local-key", "content-type": "application/json" },
+    body: JSON.stringify({ private: on }),
+  })).json();
+  expect(await setPrivate(true)).toEqual({ private: true });
+  const before = hosted("/rtr_1/v1/messages").length;
+
+  // Served here, on the ChatGPT plan: the response says it is private.
+  const local = await claudeCode(`dari/model/${GPT}`);
+  expect(local.status).toBe(200);
+  expect(local.headers.get("x-dari-private")).toBe("true");
+  expect(await local.text()).toContain('"private":true');
+  expect(providerTokens).toContain(CODEX_TOKEN);
+  // Served by hosted Dari, which is told.
+  expect((await claudeCode(`dari/model/${OPUS}`)).status).toBe(200);
+  expect(hosted("/rtr_1/v1/messages")[before]!.headers).toMatchObject({ "x-dari-private": "true" });
   await Bun.sleep(2_500);
   expect(syncedModels()).toEqual([SONNET]);
+
+  expect(await setPrivate(false)).toEqual({ private: false });
+  expect(await (await fetch(`${baseUrl}/v1/gateway/private`, { headers: { authorization: "Bearer local-key" } })).json())
+    .toEqual({ private: false });
 });
 
 test("hosted Dari is told what a request it serves is for, and adds the role's prompt itself", async () => {
@@ -350,12 +366,8 @@ test("forwards nothing for a caller without the gateway key", async () => {
 test("a renamed plan stays on this computer", async () => {
   const listed = await (await fetch(`${baseUrl}/v1/organizations/current/credentials`, {
     headers: { authorization: "Bearer local-key" },
-  })).json() as { credentials: Array<{ name: string; private: boolean; oauth_provider: string }> };
-  // The accounts list shows private plans, marked.
-  expect(listed.credentials.map((plan) => [plan.oauth_provider, plan.private])).toEqual([
-    ["anthropic_claude_code", false],
-    ["openai_codex", true],
-  ]);
+  })).json() as { credentials: Array<{ name: string; oauth_provider: string }> };
+  expect(listed.credentials.map((plan) => plan.oauth_provider)).toEqual(["anthropic_claude_code", "openai_codex"]);
   await fetch(`${baseUrl}/v1/organizations/current/credentials/${listed.credentials[0]!.name}/label`, {
     method: "PUT",
     headers: { authorization: "Bearer local-key", "content-type": "application/json" },
@@ -429,7 +441,7 @@ test("a connected gateway needs its id and encryption key", () => {
 });
 
 // A ChatGPT access token is a JWT naming its account; the stand-in is unsigned.
-const CODEX_PRIVATE_TOKEN = ["e30", Buffer.from(JSON.stringify({
+const CODEX_TOKEN = ["e30", Buffer.from(JSON.stringify({
   "https://api.openai.com/auth": { chatgpt_account_id: "acct" },
 })).toString("base64url"), "private"].join(".");
 

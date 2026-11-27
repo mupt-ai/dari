@@ -193,6 +193,7 @@ export async function completeNonStreaming(args: {
       request: args.interaction,
       routing: choice.decision,
       conversationId: choice.execution.conversationId,
+      private: choice.execution.private,
     });
   } catch (error) {
     await reportTerminalProviderFailure({
@@ -678,6 +679,7 @@ export async function executeStreaming(args: {
       source: started.providerStream.source,
       request: args.interaction,
       conversationId: execution.conversationId,
+      private: execution.private,
       clientSignal: args.clientSignal,
       modelCost: (message, failed) => args.reporter.modelCost({
         model: args.choice.decision.selectedModel, reasoning_effort: args.choice.decision.reasoningEffort,

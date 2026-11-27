@@ -280,8 +280,6 @@ type subscriptionCredential struct {
 	SubscriptionActive bool                    `json:"subscription_active"`
 	// Usage is how much of its quota the plan last reported used.
 	Usage *subscriptionUsage `json:"usage"`
-	// Private is a local gateway's plan that never syncs to hosted Dari.
-	Private bool `json:"private"`
 	// place is where the plan lives when the page shows plans from both
 	// hosted Dari and this computer; empty for a listing from one API.
 	place subscriptionPlace
@@ -361,7 +359,7 @@ func newSubscriptionCredentialsCmd(gf *globalFlags) *cobra.Command {
 		newSubscriptionConnectCmd(gf),
 		newPlacedSubscriptionCmd(gf, "mark-available", "Clear a subscription's usage-limit holds, its own and its models', so routers can use it again",
 			http.MethodPost, func(name string) string { return url.PathEscape(name) + "/mark-available" }, nil),
-		newPlacedSubscriptionCmd(gf, "disconnect", "Disconnect a subscription, on Dari or on this computer",
+		newPlacedSubscriptionCmd(gf, "disconnect", "Disconnect a subscription, on Cloud or Local",
 			http.MethodDelete, func(name string) string { return url.PathEscape(name) + "?scope=user" }, nil),
 		newSubscriptionResetsCmd(gf),
 		newSubscriptionUseResetCmd(gf),
@@ -424,9 +422,10 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connect <codex|claude-code|grok|muse-code|opencode-go|vercel-token-pass>",
 		Short: "Connect another subscription, or reconnect one with --reconnect",
-		Long: "Connects a subscription on Dari, on this computer (Activity synced to Dari), or privately on this computer.\n" +
-			"A plan of the same provider already on Dari or on this computer is first offered to move there,\n" +
-			"since one account may be connected on Dari once and on this computer once.",
+		Long: "Connects a subscription on Cloud (hosted Dari) or Local (this computer, Activity synced to Dari).\n" +
+			"A plan of the same provider already on Cloud or Local is first offered to move there,\n" +
+			"since one account may be connected on Cloud once and Local once.\n" +
+			"To keep this computer's requests out of Activity, run `dari private on`.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			provider, ok := subscriptionProviders[strings.ToLower(strings.TrimSpace(args[0]))]
@@ -465,7 +464,7 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&reconnect, "reconnect", "", "credential name of the subscription to reconnect (see `subscription list`)")
-	cmd.Flags().StringVar(&on, "on", "", "where the plan lives: dari, computer (Activity synced to Dari), or private; omit for the menu. With --reconnect: dari or computer, when the name is in both")
+	cmd.Flags().StringVar(&on, "on", "", "where the plan lives: cloud or local (Activity synced to Dari); omit for the menu. With --reconnect: cloud or local, when the name is in both")
 	return cmd
 }
 
@@ -502,7 +501,7 @@ func newPlacedSubscriptionCmd(gf *globalFlags, use, short, method string, path f
 			return printJSON(resp)
 		},
 	}
-	cmd.Flags().StringVar(&on, "on", "", "dari or computer, when the name is connected in both")
+	cmd.Flags().StringVar(&on, "on", "", "cloud or local, when the name is connected in both")
 	return cmd
 }
 
@@ -702,6 +701,6 @@ func newSubscriptionUseResetCmd(gf *globalFlags) *cobra.Command {
 			return printJSON(map[string]string{"result": result})
 		},
 	}
-	cmd.Flags().StringVar(&on, "on", "", "dari or computer, when the name is connected in both")
+	cmd.Flags().StringVar(&on, "on", "", "cloud or local, when the name is connected in both")
 	return cmd
 }

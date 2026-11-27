@@ -20,6 +20,7 @@ export function chatCompletionResponse(args: {
   modelCost?: number | null;
   routing: RoutingDecision;
   conversationId?: string;
+  private?: boolean;
 }): Record<string, unknown> {
   return {
     id: completionId(args.id),
@@ -34,7 +35,7 @@ export function chatCompletionResponse(args: {
       },
     ],
     usage: usagePayload(args.output, args.modelCost),
-    dari_routing: routingPayload(args.routing, args.id, args.conversationId),
+    dari_routing: routingPayload(args.routing, args.id, args.conversationId, args.private),
   };
 }
 
@@ -46,6 +47,7 @@ export function chatCompletionsSseStream(args: {
   source: ProviderIdentity;
   request: InteractionRequest;
   conversationId?: string;
+  private?: boolean;
   onFinal?: (outcome: ProviderStreamOutcome) => void;
   modelCost?: (message: Record<string, unknown>, failed: boolean) => number | null;
   // Optional terminal barrier. Streaming deltas are unaffected, but [DONE]
@@ -75,7 +77,7 @@ export function chatCompletionsSseStream(args: {
           usage: usagePayload(message, args.modelCost?.(message, true)) });
       };
 
-      send(chunk({ completion, created, model: args.model, delta: {}, finishReason: null, routing: routingPayload(args.routing, args.id, args.conversationId) }));
+      send(chunk({ completion, created, model: args.model, delta: {}, finishReason: null, routing: routingPayload(args.routing, args.id, args.conversationId, args.private) }));
       send(chunk({ completion, created, model: args.model, delta: { role: "assistant" }, finishReason: null }));
 
       const argumentDeltaSeen = new Set<string>();
@@ -208,7 +210,7 @@ export function chatCompletionsSseStream(args: {
   });
 }
 
-function routingPayload(decision: RoutingDecision, requestId: string, conversationId?: string): Record<string, unknown> {
+function routingPayload(decision: RoutingDecision, requestId: string, conversationId?: string, isPrivate?: boolean): Record<string, unknown> {
   return {
     requested_model: "dari/routing",
     selected_model: decision.selectedModel,
@@ -216,6 +218,8 @@ function routingPayload(decision: RoutingDecision, requestId: string, conversati
     reason: decision.reason,
     request_id: requestId,
     ...(conversationId ? { conversation_id: conversationId } : {}),
+    // Kept out of Activity, so no link to it there.
+    ...(isPrivate ? { private: true } : {}),
   };
 }
 

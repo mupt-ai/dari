@@ -120,7 +120,6 @@ export function selfHostedLink(
         flow: authorization.flow,
         credentialName: null,
         owner: newSubject(),
-        private: false,
         movingFrom: null,
         expiresAt: authorization.expiresAt,
       });

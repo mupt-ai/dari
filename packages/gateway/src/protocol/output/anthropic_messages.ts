@@ -17,6 +17,7 @@ export function anthropicMessagesResponse(args: {
   request: InteractionRequest;
   routing: RoutingDecision;
   conversationId?: string;
+  private?: boolean;
 }): Record<string, unknown> {
   return {
     id: anthropicMessageId(args.id),
@@ -29,6 +30,6 @@ export function anthropicMessagesResponse(args: {
     // As on Chat Completions. Null means unpriced, never a fabricated free request.
     usage: { ...anthropicUsage(args.output), cost: args.modelCost ?? null },
     ...(args.output.safeguardResults ? { safeguard_results: args.output.safeguardResults } : {}),
-    dari_routing: anthropicRouting(args.routing, args.id, args.conversationId),
+    dari_routing: anthropicRouting(args.routing, args.id, args.conversationId, args.private),
   };
 }

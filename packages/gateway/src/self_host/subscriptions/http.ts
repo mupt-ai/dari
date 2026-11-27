@@ -43,7 +43,7 @@ export type SubscriptionHttpDeps = {
 const BASE = "/v1/organizations/current/credentials";
 // Subscription names are env-var-style, which keeps other credential routes
 // such as `provider-credentials/...` out of these matches.
-const NAMED = /^\/([A-Za-z_][A-Za-z0-9_]*)(\/label|\/mark-available|\/private|\/resets|\/resets\/[^/]+\/use)?$/;
+const NAMED = /^\/([A-Za-z_][A-Za-z0-9_]*)(\/label|\/mark-available|\/resets|\/resets\/[^/]+\/use)?$/;
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -97,13 +97,6 @@ export async function handleSubscriptionRequest(
         throw error;
       }
       return json(200, summary(deps.store, found(renamed, name), now));
-    }
-    if (action === "/private" && request.method === "PUT") {
-      // Private plans stay off hosted Dari: a connected gateway neither
-      // serves nor reports them.
-      const body = await readBody(request);
-      if (typeof body.private !== "boolean") throw new HttpError(400, "private must be true or false.");
-      return json(200, summary(deps.store, found(deps.store.setPrivate(name, body.private, now), name), now));
     }
     if (action === "/mark-available" && request.method === "POST") {
       return json(200, summary(deps.store, found(deps.store.markAvailable(name, now), name), now));
@@ -161,9 +154,6 @@ async function startSession(deps: SubscriptionHttpDeps, body: Record<string, unk
   if (credentialName !== null && reconnecting?.provider !== provider) {
     throw new HttpError(404, `Unknown subscription credential ${JSON.stringify(credentialName)}.`);
   }
-  // A reconnected plan stays where it was unless the caller says otherwise.
-  const isPrivate = body.private ?? reconnecting?.private ?? false;
-  if (typeof isPrivate !== "boolean") throw new HttpError(400, "private must be true or false.");
   // `dari accounts subscription connect` names the hosted plan it moves here.
   const movingFrom = body.moving_from ?? null;
   if (movingFrom !== null && (typeof movingFrom !== "string" || !movingFrom.trim())) {
@@ -176,7 +166,6 @@ async function startSession(deps: SubscriptionHttpDeps, body: Record<string, unk
       flow: authorization.flow,
       credentialName,
       owner: null,
-      private: isPrivate,
       movingFrom,
       expiresAt: authorization.expiresAt,
     },
@@ -224,7 +213,7 @@ async function completeSession(deps: SubscriptionHttpDeps, body: Record<string, 
       console.error("hosted account check failed", error instanceof Error ? error.message : String(error));
     }
   }
-  const stored = deps.store.connect(tokens, session.credentialName, now, null, session.private, elsewhere);
+  const stored = deps.store.connect(tokens, session.credentialName, now, null, elsewhere);
   if (stored === null) {
     throw new HttpError(404, `Unknown subscription credential ${JSON.stringify(session.credentialName)}.`);
   }
@@ -317,8 +306,6 @@ function credentialBody(credential: SubscriptionCredential, active: boolean, now
     // subscription here belongs to the gateway's one user.
     credential_scope: "user",
     oauth_provider: credential.provider,
-    // Kept off hosted Dari (`dari accounts subscription connect --on private`).
-    private: credential.private,
     created_at: credential.createdAt.toISOString(),
     last_used_at: credential.lastUsedAt?.toISOString() ?? null,
     unavailable_until: held ? credential.unavailableUntil!.toISOString() : null,

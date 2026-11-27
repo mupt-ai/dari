@@ -13,13 +13,15 @@ import (
 // Status is the common display contract. Remaining counts turns after the
 // current response; the display includes the current turn. Pinned marks a
 // session-pinned decision, which replaces the lease. RequestID is the last
-// response's routing request, which opens its conversation in Activity.
+// response's routing request, which opens its conversation in Activity;
+// Private marks a request kept out of Activity, which shows instead.
 type Status struct {
 	Model     string `json:"selected_model"`
 	Thinking  string `json:"reasoning_effort"`
 	Remaining *int   `json:"lease_turns_remaining"`
 	Pinned    bool   `json:"session_pinned"`
 	RequestID string `json:"request_id"`
+	Private   bool   `json:"private"`
 }
 
 // Requests through a gateway (NoActivityLinkEnv, or GatewayURLEnv from
@@ -45,7 +47,9 @@ func (s Status) String() string {
 		}
 		parts = append(parts, fmt.Sprintf("lease %d %s left", turns, unit))
 	}
-	if requestID := StatusLabel(s.RequestID); requestID != "" && os.Getenv(NoActivityLinkEnv) == "" && os.Getenv(GatewayURLEnv) == "" {
+	if s.Private {
+		parts = append(parts, "private")
+	} else if requestID := StatusLabel(s.RequestID); requestID != "" && os.Getenv(NoActivityLinkEnv) == "" && os.Getenv(GatewayURLEnv) == "" {
 		parts = append(parts, dashboardBaseURL+"/activity/conversations/"+url.PathEscape(requestID))
 	}
 	return strings.Join(parts, " · ")
@@ -70,6 +74,7 @@ func StatusFromHeaders(headers http.Header) Status {
 		Thinking:  headers.Get("x-dari-thinking-level"),
 		Pinned:    headers.Get("x-dari-session-pinned") == "true",
 		RequestID: headers.Get("x-request-id"),
+		Private:   headers.Get("x-dari-private") == "true",
 	}
 	if remaining, err := strconv.Atoi(headers.Get("x-dari-lease-turns-remaining")); err == nil {
 		status.Remaining = &remaining

@@ -36,6 +36,7 @@ import {
   servedRouterIds,
   type ServedRouters,
 } from "./router_specs.js";
+import { handlePrivateModeRequest, PRIVATE_MODE_ROUTE, PrivateMode } from "./private_mode.js";
 import { SessionPinStore } from "./session_pin_store.js";
 import { handleSubscriptionRequest, SubscriptionStore } from "./subscriptions/index.js";
 import { providerBaseUrls } from "./subscriptions/resets.js";
@@ -44,8 +45,8 @@ import { refreshStaleUsage } from "./subscriptions/usage.js";
 const SUBSCRIPTION_ROUTES = "/v1/organizations/current/credentials";
 // The models Dari serves, which the Dari CLI's model picker offers.
 const CANONICAL_MODELS_ROUTE = "/v1/canonical-models";
-// How often a connected gateway reads idle plans' usage, so hosted Dari's
-// meters move without a request here.
+// How often a connected gateway reads idle plans' usage, so their meters move
+// without a request here.
 const IDLE_USAGE_INTERVAL_MS = 5 * 60_000;
 
 /**
@@ -76,8 +77,9 @@ const IDLE_USAGE_INTERVAL_MS = 5 * 60_000;
  * - `DARI_HOSTED_URL` and `DARI_HOSTED_API_KEY`: connect the gateway to hosted
  *   Dari (connected.ts), with `DARI_GATEWAY_ID`, `DARI_GATEWAY_NAME`, and
  *   `DARI_GATEWAY_ENCRYPTION_KEY`. It then serves the user's hosted routers on
- *   its own plans and then on hosted Dari, and syncs its plans and requests
- *   there; Dari Link and Activity are hosted's.
+ *   its own plans and then on hosted Dari, and syncs its requests there unless
+ *   private mode is on (`/v1/gateway/private`); Dari Link and Activity are
+ *   hosted's.
  */
 export async function startSelfHostedGateway(env: Record<string, string> = process.env as Record<string, string>) {
   const hosted = hostedConnectionFromEnv(env);
@@ -103,6 +105,10 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     );
   }
   const subscriptions = new SubscriptionStore(db, secrets);
+  const privateMode = new PrivateMode(db);
+  // Plans marked private before private mode kept their requests out of
+  // Activity; the gateway now keeps all of them out instead.
+  if (subscriptions.clearLegacyPrivate()) privateMode.set(true);
   const prefixes = new PrefixStore(db);
   const sessionPins = new SessionPinStore(db);
   const routerModels = new RouterModelStore(db);
@@ -180,7 +186,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   const routed = createRequestHandler({ platform, selectorBackend });
   const gateway = hosted === null || sync === null || hostedRouter === null
     ? routed
-    : connectedHandler({ gateway: routed, gatewayKeys, hosted, hostedRouter, fetch });
+    : connectedHandler({ gateway: routed, gatewayKeys, hosted, hostedRouter, privateMode, fetch });
 
   // Subscriptions, model lists, and router specs are managed with any gateway
   // key; every other path is the gateway's own.
@@ -190,7 +196,8 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
       || pathname.startsWith(`${SUBSCRIPTION_ROUTES}/`)
       || pathname === CANONICAL_MODELS_ROUTE
       || ROUTER_MODELS_ROUTE.test(pathname)
-      || ROUTERS_ROUTE.test(pathname);
+      || ROUTERS_ROUTE.test(pathname)
+      || pathname === PRIVATE_MODE_ROUTE;
     if (!manages) return await gateway(request);
     try {
       if (gatewayKeyIndex(gatewayKeys, bearerToken(request.headers)) === null) {
@@ -199,6 +206,7 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
     } catch (error) {
       return errorResponse(error);
     }
+    if (pathname === PRIVATE_MODE_ROUTE) return await handlePrivateModeRequest(request, privateMode).catch(errorResponse);
     if (pathname === CANONICAL_MODELS_ROUTE && request.method === "GET") {
       return Response.json({ data: CANONICAL_MODELS }, { headers: { "Cache-Control": "no-store" } });
     }

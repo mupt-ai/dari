@@ -76,6 +76,7 @@ export async function prepareRoutedCompletion(args: {
   requestId: string;
   clientRequestId: string | null;
   tagsHeader: string | null;
+  privateRequest?: boolean;
   clientHarness?: ClientHarness;
   clientHeaders?: Record<string, string>;
   harnessConversationIdentity?: HarnessConversationIdentity;
@@ -88,6 +89,7 @@ export async function prepareRoutedCompletion(args: {
     apiKey: args.apiKey,
     includePublicEvalCatalog: true,
     clientHeaders: args.clientHeaders,
+    ...(args.privateRequest ? { private: true } : {}),
   };
   // Direct /v1 callers are authenticated by API key, so their canonical
   // organization router is not known until this resolve completes. Fingerprint
@@ -177,6 +179,8 @@ export async function prepareRoutedCompletion(args: {
   const strictAccess = strictProviderAccess(credentials, roleModel.interaction);
   const access = linkGrantAccess(strictAccess.credentials, strictAccess.interaction);
   credentials = access.credentials;
+  // A Dari Link app's usage is read back from its requests, so they are kept.
+  if (args.privateRequest && !credentials.link_grant_id) credentials = { ...credentials, private: true };
   // A child token's tags label every request it makes, whatever the request says.
   Object.assign(tags, credentials.link_tags);
   args = {

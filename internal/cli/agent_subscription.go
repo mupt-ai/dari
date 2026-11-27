@@ -148,9 +148,9 @@ func subscriptionLabel(subscription subscriptionCredential, showProvider bool, c
 }
 
 // subscriptionWhere tags a plan on this computer where hosted plans list
-// too: "This Computer" or "Private".
+// too: "Local".
 func subscriptionWhere(subscription subscriptionCredential) string {
-	if subscription.place != placeComputer && subscription.place != placePrivate {
+	if subscription.place != placeComputer {
 		return ""
 	}
 	return " " + ansiGray + placeNames[subscription.place] + ansiReset

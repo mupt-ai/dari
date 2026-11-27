@@ -46,7 +46,8 @@ export function openAIResponsesUsage(output: Pick<InteractionOutput, "usage">): 
 export function openAIResponsesRouting(
   decision: RoutingDecision,
   requestId: string,
-  conversationId?: string
+  conversationId?: string,
+  isPrivate?: boolean
 ): Record<string, unknown> {
   return {
     requested_model: "dari/routing",
@@ -55,6 +56,8 @@ export function openAIResponsesRouting(
     reason: decision.reason,
     request_id: requestId,
     ...(conversationId ? { conversation_id: conversationId } : {}),
+    // Kept out of Activity, so no link to it there.
+    ...(isPrivate ? { private: true } : {}),
   };
 }
 

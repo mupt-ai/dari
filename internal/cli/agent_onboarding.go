@@ -653,7 +653,7 @@ func connectedAgentSubscriptions(ctx context.Context, client *api.Client, provid
 	if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &listed); err != nil {
 		return nil, api.HumanError(err)
 	}
-	// A plan on this computer's gateway, not private, is connected too.
+	// A plan on this computer's gateway is connected too.
 	local, _, err := computerSubscriptions(ctx, io.Discard, false)
 	if err != nil {
 		return nil, err
@@ -662,7 +662,7 @@ func connectedAgentSubscriptions(ctx context.Context, client *api.Client, provid
 		return !slices.ContainsFunc(listed.Credentials, func(credential agentCredential) bool {
 			return credential.OAuthProvider == provider.id
 		}) && !slices.ContainsFunc(local, func(plan subscriptionCredential) bool {
-			return !plan.Private && plan.OAuthProvider == provider.id
+			return plan.OAuthProvider == provider.id
 		})
 	}), nil
 }
@@ -751,13 +751,12 @@ func connectAgentPersonalSubscription(
 	stderr io.Writer,
 	credentialName string,
 ) error {
-	_, err := connectSubscription(ctx, provider, client, stdin, stderr, credentialName, false, "", provider.name+" subscription connected")
+	_, err := connectSubscription(ctx, provider, client, stdin, stderr, credentialName, "", provider.name+" subscription connected")
 	return err
 }
 
 // connectSubscription is connectAgentPersonalSubscription on a client that
-// may be a local gateway: private keeps the plan off hosted Dari there,
-// movingFrom names the plan a move replaces (as the client's side knows it),
+// may be a local gateway: movingFrom names the plan a move replaces (as the client's side knows it),
 // and done, when set, is the line printed once it is connected. It returns
 // the plan the sign-in connected.
 func connectSubscription(
@@ -767,16 +766,12 @@ func connectSubscription(
 	stdin io.Reader,
 	stderr io.Writer,
 	credentialName string,
-	private bool,
 	movingFrom string,
 	done string,
 ) (subscriptionCredential, error) {
 	body := map[string]any{"provider": provider.id}
 	if credentialName != "" {
 		body["credential_name"] = credentialName
-	}
-	if private {
-		body["private"] = true
 	}
 	// The plan being moved still holds the account until the move disconnects
 	// it; naming it keeps the sign-in from being refused as a second copy.

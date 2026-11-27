@@ -18,10 +18,10 @@ import (
 
 func TestSubscriptionPlacesOfferEachProvidersDefaultFirst(t *testing.T) {
 	for provider, want := range map[agentSubscriptionProvider]string{
-		claudeSubscription: "computer dari private",
-		museSubscription:   "computer dari private",
-		codexSubscription:  "dari computer private",
-		grokSubscription:   "dari computer private",
+		claudeSubscription: "computer dari",
+		museSubscription:   "computer dari",
+		codexSubscription:  "dari computer",
+		grokSubscription:   "dari computer",
 	} {
 		places := []string{}
 		for _, place := range subscriptionPlaces(provider) {
@@ -36,21 +36,35 @@ func TestSubscriptionPlacesOfferEachProvidersDefaultFirst(t *testing.T) {
 			t.Fatalf("%s: %s %v", provider.name, place, err)
 		}
 	}
-	if _, err := chooseSubscriptionPlace(nil, nil, claudeSubscription, "cloud"); err == nil {
-		t.Fatal("accepted --on cloud")
+}
+
+func TestParseSubscriptionPlace(t *testing.T) {
+	for value, want := range map[string]subscriptionPlace{
+		"cloud": placeDari, " Cloud ": placeDari, "dari": placeDari,
+		"local": placeComputer, "LOCAL": placeComputer, "computer": placeComputer,
+	} {
+		if got, err := parseSubscriptionPlace(value); err != nil || got != want {
+			t.Fatalf("%q: %s, %v", value, got, err)
+		}
+	}
+	if _, err := parseSubscriptionPlace("private"); err == nil || !strings.Contains(err.Error(), "dari private on") {
+		t.Fatalf("private: %v", err)
+	}
+	if _, err := parseSubscriptionPlace("moon"); err == nil {
+		t.Fatal("accepted --on moon")
 	}
 }
 
 func TestFindPlacedSubscriptionAsksWhereWhenBothPlacesMatch(t *testing.T) {
 	all := []placedSubscription{
-		{subscriptionCredential{Name: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN", OAuthProvider: claudeSubscription.id}, placeDari, "Dari"},
-		{subscriptionCredential{Name: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN", OAuthProvider: claudeSubscription.id}, placePrivate, "Private"},
+		{subscriptionCredential{Name: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN", OAuthProvider: claudeSubscription.id}, placeDari, "Cloud"},
+		{subscriptionCredential{Name: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN", OAuthProvider: claudeSubscription.id}, placeComputer, "Local"},
 	}
-	if _, err := findPlacedSubscription(all, "claude-code", ""); err == nil || !strings.Contains(err.Error(), "--on dari or --on computer") {
+	if _, err := findPlacedSubscription(all, "claude-code", ""); err == nil || !strings.Contains(err.Error(), "--on cloud or --on local") {
 		t.Fatalf("err = %v", err)
 	}
-	found, err := findPlacedSubscription(all, "anthropic_claude_code_oauth_token", "computer")
-	if err != nil || found.place != placePrivate {
+	found, err := findPlacedSubscription(all, "anthropic_claude_code_oauth_token", "local")
+	if err != nil || found.place != placeComputer {
 		t.Fatalf("found %+v, %v", found, err)
 	}
 }
@@ -65,7 +79,7 @@ func TestPlansOnThisComputerCountAsConnected(t *testing.T) {
 	computer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(`{"credentials":[
 			{"name":"CLAUDE","credential_scope":"user","oauth_provider":"anthropic_claude_code"},
-			{"name":"MUSE","credential_scope":"user","oauth_provider":"meta_muse","private":true}]}`))
+			{"name":"MUSE","credential_scope":"user","oauth_provider":"meta_muse"}]}`))
 	}))
 	defer computer.Close()
 	original := computerClient
@@ -74,7 +88,7 @@ func TestPlansOnThisComputerCountAsConnected(t *testing.T) {
 	}
 	t.Cleanup(func() { computerClient = original })
 	connected, err := connectedAgentSubscriptions(context.Background(), api.New(hosted.URL), []agentSubscriptionProvider{claudeSubscription, museSubscription})
-	if err != nil || len(connected) != 1 || connected[0].id != claudeSubscription.id {
+	if err != nil || len(connected) != 2 {
 		t.Fatalf("connected = %+v, %v", connected, err)
 	}
 }
@@ -169,9 +183,9 @@ func TestConnectMovesAPlanOnDariToThisComputer(t *testing.T) {
 	hosted := planServer(t, codexOnDari, "", &log, bodies)
 	computer := planServer(t, nil, "ME@example.test", &log, bodies)
 
-	stderr := connectCodex(t, hosted, computer, "computer", true)
-	if !strings.Contains(stderr, "offered me@example.test from Dari to This Computer") ||
-		!strings.Contains(stderr, "me@example.test moved from Dari to This Computer") {
+	stderr := connectCodex(t, hosted, computer, "local", true)
+	if !strings.Contains(stderr, "offered me@example.test from Cloud to Local") ||
+		!strings.Contains(stderr, "me@example.test moved from Cloud to Local") {
 		t.Fatalf("stderr = %s", stderr)
 	}
 	if started := bodies["POST /v1/organizations/current/credentials/oauth/sessions"]; started["moving_from"] != "OPENAI_CODEX_OAUTH_TOKEN" {
@@ -191,7 +205,7 @@ func TestConnectAnotherAccountLeavesThePlanOnDari(t *testing.T) {
 	hosted := planServer(t, codexOnDari, "", &log, bodies)
 	computer := planServer(t, nil, "other@example.test", &log, bodies)
 
-	connectCodex(t, hosted, computer, "computer", false)
+	connectCodex(t, hosted, computer, "local", false)
 	if started := bodies["POST /v1/organizations/current/credentials/oauth/sessions"]; started == nil || started["moving_from"] != nil {
 		t.Fatalf("start body = %#v, want no moving_from", started)
 	}
@@ -202,29 +216,6 @@ func TestConnectAnotherAccountLeavesThePlanOnDari(t *testing.T) {
 	}
 }
 
-func TestConnectPrivatelyFlipsAPlanOnThisComputerWithoutSigningIn(t *testing.T) {
-	useTestAPIKey(t)
-	storeGatewayDatabase(t)
-	var log []string
-	bodies := map[string]map[string]any{}
-	hosted := planServer(t, map[string]any{"credentials": []any{}}, "", &log, bodies)
-	computer := planServer(t, map[string]any{"credentials": []any{map[string]any{
-		"id": "local-1", "name": "OPENAI_CODEX_OAUTH_TOKEN", "credential_scope": "user", "oauth_provider": "openai_codex",
-		"safe_metadata": map[string]any{"account_email": "me@example.test"},
-	}}}, "", &log, bodies)
-
-	stderr := connectCodex(t, hosted, computer, "private", true)
-	if !strings.Contains(stderr, "me@example.test moved from This Computer to Private") {
-		t.Fatalf("stderr = %s", stderr)
-	}
-	if body := bodies["PUT /v1/organizations/current/credentials/OPENAI_CODEX_OAUTH_TOKEN/private"]; body["private"] != true {
-		t.Fatalf("private body = %#v (requests %v)", body, log)
-	}
-	if _, ok := bodies["POST /v1/organizations/current/credentials/oauth/sessions"]; ok {
-		t.Fatalf("signed in again: %v", log)
-	}
-}
-
 func TestMoveKeepsTheOldPlanWhenAnotherAccountSignsIn(t *testing.T) {
 	useTestAPIKey(t)
 	var log []string
@@ -232,8 +223,8 @@ func TestMoveKeepsTheOldPlanWhenAnotherAccountSignsIn(t *testing.T) {
 	hosted := planServer(t, codexOnDari, "", &log, bodies)
 	computer := planServer(t, nil, "other@example.test", &log, bodies)
 
-	stderr := connectCodex(t, hosted, computer, "computer", true)
-	if !strings.Contains(stderr, "Signed in to another account; kept me@example.test on Dari") || strings.Contains(stderr, "moved") {
+	stderr := connectCodex(t, hosted, computer, "local", true)
+	if !strings.Contains(stderr, "Signed in to another account; kept me@example.test on Cloud") || strings.Contains(stderr, "moved") {
 		t.Fatalf("stderr = %s", stderr)
 	}
 	for _, request := range log {
@@ -256,7 +247,7 @@ func TestMoveKeepsTheOldPlanWhenAnotherWorkspaceSignsIn(t *testing.T) {
 	hosted := planServer(t, onDari, "", &log, bodies)
 	computer := planServer(t, nil, "me@example.test", &log, bodies, "ws_personal")
 
-	stderr := connectCodex(t, hosted, computer, "computer", true)
+	stderr := connectCodex(t, hosted, computer, "local", true)
 	if !strings.Contains(stderr, "Signed in to another account") {
 		t.Fatalf("stderr = %s", stderr)
 	}

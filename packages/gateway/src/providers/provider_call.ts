@@ -89,6 +89,9 @@ export type ProviderExecution = ProviderCallConfig & {
   subscriptionResetMinHours?: number;
   // The thinking the provider was sent, as X-Dari-Thinking-Level reports it.
   thinkingLevel: string;
+  // The request stays out of Activity (ResolvedRouter.private); the response
+  // says so, for status lines that would otherwise link to it.
+  private?: boolean;
   usageContext: RoutingUsageContext | undefined;
   headers: Record<string, string>;
 };
@@ -181,6 +184,7 @@ export function prepareProviderExecution(args: {
       : {}),
     ...(providerKeySource === "subscription" && supplied?.account ? { subscriptionAccount: supplied.account } : {}),
     thinkingLevel,
+    ...(args.credentials.private === true ? { private: true } : {}),
     usageContext: usageContextFor({
       billable: args.billable,
       credentials: args.credentials,
@@ -198,6 +202,7 @@ export function prepareProviderExecution(args: {
         ? {}
         : { "X-Dari-Lease-Turns-Remaining": String(args.decision.leaseTurnsRemaining) }),
       ...(args.decision.sessionPinned === true ? { "X-Dari-Session-Pinned": "true" } : {}),
+      ...(args.credentials.private === true ? { "X-Dari-Private": "true" } : {}),
     },
   };
 }

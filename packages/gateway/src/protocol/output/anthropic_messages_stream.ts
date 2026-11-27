@@ -24,6 +24,7 @@ export function anthropicMessagesSseStream(args: {
   source: ProviderIdentity;
   request: InteractionRequest;
   conversationId?: string;
+  private?: boolean;
   onFinal?: (outcome: ProviderStreamOutcome) => void;
   modelCost?: (message: Record<string, unknown>, failed: boolean) => number | null;
   beforeClose?: (outcome: ProviderStreamOutcome) => Promise<void> | void;
@@ -59,7 +60,7 @@ export function anthropicMessagesSseStream(args: {
           stop_reason: null,
           stop_sequence: null,
           usage: { input_tokens: 0, output_tokens: 0 },
-          dari_routing: anthropicRouting(args.routing, args.id, args.conversationId),
+          dari_routing: anthropicRouting(args.routing, args.id, args.conversationId, args.private),
         },
       });
 

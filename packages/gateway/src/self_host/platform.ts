@@ -14,7 +14,7 @@ import {
   SELF_HOSTED_ORGANIZATION_ID,
   type SelfHostedResolverDeps,
 } from "./resolve.js";
-import { type SubscriptionStore } from "./subscriptions/index.js";
+import { planAccount, type SubscriptionStore } from "./subscriptions/index.js";
 import { refreshedAccessToken } from "./subscriptions/access.js";
 import { hasBankedResets, providerBaseUrls, recoverHeldPlans } from "./subscriptions/resets.js";
 
@@ -60,6 +60,7 @@ export function createSelfHostedPlatform(deps: Omit<SelfHostedResolverDeps, "pre
       if (next === null) return undefined;
       return {
         credentialId: next.id,
+        ...planAccount(next),
         apiKey: await refreshedAccessToken(deps.subscriptions, next, { fetch: deps.fetch }),
       };
     },

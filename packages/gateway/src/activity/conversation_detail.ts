@@ -55,6 +55,13 @@ function agentContext(record: ConversationRecord): AgentContext {
   };
 }
 
+/** The name of the plan that served the request, when one did. */
+function subscriptionAccount(record: ConversationRecord): string | null {
+  const metadata = record.requestMetadata;
+  if (metadata === null || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+  return readOptionalString((metadata as Record<string, unknown>).subscription_account);
+}
+
 function routePath(records: readonly ConversationRecord[]) {
   const path: Array<{ model: string; thinking_level: string | null }> = [];
   for (const record of records) {
@@ -211,6 +218,7 @@ function conversationStep(record: ConversationRecord, organizationId: string, cu
     selected_model: record.selectedModel,
     selected_reasoning_effort: effort,
     selected_provider: record.selectedProvider,
+    subscription_account: subscriptionAccount(record),
     provider_input_tokens: record.providerInputTokens,
     provider_cache_read_tokens: record.providerCacheReadTokens,
     provider_cache_write_tokens: record.providerCacheWriteTokens,

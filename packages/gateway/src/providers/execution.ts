@@ -942,6 +942,7 @@ function onNextSubscription(choice: ProviderChoice, next: NextSubscription): Pro
       apiKey: next.apiKey,
       auth: { type: "bearer", apiKey: next.apiKey },
       subscriptionCredentialId: next.credentialId,
+      subscriptionAccount: next.account,
     },
   };
 }

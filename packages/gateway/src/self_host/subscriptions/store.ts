@@ -90,6 +90,15 @@ export type PendingOAuthSession = {
   expiresAt: Date;
 };
 
+/**
+ * A plan's name, as Activity shows the request it served: the user's label,
+ * else its account's email; none when it has neither.
+ */
+export function planAccount(plan: Pick<SubscriptionCredential, "label" | "accountEmail">): { account?: string } {
+  const account = plan.label ?? plan.accountEmail;
+  return account ? { account } : {};
+}
+
 /** The parts of a plan that say which provider account it is. */
 export type AccountRef = {
   provider: SubscriptionProvider;

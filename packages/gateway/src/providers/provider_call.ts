@@ -79,6 +79,8 @@ export type ProviderExecution = ProviderCallConfig & {
   // subscriptions it is; undefined for router-owned keys.
   subscriptionUserId?: string;
   subscriptionCredentialId?: string;
+  // That plan's name, as ProviderCredential.account.
+  subscriptionAccount?: string;
   // The Dari Link grant whose subscriptions alone may serve this call.
   subscriptionLinkGrantId?: string;
   // The model's sources and the router's reset threshold, carried onto the
@@ -177,6 +179,7 @@ export function prepareProviderExecution(args: {
           ...(args.credentials.link_grant_id ? { subscriptionLinkGrantId: args.credentials.link_grant_id } : {}),
         }
       : {}),
+    ...(providerKeySource === "subscription" && supplied?.account ? { subscriptionAccount: supplied.account } : {}),
     thinkingLevel,
     usageContext: usageContextFor({
       billable: args.billable,

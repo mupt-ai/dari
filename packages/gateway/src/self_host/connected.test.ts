@@ -219,7 +219,12 @@ test("serves a model its plan serves locally and sends the request to hosted Act
   const body = JSON.parse(sync!.body);
   expect(body.gateway_id).toBe("gw_test");
   expect(body.requests).toHaveLength(1);
-  expect(body.requests[0].row).toMatchObject({ router_id: "rtr_1", selected_model: SONNET });
+  expect(body.requests[0].row).toMatchObject({
+    router_id: "rtr_1",
+    selected_model: SONNET,
+    // Hosted Activity names the plan, which it otherwise never sees.
+    request_metadata: expect.objectContaining({ subscription_account: "me@example.com" }),
+  });
 });
 
 test("sends a model only Dari serves to hosted Dari as that model, with the Dari key and the client's own headers", async () => {

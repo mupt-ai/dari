@@ -103,6 +103,7 @@ describe("resolveSelfHostedRouter", () => {
       apiKey: "sk-ant-oat01-access",
       subscription: "anthropic_claude_code",
       credentialId: plan.id,
+      account: "one@example.com",
     });
     expect(claudeCode.provider_keys.anthropic).toBeUndefined();
 
@@ -122,7 +123,7 @@ describe("resolveSelfHostedRouter", () => {
 
     const museCode = await resolveSelfHostedRouter(resolver, request({ clientHarness: "muse_code" }));
     expect(museCode.provider_credentials).toEqual({
-      "meta/muse-spark-1.3": { apiKey: "meta-minted-key", subscription: "meta_muse", credentialId: plan.id },
+      "meta/muse-spark-1.3": { apiKey: "meta-minted-key", subscription: "meta_muse", credentialId: plan.id, account: "one@example.com" },
     });
     expect(museCode.model_configs?.["meta/muse-spark-1.3"]).toBeUndefined();
     // Meta's API key serves the request when the plan cannot.
@@ -162,6 +163,7 @@ describe("resolveSelfHostedRouter", () => {
       apiKey: accessToken,
       subscription: "openai_codex",
       credentialId: plan.id,
+      account: "one@example.com",
     });
     expect(resolved.provider_keys).toEqual({ anthropic: "sk-ant", openai: "sk-openai" });
     expect(resolved.model_fallbacks?.["openai/gpt-5.5"]).toEqual([
@@ -627,7 +629,7 @@ test("a grant with an OpenCode Go plan is served the models the plan runs", asyn
   ]));
   // Nothing of another provider's: the router's own Claude and GPT models have no plan here.
   expect(new Set(Object.values(alone.model_configs ?? {}).map((config) => config.provider))).toEqual(new Set(["opencode-go"]));
-  expect(alone.provider_credentials?.["moonshotai/Kimi-K3"]).toEqual({ apiKey: "go-plan-key", subscription: "opencode_go", credentialId: plan.id });
+  expect(alone.provider_credentials?.["moonshotai/Kimi-K3"]).toEqual({ apiKey: "go-plan-key", subscription: "opencode_go", credentialId: plan.id, account: "one@example.com" });
   expect(alone.provider_keys).toEqual({});
   expect(alone.model_fallbacks).toEqual({});
 

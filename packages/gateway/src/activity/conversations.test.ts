@@ -33,12 +33,13 @@ function platform(routerZdr = 0): ActivityPlatform {
   const insert = db.query(`insert into routing_requests (id, request_id, organization_id, source_protocol, router_id,
     api_key_id, request_kind, conversation_id, zdr, status, selected_model, selected_provider, provider_total_tokens,
     provider_total_cost_usd, provider_pricing_known, message_count, has_tools, model_switched, received_at, completed_at,
-    decision_details, blob_bucket, request_blob_key, request_blob_format)
-    values (?, ?, '${ORG}', 'openai_chat', 'rtr_1', 'oak_1', ?, 'conv-a', 0, 'completed', ?, 'openai', 100, ?, 1, 2, 1, ?, ?, ?, ?, 'bucket', ?, ?)`);
+    decision_details, blob_bucket, request_blob_key, request_blob_format, request_metadata)
+    values (?, ?, '${ORG}', 'openai_chat', 'rtr_1', 'oak_1', ?, 'conv-a', 0, 'completed', ?, 'openai', 100, ?, 1, 2, 1, ?, ?, ?, ?, 'bucket', ?, ?, ?)`);
   insert.run("rreq_1", "req-1", "user_message", "openai/gpt-a", "0.0100000000", 0, at(0), at(2),
-    JSON.stringify({ selected_reasoning_effort: "high", selector_lease_turns: 3 }), "key-1", "chat_projection_v1");
+    JSON.stringify({ selected_reasoning_effort: "high", selector_lease_turns: 3 }), "key-1", "chat_projection_v1",
+    JSON.stringify({ subscription_account: "me@example.com" }));
   insert.run("rreq_2", "req-2", "tool_result", "openai/gpt-b", "0.0250000000", 1, at(10), at(12),
-    JSON.stringify({ selector_lease_turns: 3.5 }), null, null);
+    JSON.stringify({ selector_lease_turns: 3.5 }), null, null, null);
   db.exec(`
     insert into routing_tool_skill_events values ('ev_1', 'rreq_1', 0, 'tool_call', 'tool:read', 'Read', null, 'declared', 'ctx', 'call-1');
     insert into routing_tool_result_observations values ('obs_1', 'rreq_2', 'ctx', 'call-1');
@@ -86,8 +87,11 @@ test("details a conversation's steps and matched tool exchange", async () => {
     selector_lease_turns: 3,
     client_request_url: `/v1/organizations/${ORG}/routing/activity/requests/rreq_1/client-request`,
     client_request_format: "chat_projection_v1",
+    // The plan that served it, by name.
+    subscription_account: "me@example.com",
   });
   expect(body.steps[1].selector_lease_turns).toBeNull();
+  expect(body.steps[1].subscription_account).toBeNull();
   expect(body.tool_exchanges).toEqual([expect.objectContaining({
     state: "matched",
     call_event_id: "ev_1",

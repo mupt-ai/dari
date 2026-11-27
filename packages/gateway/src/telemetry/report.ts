@@ -523,6 +523,11 @@ export class RequestReporter {
               : selectedProvider ? a.credentials.link_key_credential_ids?.[selectedProvider] ?? null : null,
           }
         : undefined;
+      // The plan that served the request, by name, so Activity says which;
+      // ingest refuses metadata with a longer one.
+      const subscriptionAccount = keySource === "subscription"
+        ? outcome.providerExecution?.subscriptionAccount?.slice(0, 320)
+        : undefined;
       const ingestPayload = {
         request_id: this.args.requestId,
         client_request_id: a.clientRequestId,
@@ -547,7 +552,9 @@ export class RequestReporter {
         prefix_warm_tokens: selectedEstimate?.warm_tokens ?? null,
         message_count: observability.messageCount,
         has_tools: observability.hasTools,
-        request_metadata: observability.metadata,
+        request_metadata: subscriptionAccount === undefined
+          ? observability.metadata
+          : { ...observability.metadata, subscription_account: subscriptionAccount },
         selected_model: selectedModel,
         selected_provider: selectedProvider,
         provider_key_source: keySource,

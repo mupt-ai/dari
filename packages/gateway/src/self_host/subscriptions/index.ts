@@ -50,6 +50,7 @@ export {
   activeModelHolds,
   currentUsage,
   isHeld,
+  planAccount,
   sameConnectedAccount,
   type AccountRef,
   type ConnectedAccount,

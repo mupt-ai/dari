@@ -75,6 +75,9 @@ export type ProviderCredential = {
   subscription?: SubscriptionKind;
   // A resolved personal plan: quota holds and usage belong to this credential.
   credentialId?: string;
+  // That plan's name, as Activity shows it: its owner's label, else its
+  // account's email.
+  account?: string;
   // Dari's managed key: billed to the organization's credits.
   managed?: true;
 };

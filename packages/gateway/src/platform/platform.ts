@@ -592,6 +592,8 @@ export type NextSubscriptionRequest = {
 
 export type NextSubscription = {
   credentialId: string;
+  // The plan's name, as ProviderCredential.account.
+  account?: string;
   // The plan's access token, sent as the bearer credential.
   apiKey: string;
 };

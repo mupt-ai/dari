@@ -50,6 +50,7 @@ import { refreshedAccessToken } from "./subscriptions/access.js";
 import {
   activeModelHolds,
   freshAccessToken,
+  planAccount,
   type OAuthFetch,
   type SubscriptionCredential,
   type SubscriptionProvider,
@@ -285,6 +286,7 @@ export async function resolveSelfHostedRouter(
         apiKey: await planToken(first.plan),
         subscription: first.plan.provider,
         credentialId: first.plan.id,
+        ...planAccount(first.plan),
       };
     } else {
       resolved.provider_keys[first!.provider] = first!.key;

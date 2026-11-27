@@ -300,6 +300,25 @@ test("Anthropic thinking blocks preserve provider continuation state", () => {
   }]);
 });
 
+test("Anthropic thinking from a conversation begun on Anthropic directly keeps only its readable text", () => {
+  const request = anthropicRequest({
+    model: "my-router",
+    max_tokens: 64,
+    messages: [{
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "Native thought.", signature: "provider-native-signature" },
+        { type: "redacted_thinking", data: "provider-native-redacted-state" },
+      ],
+    }],
+  });
+
+  expect(request.items).toEqual([
+    { type: "reasoning", summary: ["Native thought."], content: [] },
+    { type: "reasoning", summary: [], content: [] },
+  ]);
+});
+
 test("plain model reasoning becomes a portable Anthropic thinking block", () => {
   const [block] = anthropicOutputContent({
     content: [{

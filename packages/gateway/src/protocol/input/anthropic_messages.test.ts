@@ -288,17 +288,27 @@ test("Anthropic Messages ingress preserves router-generated portable thinking", 
   }]);
 });
 
-test("Anthropic Messages ingress rejects raw thinking state without provider provenance", () => {
-  for (const content of [
-    { type: "thinking", thinking: "Native thought.", signature: "provider-native-signature" },
-    { type: "redacted_thinking", data: "provider-native-redacted-state" },
-  ]) {
-    expect(() => anthropicMessagesToInteraction({
-      model: "dari/routing",
-      max_tokens: 4096,
-      messages: [{ role: "assistant", content: [content] }],
-    })).toThrow("must be a Dari reasoning-state envelope");
-  }
+test("Anthropic Messages ingress keeps the readable thinking of a conversation begun on Anthropic directly", () => {
+  const request = anthropicMessagesToInteraction({
+    model: "dari/routing",
+    max_tokens: 4096,
+    messages: [{
+      role: "assistant",
+      content: [
+        { type: "thinking", thinking: "Native thought.", signature: "provider-native-signature" },
+        { type: "thinking", thinking: "", signature: "provider-native-signature" },
+        { type: "redacted_thinking", data: "provider-native-redacted-state" },
+        { type: "text", text: "Answer." },
+      ],
+    }],
+  });
+
+  expect(request.items).toEqual([
+    { type: "reasoning", summary: ["Native thought."], content: [] },
+    { type: "reasoning", summary: [], content: [] },
+    { type: "reasoning", summary: [], content: [] },
+    { type: "message", role: "assistant", content: [{ type: "text", text: "Answer." }], contentShape: "parts" },
+  ]);
 });
 
 test("Anthropic Messages ingress accepts supported native tool declarations", () => {

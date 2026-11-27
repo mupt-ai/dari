@@ -15,10 +15,8 @@ import (
 )
 
 type agentSubscriptionStatus struct {
-	Credentials []agentCredential `json:"credentials"`
-	// The user's plans on their own gateways, this computer's among them.
-	LocalSubscriptions []localSubscription `json:"local_subscriptions"`
-	AutoroutingAllowed *bool               `json:"autorouting_allowed"`
+	Credentials        []agentCredential `json:"credentials"`
+	AutoroutingAllowed *bool             `json:"autorouting_allowed"`
 }
 
 // errNoProviderCredentials is a gateway router with no subscription or API

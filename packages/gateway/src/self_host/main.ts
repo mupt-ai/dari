@@ -129,9 +129,6 @@ export async function startSelfHostedGateway(env: Record<string, string> = proce
   // The hosted router, read once a minute, for both serving and routing calls.
   const hostedRouter = hosted === null ? null : hostedRouters(hosted, fetch);
   const baseUrls = providerBaseUrls(config.providers);
-  if (sync !== null) {
-    subscriptions.onChange = (change) => change === "usage" ? sync.usageChanged() : sync.plansChanged();
-  }
   const platformDeps = {
     activity,
     config,

@@ -26,12 +26,19 @@ func TestMain(m *testing.M) {
 	os.Setenv("GIT_CONFIG_COUNT", "1")
 	os.Setenv("GIT_CONFIG_KEY_0", linkCommitsConfig)
 	os.Setenv("GIT_CONFIG_VALUE_0", "false")
-	// No test reaches the real gateway on this computer.
+	// No test reads this computer's Dari config or reaches its real gateway.
+	configDir, err := os.MkdirTemp("", "dari-cli-test-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("DARI_CONFIG_DIR", configDir)
 	launchGateway = func(context.Context, string, io.Writer) *gatewayConfig { return nil }
 	computerClient = func(context.Context, io.Reader, io.Writer, bool) (*api.Client, error) {
 		return nil, errors.New("tests never start this computer's gateway")
 	}
-	os.Exit(m.Run())
+	code := m.Run()
+	_ = os.RemoveAll(configDir)
+	os.Exit(code)
 }
 
 // testRepository is a repository on branch fix whose origin is on GitHub,

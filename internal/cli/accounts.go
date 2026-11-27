@@ -256,7 +256,7 @@ func (page accountsPage) run(ctx context.Context, stdin io.Reader, stderr io.Wri
 				if routing, err = autoroutingAllowed(ctx, page.client); err != nil {
 					return result, err
 				}
-				if computerPlans, page.computer, err = computerSubscriptions(ctx, raw, stderr); err != nil {
+				if computerPlans, page.computer, err = computerSubscriptions(ctx, stderr, true); err != nil {
 					return result, err
 				}
 			}

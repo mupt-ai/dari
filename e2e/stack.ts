@@ -166,7 +166,7 @@ export async function launch(agent: Agent, args: string[], options: {
     async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === "/v1/gateway/router") return Response.json(router);
-      if (url.pathname === "/v1/gateway/subscriptions") return Response.json({ subscriptions: [] });
+      if (url.pathname === "/v1/gateway/accounts") return Response.json({ accounts: [] });
       if (url.pathname === "/v1/gateway/requests") {
         const body = await request.json() as { requests: Array<{ row: Record<string, unknown> }> };
         uploads.push(...body.requests.map((entry) => entry.row));

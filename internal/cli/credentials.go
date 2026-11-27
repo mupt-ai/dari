@@ -285,9 +285,6 @@ type subscriptionCredential struct {
 	// place is where the plan lives when the page shows plans from both
 	// hosted Dari and this computer; empty for a listing from one API.
 	place subscriptionPlace
-	// otherComputers name the user's other computers holding the same
-	// account, so the accounts page shows it once.
-	otherComputers []string
 }
 
 // subscriptionUsage is the tightest window's share used and reset, and every
@@ -427,7 +424,7 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "connect <codex|claude-code|grok|muse-code|opencode-go|vercel-token-pass>",
 		Short: "Connect another subscription, or reconnect one with --reconnect",
-		Long: "Connects a subscription on Dari, on this computer (synced to Dari), or privately on this computer.\n" +
+		Long: "Connects a subscription on Dari, on this computer (Activity synced to Dari), or privately on this computer.\n" +
 			"A plan of the same provider already on Dari or on this computer is first offered to move there,\n" +
 			"since one account may be connected on Dari once and on this computer once.",
 		Args: cobra.ExactArgs(1),
@@ -468,7 +465,7 @@ func newSubscriptionConnectCmd(gf *globalFlags) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&reconnect, "reconnect", "", "credential name of the subscription to reconnect (see `subscription list`)")
-	cmd.Flags().StringVar(&on, "on", "", "where the plan lives: dari, computer (synced to Dari), or private; omit for the menu. With --reconnect: dari or computer, when the name is in both")
+	cmd.Flags().StringVar(&on, "on", "", "where the plan lives: dari, computer (Activity synced to Dari), or private; omit for the menu. With --reconnect: dari or computer, when the name is in both")
 	return cmd
 }
 

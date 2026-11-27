@@ -50,8 +50,8 @@ export type SubscriptionCredential = {
   // The Dari Link user who connected the plan on the approval page; null for
   // the gateway owner's own plans, which alone serve the gateway's keys.
   owner: string | null;
-  // Kept off hosted Dari: a gateway connected to it neither serves nor
-  // reports the plan.
+  // Its requests stay on this computer: a gateway connected to hosted Dari
+  // never sends them to Activity.
   private: boolean;
   accessToken: string;
   refreshToken: string;
@@ -114,6 +114,9 @@ export type AccountRef = {
 export type ConnectedAccount = AccountRef & {
   place: "dari" | "this_computer" | "private";
   name: string | null;
+  // When a plan on Dari was connected; hosted Dari before this release does
+  // not say.
+  connectedAt?: Date;
 };
 
 /** Connecting an account the same user already has connected; the message says where it lives and how to move it. */
@@ -209,13 +212,6 @@ type SessionRow = {
 };
 
 export class SubscriptionStore {
-  /**
-   * Told of each change hosted Dari's copy of the plans would show: `plans`
-   * for a plan connected, removed, renamed, moved, held, or released, and
-   * `usage` for reported usage or use.
-   */
-  onChange: ((change: "plans" | "usage") => void) | undefined;
-
   constructor(
     private readonly db: Database,
     private readonly box: SecretBox | null = null,
@@ -433,7 +429,6 @@ export class SubscriptionStore {
          usage_windows = ? WHERE id = ?`,
       [usage.utilization, usage.resetsAt.getTime(), now.getTime(), windowsJson(usage), id],
     );
-    this.onChange?.("usage");
   }
 
   // A pin idle past CONVERSATION_PIN_TTL_MS is forgotten: the conversation is
@@ -548,7 +543,6 @@ export class SubscriptionStore {
       );
       return this.get(id);
     })();
-    if (connected !== null) this.onChange?.("plans");
     return connected;
   }
 
@@ -588,7 +582,6 @@ export class SubscriptionStore {
 
   touch(id: string, now = new Date()): void {
     this.db.run("UPDATE subscription_credentials SET last_used_at = ? WHERE id = ?", [now.getTime(), id]);
-    this.onChange?.("usage");
   }
 
   /** An empty label clears it. Null when the subscription is not connected. */
@@ -604,7 +597,6 @@ export class SubscriptionStore {
       now.getTime(),
       credential.id,
     ]);
-    this.onChange?.("plans");
     return this.get(credential.id);
   }
 
@@ -617,7 +609,6 @@ export class SubscriptionStore {
       now.getTime(),
       credential.id,
     ]);
-    this.onChange?.("plans");
     return this.get(credential.id);
   }
 
@@ -627,7 +618,6 @@ export class SubscriptionStore {
     if (credential === null) return null;
     this.db.run("DELETE FROM subscription_credentials WHERE id = ?", [credential.id]);
     this.db.run("DELETE FROM subscription_conversation_pins WHERE credential_id = ?", [credential.id]);
-    this.onChange?.("plans");
     return credential;
   }
 
@@ -644,7 +634,6 @@ export class SubscriptionStore {
         "UPDATE subscription_credentials SET unavailable_until = ?, unavailable_reason = ?, updated_at = ? WHERE id = ?",
         [until.getTime(), reason, now.getTime(), id],
       );
-      this.onChange?.("plans");
     }
     return this.activeCredential(credential.provider, now) !== null;
   }
@@ -666,7 +655,6 @@ export class SubscriptionStore {
         now.getTime(),
         id,
       ]);
-      this.onChange?.("plans");
     }
     return true;
   }
@@ -680,7 +668,6 @@ export class SubscriptionStore {
          updated_at = ? WHERE id = ?`,
       [now.getTime(), credential.id],
     );
-    this.onChange?.("plans");
     return this.get(credential.id);
   }
 

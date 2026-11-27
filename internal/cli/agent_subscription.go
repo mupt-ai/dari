@@ -148,21 +148,12 @@ func subscriptionLabel(subscription subscriptionCredential, showProvider bool, c
 }
 
 // subscriptionWhere tags a plan on this computer where hosted plans list
-// too, with every other computer that holds the same account:
-// "This Computer · Mac mini".
+// too: "This Computer" or "Private".
 func subscriptionWhere(subscription subscriptionCredential) string {
-	places := []string{}
-	switch subscription.place {
-	case placeComputer:
-		places = append(places, "This Computer")
-	case placePrivate:
-		places = append(places, "Private")
-	}
-	places = append(places, subscription.otherComputers...)
-	if len(places) == 0 {
+	if subscription.place != placeComputer && subscription.place != placePrivate {
 		return ""
 	}
-	return " " + ansiGray + strings.Join(places, " · ") + ansiReset
+	return " " + ansiGray + placeNames[subscription.place] + ansiReset
 }
 
 func padRight(text string, width int) string {

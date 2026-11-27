@@ -14,7 +14,7 @@ import { SessionPinStore } from "../self_host/session_pin_store.js";
 import { SubscriptionStore } from "../self_host/subscriptions/index.js";
 import { codexAccessToken, fakeFetch, jsonResponse } from "../self_host/subscriptions/test_support.js";
 import { addTestApp, approveTestGrant } from "./test_support.js";
-import type { LinkPlanOnComputer, LinkSignIn } from "../platform/platform.js";
+import type { LinkSignIn } from "../platform/platform.js";
 import { ActivityStore } from "../self_host/activity_store.js";
 
 const BASE = "http://gateway.test";
@@ -22,12 +22,10 @@ const REDIRECT_URI = "http://127.0.0.1:9999/callback";
 
 // A gateway whose provider sign-ins answer from `responses`, and a browser
 // that keeps the approval page's cookies; with `signIn`, a platform whose
-// users sign in with an account; with `plansOnComputers`, one whose users
-// also keep plans on their computers. `request` adds to the authorize request.
+// users sign in with an account. `request` adds to the authorize request.
 function gateway(
   responses: Array<() => Response>,
   signIn?: LinkSignIn,
-  plansOnComputers?: LinkPlanOnComputer[],
   request: Record<string, string> = {},
 ) {
   const db = new Database(":memory:");
@@ -49,12 +47,9 @@ function gateway(
     env: {},
     fetch: fakeFetch(responses),
   });
-  const approval = plansOnComputers === undefined
-    ? selfHosted.link!.approval
-    : { ...selfHosted.link!.approval, plansOnComputers: async () => plansOnComputers };
-  const withSignIn = (signIn: LinkSignIn | undefined) => signIn === undefined && plansOnComputers === undefined
+  const withSignIn = (signIn: LinkSignIn | undefined) => signIn === undefined
     ? selfHosted
-    : { ...selfHosted, link: { ...selfHosted.link!, approval: { ...approval, ...(signIn === undefined ? {} : { signIn }) } } };
+    : { ...selfHosted, link: { ...selfHosted.link!, approval: { ...selfHosted.link!.approval, signIn } } };
   let platform = withSignIn(signIn);
   const app = addTestApp(links, "Notes App", [REDIRECT_URI], false);
   const params = {
@@ -102,7 +97,7 @@ function gateway(
 // `plans=supported` offers only the plans whose providers clearly allow
 // other apps, and every API key.
 test("an app that asks for supported plans offers ChatGPT, Grok, OpenCode Go, Vercel Token Pass and API keys", async () => {
-  const browser = gateway([], undefined, undefined, { plans: "supported" });
+  const browser = gateway([], undefined, { plans: "supported" });
   expect(await browser.page()).toContain("Use what you already pay for: ChatGPT, OpenCode Go, Grok, Vercel Token Pass or an API key.");
   const select = await (await browser.submit({ decision: "select" })).text();
   const offered = [...select.matchAll(/name="connect" value="([a-z_]+)"/g)].map((match) => match[1]);
@@ -390,23 +385,4 @@ test("a browser Link remembered before it had accounts signs in", async () => {
   expect(await browser.page()).toContain("Notes App Uses Dari To Connect Your AI Subscriptions");
   expect(new URL((await browser.submit({ decision: "select" })).headers.get("location")!).pathname).toBe("/link/sign-in");
   expect(await browser.connections()).toContain('value="sign_in"');
-});
-
-
-// A plan kept on one of the user's computers cannot serve an app: the page
-// says where it is, for each kind the user has no plan of here.
-test("the page says which plans are on the user's computers", async () => {
-  const browser = gateway([], undefined, [
-    { provider: "anthropic_claude_code", computer: "avyay-mbp" },
-    { provider: "vercel_token_pass", computer: "avyay-mbp" },
-  ]);
-  await browser.page();
-  expect((await browser.submit({ connect: "vercel_token_pass" })).status).toBe(303);
-  await browser.page();
-  expect((await browser.submit({ decision: "complete", authorization_response: "vck_pass" })).status).toBe(303);
-  const choose = await browser.page();
-  expect(choose).toContain("Share With Notes App");
-  expect(choose).toContain("Your Claude plan is on avyay-mbp. Apps can only use plans on Dari.");
-  // The Token Pass the user connected here is the one the app can use.
-  expect(choose).not.toContain("Your Vercel Token Pass plan is on");
 });

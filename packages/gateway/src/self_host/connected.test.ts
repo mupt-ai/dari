@@ -102,7 +102,7 @@ beforeAll(async () => {
       // Hosted Dari serving a model it was asked for.
       if (pathname === "/rtr_1/v1/messages") return anthropicReply();
       if (pathname === "/rtr_1/v1/responses") return codexReply("gpt-6.1-sol");
-      if (pathname === "/v1/gateway/subscriptions") return Response.json({ subscriptions: [] });
+      if (pathname === "/v1/gateway/accounts") return Response.json({ accounts: [] });
       if (pathname === "/v1/gateway/requests") return Response.json({ stored: ["x"], rejected: [] });
       return Response.json({ served_by: "hosted" });
     },
@@ -189,19 +189,12 @@ const syncedModels = () => hosted("/v1/gateway/requests")
   .flatMap((call) => JSON.parse(call.body).requests)
   .map((request: { row: { selected_model: string } }) => request.row.selected_model);
 
-test("reports its plans, leaving private ones out, as soon as it starts", async () => {
-  await waitFor(() => hosted("/v1/gateway/subscriptions").length > 0);
-  const [put] = hosted("/v1/gateway/subscriptions");
-  expect(put!.method).toBe("PUT");
-  expect(put!.authorization).toBe(`Bearer ${HOSTED_KEY}`);
-  const snapshot = JSON.parse(put!.body);
-  expect(snapshot).toMatchObject({ gateway_id: "gw_test", gateway_name: "test-mac" });
-  expect(snapshot.subscriptions).toEqual([expect.objectContaining({
-    local_id: claudePlan,
-    provider: "anthropic_claude_code",
-    account_email: "me@example.com",
-    model_holds: {},
-  })]);
+test("reads the accounts on Dari as soon as it starts, and reports none of its own plans", async () => {
+  await waitFor(() => hosted("/v1/gateway/accounts").length > 0);
+  const [read] = hosted("/v1/gateway/accounts");
+  expect(read!.method).toBe("GET");
+  expect(read!.authorization).toBe(`Bearer ${HOSTED_KEY}`);
+  expect(hosted("/v1/gateway/subscriptions")).toEqual([]);
 });
 
 test("serves a model its plan serves locally and sends the request to hosted Activity", async () => {
@@ -354,8 +347,7 @@ test("forwards nothing for a caller without the gateway key", async () => {
   expect(hostedCalls.length).toBe(before);
 });
 
-test("a renamed plan reaches hosted", async () => {
-  const before = hosted("/v1/gateway/subscriptions").length;
+test("a renamed plan stays on this computer", async () => {
   const listed = await (await fetch(`${baseUrl}/v1/organizations/current/credentials`, {
     headers: { authorization: "Bearer local-key" },
   })).json() as { credentials: Array<{ name: string; private: boolean; oauth_provider: string }> };
@@ -369,8 +361,7 @@ test("a renamed plan reaches hosted", async () => {
     headers: { authorization: "Bearer local-key", "content-type": "application/json" },
     body: JSON.stringify({ label: "Work" }),
   });
-  await waitFor(() => hosted("/v1/gateway/subscriptions").slice(before)
-    .some((put) => JSON.parse(put.body).subscriptions[0]?.label === "Work"));
+  expect(hosted("/v1/gateway/subscriptions")).toEqual([]);
 });
 
 test("queued requests wait out a hosted failure and go in batches of 16", async () => {
@@ -403,17 +394,30 @@ test("queued requests wait out a hosted failure and go in batches of 16", async 
   expect(db.query("SELECT COUNT(*) AS n FROM hosted_request_outbox").get()).toEqual({ n: 0 });
 });
 
-test("drops a plan whose account hosted Dari says is now connected on Dari", async () => {
+test("drops a plan whose account was connected on Dari after it was connected here", async () => {
   const db = new Database(":memory:");
   const store = new SubscriptionStore(db);
-  const moved = store.connect(tokens({ accountEmail: "moved@example.test" }), null)!;
-  const kept = store.connect(tokens({ accountEmail: "kept@example.test" }), null)!;
-  const fetchStub = (async () => Response.json({ subscriptions: [], on_dari: [moved.id] })) as unknown as typeof fetch;
+  const connectedAt = new Date("2026-11-01T00:00:00Z");
+  const account = (id: string, email: string) => tokens({ provider: "openai_codex", accountId: id, accountEmail: email });
+  const moved = store.connect(account("acct_moved", "moved@example.test"), null, connectedAt)!;
+  // Connected on Dari before it was connected here: this computer's copy was the move.
+  const earlier = store.connect(account("acct_earlier", "earlier@example.test"), null, connectedAt)!;
+  // The same email on Dari is not enough: one email holds several workspaces.
+  const sameEmail = store.connect(account("acct_other", "moved@example.test"), null, connectedAt)!;
+  const onDari = (id: string, at: string) => ({ where: "dari", provider: "openai_codex", account_id: id, account_email: null, name: "N", connected_at: at });
+  const fetchStub = (async () => Response.json({
+    accounts: [
+      // A provider a newer Dari knows and this gateway does not is passed over.
+      { ...onDari("acct_new", "2026-11-02T00:00:00Z"), provider: "newer_provider" },
+      onDari("acct_moved", "2026-11-02T00:00:00Z"),
+      onDari("acct_earlier", "2026-10-01T00:00:00Z"),
+    ],
+  })) as unknown as typeof fetch;
   const sync = new HostedSync(db, store, { url: "http://hosted.test", apiKey: "k", gatewayId: "gw", gatewayName: "mac" }, fetchStub);
   sync.start();
   await waitFor(() => store.get(moved.id) === null);
   sync.stop();
-  expect(store.list().map((plan) => plan.id)).toEqual([kept.id]);
+  expect(store.list().map((plan) => plan.id)).toEqual([earlier.id, sameEmail.id]);
 });
 
 test("a connected gateway needs its id and encryption key", () => {

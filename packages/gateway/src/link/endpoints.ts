@@ -1324,32 +1324,9 @@ async function homePage(approval: LinkApprovalPage, authorize: AuthorizeRequest,
   if (current instanceof Response) return current;
   if (session === null) return introPage(approval, authorize);
   const subscriptions = await approval.subscriptions(session.subject);
-  const onComputers = await plansOnComputersNote(approval, authorize, session.subject, subscriptions);
   return shareable(authorize, subscriptions).length > 0
-    ? choosePage(authorize, session, subscriptions, current, undefined, onComputers)
-    : introPage(approval, authorize, onComputers);
-}
-
-// Where the user keeps a plan the app could use on one of their computers,
-// for each kind they have no plan of here: apps reach only the platform's.
-async function plansOnComputersNote(
-  approval: LinkApprovalPage,
-  authorize: AuthorizeRequest,
-  subject: string,
-  subscriptions: LinkSubscription[],
-): Promise<string> {
-  if (approval.plansOnComputers === undefined) return "";
-  const here = new Set(subscriptions.map((subscription) => subscription.provider));
-  const usable = new Set(connectKinds(approval, authorize));
-  const computers = new Map<SubscriptionKind, string[]>();
-  for (const plan of await approval.plansOnComputers(subject)) {
-    if (here.has(plan.provider) || !usable.has(plan.provider)) continue;
-    const names = computers.get(plan.provider) ?? [];
-    if (!names.includes(plan.computer)) names.push(plan.computer);
-    computers.set(plan.provider, names);
-  }
-  return [...computers].map(([kind, names]) =>
-    `<p class="hint">Your ${KINDS[kind].name} plan is on ${escapeHtml(names.join(" and "))}. Apps can only use plans on Dari.</p>`).join("\n");
+    ? choosePage(authorize, session, subscriptions, current)
+    : introPage(approval, authorize);
 }
 
 // In update mode, the grant being changed. A grant this browser's user does
@@ -1887,7 +1864,7 @@ const KINDS: Record<SubscriptionKind, { name: string; plan: string; at: string; 
 };
 
 // The first page a new user sees: what connecting means, and one button.
-function introPage(approval: LinkApprovalPage, authorize: AuthorizeRequest, onComputers = ""): Response {
+function introPage(approval: LinkApprovalPage, authorize: AuthorizeRequest): Response {
   const app = escapeHtml(authorize.app.name);
   const kinds = connectKinds(approval, authorize);
   const keys = keyProviders(approval, authorize);
@@ -1909,7 +1886,7 @@ function introPage(approval: LinkApprovalPage, authorize: AuthorizeRequest, onCo
 <ul class="points">
 <li>${ICONS.zap}<div><strong>Connect In Seconds</strong><p>${kinds.length > 0 ? `Use what you already pay for: ${escapeHtml(ways)}.` : "Add the API key you already have."}</p></div></li>
 <li>${ICONS.shield}<div><strong>You Stay In Control</strong><p>${app} can only send model requests on what you share. It sees each shared plan's account email, never a key or your other plans, and you can disconnect it any time.</p></div></li>
-</ul>${onComputers}`,
+</ul>`,
     footer: `<button class="btn primary" type="submit" name="decision" value="select">Continue</button>`,
   });
 }
@@ -2006,7 +1983,6 @@ function choosePage(
   subscriptions: LinkSubscription[],
   current: GrantToUpdate | null,
   error?: string,
-  onComputers = "",
 ): Response {
   const app = escapeHtml(authorize.app.name);
   const plans = shareable(authorize, subscriptions);
@@ -2021,7 +1997,6 @@ function choosePage(
 <!-- First in the form, so Enter in a limit field allows rather than pressing Connect Another. -->
 <button type="submit" name="decision" value="approve" tabindex="-1" aria-hidden="true" style="position:absolute;left:-9999px"></button>
 ${plans.map((plan) => planOption(authorize, plan, ticked.has(plan.id))).join("\n")}
-${onComputers}
 <details${current?.limits.length ? " open" : ""}><summary>Set Limits</summary>
 ${plans.map((plan) => {
   const set = current?.limits.find((limit) => limit.credentialId === plan.id);

@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -43,7 +45,6 @@ func TestFindPlacedSubscriptionAsksWhereWhenBothPlacesMatch(t *testing.T) {
 	all := []placedSubscription{
 		{subscriptionCredential{Name: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN", OAuthProvider: claudeSubscription.id}, placeDari, "Dari"},
 		{subscriptionCredential{Name: "ANTHROPIC_CLAUDE_CODE_OAUTH_TOKEN", OAuthProvider: claudeSubscription.id}, placePrivate, "Private"},
-		{subscriptionCredential{Name: "cred_other", OAuthProvider: codexSubscription.id}, "", "laptop"},
 	}
 	if _, err := findPlacedSubscription(all, "claude-code", ""); err == nil || !strings.Contains(err.Error(), "--on dari or --on computer") {
 		t.Fatalf("err = %v", err)
@@ -52,50 +53,45 @@ func TestFindPlacedSubscriptionAsksWhereWhenBothPlacesMatch(t *testing.T) {
 	if err != nil || found.place != placePrivate {
 		t.Fatalf("found %+v, %v", found, err)
 	}
-	// Another computer's plan is managed there.
-	if _, err := findPlacedSubscription(all, "codex", ""); err == nil {
-		t.Fatal("found another computer's plan")
-	}
 }
 
 func TestPlansOnThisComputerCountAsConnected(t *testing.T) {
 	useTestAPIKey(t)
-	if err := gateway.Save(gateway.Settings{Mode: gateway.ModeHosted, GatewayID: "gw_here", EncryptionKey: "k"}); err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"credentials":[],"local_subscriptions":[
-			{"gateway_id":"gw_here","provider":"anthropic_claude_code"},
-			{"gateway_id":"gw_elsewhere","provider":"meta_muse"}]}`))
+	storeGatewayDatabase(t)
+	hosted := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"credentials":[]}`))
 	}))
-	defer srv.Close()
-	connected, err := connectedAgentSubscriptions(context.Background(), api.New(srv.URL), []agentSubscriptionProvider{claudeSubscription, museSubscription})
+	defer hosted.Close()
+	computer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"credentials":[
+			{"name":"CLAUDE","credential_scope":"user","oauth_provider":"anthropic_claude_code"},
+			{"name":"MUSE","credential_scope":"user","oauth_provider":"meta_muse","private":true}]}`))
+	}))
+	defer computer.Close()
+	original := computerClient
+	computerClient = func(context.Context, io.Reader, io.Writer, bool) (*api.Client, error) {
+		return api.New(computer.URL), nil
+	}
+	t.Cleanup(func() { computerClient = original })
+	connected, err := connectedAgentSubscriptions(context.Background(), api.New(hosted.URL), []agentSubscriptionProvider{claudeSubscription, museSubscription})
 	if err != nil || len(connected) != 1 || connected[0].id != claudeSubscription.id {
 		t.Fatalf("connected = %+v, %v", connected, err)
 	}
 }
 
-func TestSubscriptionWhereListsEveryComputerHoldingTheAccount(t *testing.T) {
-	id := "acct-1"
-	email, upper, other := "me@example.com", "Me@Example.com", "other@example.com"
-	plan := subscriptionCredential{
-		ID:            "local-1",
-		OAuthProvider: "openai_codex",
-		SafeMetadata:  map[string]string{"account_email": "me@example.com"},
-		place:         placeComputer,
+// storeGatewayDatabase saves this computer's gateway settings with a stored
+// database, so its plans are read.
+func storeGatewayDatabase(t *testing.T) {
+	t.Helper()
+	if err := gateway.Save(gateway.Settings{Mode: gateway.ModeHosted, GatewayID: "gw_here", LocalKey: "local", EncryptionKey: "k"}); err != nil {
+		t.Fatal(err)
 	}
-	reported := []localSubscription{
-		{GatewayID: "here", GatewayName: "mac.higgins.home", LocalID: "local-1", Provider: "openai_codex", AccountID: &id, AccountEmail: &email},
-		{GatewayID: "mini", GatewayName: "Mac mini", Provider: "openai_codex", AccountID: &id},
-		{GatewayID: "laptop", GatewayName: "Laptop", Provider: "openai_codex", AccountEmail: &upper},
-		{GatewayID: "studio", GatewayName: "Studio", Provider: "openai_codex", AccountEmail: &other},
-		{GatewayID: "box", GatewayName: "Box", Provider: "anthropic_claude_code", AccountID: &id},
+	dir, err := gateway.Dir()
+	if err != nil {
+		t.Fatal(err)
 	}
-	plan.otherComputers = otherComputers(plan, reported, "here")
-	// The laptop's copy has no id, so its email matches in any case.
-	want := " " + ansiGray + "This Computer · Laptop · Mac mini" + ansiReset
-	if got := subscriptionWhere(plan); got != want {
-		t.Fatalf("subscriptionWhere = %q, want %q", got, want)
+	if err := os.WriteFile(filepath.Join(dir, "gateway.db"), nil, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -208,14 +204,10 @@ func TestConnectAnotherAccountLeavesThePlanOnDari(t *testing.T) {
 
 func TestConnectPrivatelyFlipsAPlanOnThisComputerWithoutSigningIn(t *testing.T) {
 	useTestAPIKey(t)
-	if err := gateway.Save(gateway.Settings{Mode: gateway.ModeHosted, GatewayID: "gw_here", LocalKey: "local", EncryptionKey: "k"}); err != nil {
-		t.Fatal(err)
-	}
+	storeGatewayDatabase(t)
 	var log []string
 	bodies := map[string]map[string]any{}
-	hosted := planServer(t, map[string]any{"credentials": []any{}, "local_subscriptions": []any{
-		map[string]any{"gateway_id": "gw_here", "local_id": "local-1", "provider": "openai_codex"},
-	}}, "", &log, bodies)
+	hosted := planServer(t, map[string]any{"credentials": []any{}}, "", &log, bodies)
 	computer := planServer(t, map[string]any{"credentials": []any{map[string]any{
 		"id": "local-1", "name": "OPENAI_CODEX_OAUTH_TOKEN", "credential_scope": "user", "oauth_provider": "openai_codex",
 		"safe_metadata": map[string]any{"account_email": "me@example.test"},

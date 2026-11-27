@@ -16,7 +16,6 @@ import (
 
 	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/auth"
-	"github.com/mupt-ai/dari/internal/gateway"
 )
 
 // agentSetup is how dari sets up one coding agent's routing.
@@ -654,16 +653,16 @@ func connectedAgentSubscriptions(ctx context.Context, client *api.Client, provid
 	if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials", nil, &listed); err != nil {
 		return nil, api.HumanError(err)
 	}
-	// A plan on this computer's gateway is connected too.
-	gatewayID := ""
-	if settings, ok, _ := gateway.Load(); ok {
-		gatewayID = settings.GatewayID
+	// A plan on this computer's gateway, not private, is connected too.
+	local, _, err := computerSubscriptions(ctx, io.Discard, false)
+	if err != nil {
+		return nil, err
 	}
 	return slices.DeleteFunc(slices.Clone(providers), func(provider agentSubscriptionProvider) bool {
 		return !slices.ContainsFunc(listed.Credentials, func(credential agentCredential) bool {
 			return credential.OAuthProvider == provider.id
-		}) && !slices.ContainsFunc(listed.LocalSubscriptions, func(local localSubscription) bool {
-			return gatewayID != "" && local.GatewayID == gatewayID && local.Provider == provider.id
+		}) && !slices.ContainsFunc(local, func(plan subscriptionCredential) bool {
+			return !plan.Private && plan.OAuthProvider == provider.id
 		})
 	}), nil
 }

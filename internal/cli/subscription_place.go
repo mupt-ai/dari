@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,7 +17,8 @@ import (
 )
 
 // subscriptionPlace is where a plan's token lives: on hosted Dari, on this
-// computer's gateway synced to Dari, or on this computer's gateway privately.
+// computer's gateway with its Activity synced to Dari, or on this computer's
+// gateway privately.
 type subscriptionPlace string
 
 const (
@@ -27,67 +27,37 @@ const (
 	placePrivate  subscriptionPlace = "private"
 )
 
-// localSubscription is a plan a user's own gateway reports to hosted Dari.
-type localSubscription struct {
-	ID          string `json:"id"`
-	GatewayID   string `json:"gateway_id"`
-	GatewayName string `json:"gateway_name"`
-	LocalID     string `json:"local_id"`
-	Provider    string `json:"provider"`
-	// AccountID and AccountEmail say which vendor account it is; the same
-	// account may be connected on several computers.
-	AccountID    *string `json:"account_id"`
-	AccountEmail *string `json:"account_email"`
+// planAccount is the account a plan holds: its provider, id, and email.
+type planAccount struct{ provider, id, email string }
+
+// accountOf is the account plan holds. A gateway names the account; hosted
+// Dari names its workspace.
+func accountOf(plan subscriptionCredential) planAccount {
+	id := plan.SafeMetadata["account_id"]
+	if id == "" {
+		id = plan.SafeMetadata["workspace_id"]
+	}
+	return planAccount{plan.OAuthProvider, id, plan.SafeMetadata["account_email"]}
 }
 
-// sameAccount is whether two computers' copies are one account: the same
-// provider and account id, or, when either has no id, the same email in any
-// case. A copy with neither is only ever itself.
-func sameAccount(left, right localSubscription) bool {
-	if left.Provider != right.Provider {
+// sameAccount is whether two plans hold one account: the same provider and
+// account id, or, when either has no id, the same email in any case. A plan
+// with neither is only ever itself.
+func sameAccount(left, right planAccount) bool {
+	if left.provider != right.provider {
 		return false
 	}
-	leftID, rightID := deref(left.AccountID), deref(right.AccountID)
-	if leftID != "" && rightID != "" {
-		return leftID == rightID
+	if left.id != "" && right.id != "" {
+		return left.id == right.id
 	}
-	leftEmail, rightEmail := deref(left.AccountEmail), deref(right.AccountEmail)
-	if leftEmail == "" || rightEmail == "" {
+	if left.email == "" || right.email == "" {
 		return false
 	}
-	return strings.EqualFold(leftEmail, rightEmail)
-}
-
-func deref(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
-}
-
-// otherComputers names the other computers that hold the same account as
-// this computer's plan, sorted. Hosted Dari's report of this computer's own
-// copy carries the account id; before it syncs, the plan's email stands in.
-func otherComputers(plan subscriptionCredential, reported []localSubscription, thisGateway string) []string {
-	email := plan.SafeMetadata["account_email"]
-	own := localSubscription{Provider: plan.OAuthProvider, AccountEmail: &email}
-	for _, local := range reported {
-		if local.GatewayID == thisGateway && local.LocalID == plan.ID {
-			own = local
-		}
-	}
-	names := []string{}
-	for _, local := range reported {
-		if local.GatewayID != thisGateway && sameAccount(own, local) {
-			names = append(names, local.GatewayName)
-		}
-	}
-	slices.Sort(names)
-	return names
+	return strings.EqualFold(left.email, right.email)
 }
 
 var placeOptions = map[subscriptionPlace]agentChoiceOption{
-	placeComputer: {label: "On This Computer", description: "Token stays here; usage and Activity sync to Dari"},
+	placeComputer: {label: "On This Computer", description: "Token stays here; Activity syncs to Dari"},
 	placeDari:     {label: "On Dari", description: "Works everywhere, including Link apps and cloud agents"},
 	placePrivate:  {label: "Private", description: "Nothing leaves this computer"},
 }
@@ -320,25 +290,22 @@ func connectOnComputer(ctx context.Context, provider agentSubscriptionProvider, 
 }
 
 // computerSubscriptions are the plans on this computer's gateway, each with
-// its place, and the API that manages them: read when hosted Dari's listing
-// (raw) names a plan of this gateway or the gateway has stored anything, and
-// none otherwise.
-func computerSubscriptions(ctx context.Context, raw []byte, stderr io.Writer) ([]subscriptionCredential, *api.Client, error) {
+// its place, and the API that manages them: read when the gateway has stored
+// anything or is running, and none otherwise. With lenient, a gateway that
+// cannot be read only warns, for a listing; a decision that counts this
+// computer's plans must not mistake an unread gateway for none.
+func computerSubscriptions(ctx context.Context, stderr io.Writer, lenient bool) ([]subscriptionCredential, *api.Client, error) {
 	settings, ok, err := gateway.Load()
 	if err != nil || !ok || settings.LocalKey == "" {
 		return nil, nil, err
 	}
-	var hosted struct {
-		LocalSubscriptions []localSubscription `json:"local_subscriptions"`
-	}
-	_ = json.Unmarshal(raw, &hosted)
-	synced := slices.ContainsFunc(hosted.LocalSubscriptions, func(local localSubscription) bool {
-		return local.GatewayID == settings.GatewayID
-	})
-	if !synced && !gateway.HasDatabase() && !gateway.Healthy(ctx) {
+	if !gateway.HasDatabase() && !gateway.Healthy(ctx) {
 		return nil, nil, nil
 	}
 	placed, client, err := readComputerPlans(ctx, stderr)
+	if err != nil && !lenient {
+		return nil, nil, err
+	}
 	if err != nil {
 		// The page still shows and manages the hosted plans.
 		agentStep(stderr, fmt.Sprintf("Could not read the plans on this computer (%v)", err))
@@ -347,7 +314,6 @@ func computerSubscriptions(ctx context.Context, raw []byte, stderr io.Writer) ([
 	plans := make([]subscriptionCredential, len(placed))
 	for i, p := range placed {
 		plans[i] = p.subscriptionCredential
-		plans[i].otherComputers = otherComputers(plans[i], hosted.LocalSubscriptions, settings.GatewayID)
 	}
 	return plans, client, nil
 }
@@ -363,14 +329,13 @@ func hasBankedResets(subscription subscriptionCredential) bool {
 type placedSubscription struct {
 	subscriptionCredential
 	place subscriptionPlace
-	// where names the place: Dari, This Computer, Private, or another
-	// computer's gateway.
+	// where names the place: Dari, This Computer, Private, or a self-hosted
+	// Gateway.
 	where string
 }
 
 // listPlacedSubscriptions lists the user's plans in every place: hosted
-// Dari's (with other computers' plans by name) and this computer's
-// gateway's. In local mode only the local gateway's. With lenient, a
+// Dari's and this computer's gateway's. In local mode only the local gateway's. With lenient, a
 // gateway that cannot be read only warns, for a listing; a command that
 // picks one plan must not mistake a missing local plan for none.
 func listPlacedSubscriptions(ctx context.Context, gf *globalFlags, stderr io.Writer, lenient bool) ([]placedSubscription, error) {
@@ -390,8 +355,7 @@ func listPlacedSubscriptions(ctx context.Context, gf *globalFlags, stderr io.Wri
 		return nil, err
 	}
 	var hosted struct {
-		Credentials        []subscriptionCredential `json:"credentials"`
-		LocalSubscriptions []localSubscription      `json:"local_subscriptions"`
+		Credentials []subscriptionCredential `json:"credentials"`
 	}
 	if err := client.Do(ctx, http.MethodGet, "/v1/organizations/current/credentials?refresh_usage=true", nil, &hosted); err != nil {
 		return nil, api.HumanError(err)
@@ -400,20 +364,7 @@ func listPlacedSubscriptions(ctx context.Context, gf *globalFlags, stderr io.Wri
 	for _, credential := range personalSubscriptions(hosted.Credentials) {
 		placed = append(placed, placedSubscription{credential, placeDari, "Dari"})
 	}
-	onThisComputer := false
-	for _, local := range hosted.LocalSubscriptions {
-		if settings.GatewayID != "" && local.GatewayID == settings.GatewayID {
-			onThisComputer = true
-			continue
-		}
-		placed = append(placed, placedSubscription{
-			subscriptionCredential{Name: local.LocalID, OAuthProvider: local.Provider, CredentialScope: "user"},
-			"", local.GatewayName,
-		})
-	}
-	// Private plans are never reported to hosted Dari, so a gateway that has
-	// stored anything is asked too.
-	if onThisComputer || (settings.LocalKey != "" && (gateway.HasDatabase() || gateway.Healthy(ctx))) {
+	if settings.LocalKey != "" && (gateway.HasDatabase() || gateway.Healthy(ctx)) {
 		local, _, err := readComputerPlans(ctx, stderr)
 		if err != nil && !lenient {
 			return nil, err
@@ -466,15 +417,12 @@ func findPlacedSubscription(all []placedSubscription, arg, on string) (placedSub
 			return placedSubscription{}, err
 		}
 		all = slices.DeleteFunc(slices.Clone(all), func(s placedSubscription) bool {
-			return s.place == "" || (place == placeDari) != (s.place == placeDari)
+			return (place == placeDari) != (s.place == placeDari)
 		})
 	}
 	provider, alias := subscriptionProviders[strings.ToLower(strings.TrimSpace(arg))]
 	var matches []placedSubscription
 	for _, s := range all {
-		if s.place == "" {
-			continue // Another computer's plan is managed there.
-		}
 		if (alias && s.OAuthProvider == provider.id) || (!alias && normalizeSubscriptionName(s.Name) == normalizeSubscriptionName(arg)) {
 			matches = append(matches, s)
 		}
@@ -559,7 +507,7 @@ func moveSubscription(ctx context.Context, gf *globalFlags, s placedSubscription
 	}
 	// The browser may have been signed in to another account; the old plan
 	// then still holds its own and stays.
-	if !sameAccount(planAccount(connected), planAccount(s.subscriptionCredential)) {
+	if !sameAccount(accountOf(connected), accountOf(s.subscriptionCredential)) {
 		agentStep(stderr, "Signed in to another account; kept "+subscriptionName(s.subscriptionCredential)+" on "+s.where)
 		return nil
 	}
@@ -568,17 +516,6 @@ func moveSubscription(ctx context.Context, gf *globalFlags, s placedSubscription
 	}
 	agentStep(stderr, moved)
 	return nil
-}
-
-// planAccount is the account a plan holds, as sameAccount compares them.
-func planAccount(plan subscriptionCredential) localSubscription {
-	// A gateway names the account; hosted Dari names its workspace.
-	id := plan.SafeMetadata["account_id"]
-	if id == "" {
-		id = plan.SafeMetadata["workspace_id"]
-	}
-	email := plan.SafeMetadata["account_email"]
-	return localSubscription{Provider: plan.OAuthProvider, AccountID: &id, AccountEmail: &email}
 }
 
 var errNoPlaces = errors.New("with a local or self-hosted gateway every subscription lives on it; there is no place to choose")

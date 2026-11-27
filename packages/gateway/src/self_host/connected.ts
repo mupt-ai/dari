@@ -26,10 +26,11 @@ import { gatewayKeyIndex, resolveSelfHostedRouter } from "./resolve.js";
  *   Dari key (resolve.ts).
  * - Every other path the gateway does not manage itself, such as commit
  *   reports, goes to hosted with the user's Dari key.
- * - The plans and the requests served here sync to hosted (hosted_sync.ts),
- *   which shows them in Accounts and Activity. Private plans serve, but
- *   neither they nor their requests sync; requests hosted Dari served are
- *   hosted's to log. Dari Link and Activity are hosted's, not served here.
+ * - The requests served here sync to hosted Activity (hosted_sync.ts), each
+ *   naming the plan that served it. The plans themselves never leave this
+ *   computer. A private plan's requests do not sync either; requests hosted
+ *   Dari served are hosted's to log. Dari Link and Activity are hosted's, not
+ *   served here.
  */
 export type HostedConnection = {
   // The hosted routing service, e.g. https://routing.dari.dev.

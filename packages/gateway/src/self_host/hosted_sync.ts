@@ -130,12 +130,27 @@ export class HostedSync {
     try {
       const response = await this.call("PUT", "/v1/gateway/subscriptions", this.snapshot());
       if (!response.ok) throw new Error(`HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+      const body = await response.json() as { on_dari?: unknown };
       this.snapshotFailures = 0;
       this.scheduleSnapshot(HEARTBEAT_MS);
+      this.dropPlansOnDari(body.on_dari);
     } catch (error) {
       this.snapshotFailures += 1;
       console.error("hosted plan sync failed", error instanceof Error ? error.message : String(error));
       this.scheduleSnapshot(backoff(this.snapshotFailures));
+    }
+  }
+
+  // Hosted Dari names the reported plans whose account was since connected on
+  // Dari. Dari's plan serves this computer too, so the copy here goes, and
+  // disconnecting it reports the plans again.
+  private dropPlansOnDari(localIds: unknown): void {
+    if (!Array.isArray(localIds)) return;
+    for (const id of localIds) {
+      const plan = typeof id === "string" ? this.subscriptions.get(id) : null;
+      if (plan === null || plan.owner !== null || plan.private) continue;
+      this.subscriptions.disconnect(plan.name);
+      console.error(`${plan.name} is now connected on Dari; removed it from this computer`);
     }
   }
 

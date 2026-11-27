@@ -267,8 +267,9 @@ func connectOrMove(ctx context.Context, gf *globalFlags, provider agentSubscript
 		}
 	}
 	for _, s := range all {
-		// Other computers' plans never block; one in the same place is a
-		// second plan, not a move.
+		// Other computers' plans never block: connected on Dari, the account
+		// leaves them on their own. One in the same place is a second plan,
+		// not a move.
 		if s.OAuthProvider != provider.id || s.place == "" || s.place == place {
 			continue
 		}
@@ -545,11 +546,11 @@ func moveSubscription(ctx context.Context, gf *globalFlags, s placedSubscription
 	if err != nil {
 		return err
 	}
-	// Hosted Dari knows a computer's plan by its gateway's id for it; the
-	// gateway knows a Dari plan by name.
-	movingFrom := s.Name
-	if s.place != placeDari {
-		movingFrom = s.ID
+	// The gateway is told which Dari plan it replaces; a computer's copy
+	// never blocks connecting the account on Dari.
+	movingFrom := ""
+	if s.place == placeDari {
+		movingFrom = s.Name
 	}
 	provider := subscriptionProviderFor(s.OAuthProvider)
 	connected, err := connectSubscription(ctx, provider, dest, stdin, stderr, "", to == placePrivate, movingFrom, "")

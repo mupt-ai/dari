@@ -10,6 +10,7 @@ import { HostedSync } from "./hosted_sync.js";
 import { secretBoxFromEnv } from "./secret_box.js";
 import { anthropicReply, codexReply } from "./stub_gateway.js";
 import { SubscriptionStore } from "./subscriptions/index.js";
+import { tokens } from "./subscriptions/test_support.js";
 
 // A connected gateway as its own process, against one stand-in for hosted
 // Dari, Anthropic, and the Codex backend.
@@ -395,6 +396,19 @@ test("queued requests wait out a hosted failure and go in batches of 16", async 
   await sync.drain();
   expect(posts).toEqual([16, 4]);
   expect(db.query("SELECT COUNT(*) AS n FROM hosted_request_outbox").get()).toEqual({ n: 0 });
+});
+
+test("drops a plan whose account hosted Dari says is now connected on Dari", async () => {
+  const db = new Database(":memory:");
+  const store = new SubscriptionStore(db);
+  const moved = store.connect(tokens({ accountEmail: "moved@example.test" }), null)!;
+  const kept = store.connect(tokens({ accountEmail: "kept@example.test" }), null)!;
+  const fetchStub = (async () => Response.json({ subscriptions: [], on_dari: [moved.id] })) as unknown as typeof fetch;
+  const sync = new HostedSync(db, store, { url: "http://hosted.test", apiKey: "k", gatewayId: "gw", gatewayName: "mac" }, fetchStub);
+  sync.start();
+  await waitFor(() => store.get(moved.id) === null);
+  sync.stop();
+  expect(store.list().map((plan) => plan.id)).toEqual([kept.id]);
 });
 
 test("a connected gateway needs its id and encryption key", () => {

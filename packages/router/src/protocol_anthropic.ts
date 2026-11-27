@@ -320,16 +320,11 @@ function anthropicReasoningItem(
   );
   const field = redacted ? "data" : "signature";
   const encoded = requiredString(block[field], `${param}.${field}`);
+  // A conversation begun on Anthropic directly carries raw signatures. They
+  // name no provider or model, so they cannot be replayed; the turn keeps its
+  // readable thinking and the conversation continues.
   const continuation = decodeUntrustedProviderContinuationState(encoded);
   const portable = continuation ? null : decodeUntrustedPortableReasoningState(encoded);
-  if (!continuation && !portable) {
-    throw new RouterFrameworkError(
-      "invalid_request",
-      `${param}.${field} must be a Dari reasoning-state envelope; raw provider state has no recoverable provider/model provenance.`,
-      "invalid_provider_continuation_state",
-      `${param}.${field}`,
-    );
-  }
   const thinking = redacted ? "" : stringAllowEmpty(block.thinking, `${param}.thinking`);
   return {
     type: "reasoning",

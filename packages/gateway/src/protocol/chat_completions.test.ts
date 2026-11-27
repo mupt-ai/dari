@@ -238,21 +238,34 @@ test("Chat ingress restores client-carried provider thinking state", () => {
 
 });
 
-test("Chat ingress rejects raw reasoning state without provider provenance", () => {
-  expect(() =>
-    chatCompletionsToInteraction({
-      model: "dari/routing",
-      messages: [{
+test("Chat ingress keeps the readable reasoning of a conversation begun on another provider", () => {
+  const interaction = chatCompletionsToInteraction({
+    model: "dari/routing",
+    messages: [
+      { role: "user", content: "Read the file." },
+      {
         role: "assistant",
-        content: null,
-        reasoning_details: [{
-          type: "reasoning.encrypted",
-          id: "reasoning_0",
-          data: "provider-native-ciphertext",
-        }],
-      }],
-    })
-  ).toThrow("must be a Dari provider continuation envelope");
+        content: "Done.",
+        reasoning_content: "Use the tool.",
+        reasoning_details: [
+          { type: "reasoning.text", text: "Use the tool.", signature: "provider-native-signature", format: "anthropic-claude-v1", index: 0 },
+          { type: "reasoning.summary", summary: "Used the tool.", format: "openai-responses-v1", index: 1 },
+          { type: "reasoning.encrypted", id: null, data: "provider-native-ciphertext", format: "openai-responses-v1", index: 2 },
+        ],
+      },
+      { role: "assistant", content: "Again.", reasoning_details: [{ type: "reasoning.encrypted", id: "rs_1", data: "provider-native-ciphertext" }] },
+    ],
+  });
+
+  expect(interaction.items).toMatchObject([
+    { type: "message", role: "user" },
+    { type: "reasoning", summary: ["Use the tool."], content: [] },
+    { type: "message", role: "assistant" },
+    { type: "message", role: "assistant" },
+  ]);
+  expect(interaction.items).toHaveLength(4);
+  expect(interaction.items[1]).not.toHaveProperty("source");
+  expect(interaction.items[1]).not.toHaveProperty("continuation");
 });
 
 test("Chat validation remains at the protocol boundary", () => {

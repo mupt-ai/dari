@@ -83,17 +83,10 @@ function validateMessageReasoning(message: Record<string, unknown>, messageIndex
     );
   }
   for (const [detailIndex, detail] of message.reasoning_details.entries()) {
-    if (
-      !isRecord(detail) ||
-      detail.type !== "reasoning.encrypted" ||
-      typeof detail.id !== "string" ||
-      !detail.id ||
-      typeof detail.data !== "string" ||
-      !detail.data
-    ) {
+    if (!isRecord(detail)) {
       throw new HttpError(
         400,
-        `messages[${messageIndex}].reasoning_details[${detailIndex}] is not a supported encrypted reasoning detail.`,
+        `messages[${messageIndex}].reasoning_details[${detailIndex}] must be an object.`,
         "invalid_request_error",
         `messages.${messageIndex}.reasoning_details.${detailIndex}`
       );

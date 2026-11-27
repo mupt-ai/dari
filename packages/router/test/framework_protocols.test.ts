@@ -319,6 +319,26 @@ test("Anthropic thinking from a conversation begun on Anthropic directly keeps o
   ]);
 });
 
+test("OpenAI Chat reasoning details from a conversation begun on another provider keep only the readable text", () => {
+  const request = openAIChatRequest({
+    model: "my-router",
+    messages: [{
+      role: "assistant",
+      content: "Answer.",
+      reasoning_content: "Native thought.",
+      reasoning_details: [
+        { type: "reasoning.text", text: "Native thought.", signature: "provider-native-signature", format: "anthropic-claude-v1", index: 0 },
+        { type: "reasoning.encrypted", id: "r", data: "raw-provider-blob" },
+      ],
+    }],
+  });
+
+  expect(request.items).toEqual([
+    { type: "reasoning", summary: ["Native thought."], content: [] },
+    { type: "message", role: "assistant", content: [{ type: "text", text: "Answer." }] },
+  ]);
+});
+
 test("plain model reasoning becomes a portable Anthropic thinking block", () => {
   const [block] = anthropicOutputContent({
     content: [{
@@ -704,17 +724,6 @@ test("OpenAI unsupported-shape errors carry the Anthropic adapter's specific cod
         response_format: { type: "grammar" },
       }),
       code: "unsupported_response_format",
-    },
-    {
-      run: () => openAIChatRequest({
-        model: "my-router",
-        messages: [{
-          role: "assistant",
-          content: "Answer.",
-          reasoning_details: [{ type: "reasoning.encrypted", id: "r", data: "raw-provider-blob" }],
-        }],
-      }),
-      code: "invalid_provider_continuation_state",
     },
   ];
   for (const { run, code } of cases) {

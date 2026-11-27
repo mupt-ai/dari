@@ -647,11 +647,24 @@ test("Responses ingress rejects unknown content parts instead of dropping them",
   ).toThrow("Responses content part type 'input_audio' is not supported");
 });
 
-test("Responses ingress rejects raw reasoning state without provider provenance", () => {
-  expect(() => openAIResponsesToInteraction({
+test("Responses ingress keeps the readable reasoning of a conversation begun on OpenAI directly", () => {
+  const request = openAIResponsesToInteraction({
     model: "dari/routing",
-    input: [{ type: "reasoning", summary: [], encrypted_content: "provider-native-ciphertext" }],
-  })).toThrow("must be a Dari provider continuation envelope");
+    input: [
+      {
+        type: "reasoning",
+        id: "rs_native",
+        summary: [{ type: "summary_text", text: "Native summary." }],
+        encrypted_content: "provider-native-ciphertext",
+      },
+      { type: "reasoning", summary: [], encrypted_content: "provider-native-ciphertext" },
+    ],
+  });
+
+  expect(request.items).toEqual([
+    { type: "reasoning", id: "rs_native", summary: ["Native summary."], content: [] },
+    { type: "reasoning", id: undefined, summary: [], content: [] },
+  ]);
 });
 
 test("Responses ingress rejects tool names made ambiguous by namespace encoding", () => {

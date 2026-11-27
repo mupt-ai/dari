@@ -383,16 +383,11 @@ function clientTurnId(
 }
 
 function reasoningItem(value: Record<string, unknown>): InteractionItem {
+  // A conversation begun on OpenAI directly carries raw ciphertext. It names
+  // no provider or model, so it cannot be replayed; the item keeps its
+  // readable summary and the conversation continues.
   const encoded = optionalString(value.encrypted_content, "input.reasoning.encrypted_content");
   const continuation = encoded ? decodeUntrustedProviderContinuationState(encoded) : null;
-  if (encoded && !continuation) {
-    throw new HttpError(
-      400,
-      "input.reasoning.encrypted_content must be a Dari provider continuation envelope; raw provider ciphertext has no recoverable provider/model provenance.",
-      "invalid_provider_continuation_state",
-      "input.reasoning.encrypted_content"
-    );
-  }
   return {
     type: "reasoning",
     id: optionalString(value.id, "input.reasoning.id"),

@@ -73,7 +73,7 @@ func newAccountsAutoRoutingCmd() *cobra.Command {
 func newAccountsLocalKeyCmd() *cobra.Command {
 	names := []string{}
 	for _, key := range localProviderKeys {
-		names = append(names, strings.ToLower(strings.ReplaceAll(key.name, " ", "-")))
+		names = append(names, localProviderKeyID(key.name))
 	}
 	return &cobra.Command{
 		Use:   "key [PROVIDER <api-key|off>]",
@@ -98,7 +98,7 @@ func newAccountsLocalKeyCmd() *cobra.Command {
 			if len(args) == 2 {
 				want := strings.ToLower(strings.TrimSpace(args[0]))
 				index := slices.IndexFunc(localProviderKeys, func(key struct{ name, article, env string }) bool {
-					return want == strings.ToLower(strings.ReplaceAll(key.name, " ", "-")) || want == strings.ToLower(key.name) || want == strings.ToLower(key.env)
+					return want == localProviderKeyID(key.name) || want == strings.ToLower(key.name) || want == strings.ToLower(key.env)
 				})
 				if index < 0 {
 					return fmt.Errorf("unknown provider %q: expected one of %s", args[0], strings.Join(names, ", "))

@@ -7,7 +7,7 @@ import {
 
 import { CLIENT_HARNESSES } from "../ingress/client_harness.js";
 import { checkSources, DEFAULT_RESET_MIN_HOURS, type Source } from "../models/sources.js";
-import { otherModelProviders, providerModel } from "../models/canonical.js";
+import { modelKeyProviders, otherModelProviders, providerModel } from "../models/canonical.js";
 import type { ClientHarness, RouterRole, RouterRoleModels, RouterRolePrompts } from "../types.js";
 
 /**
@@ -112,6 +112,14 @@ export type RouterModelConfig = {
 /** The provider that serves a router's model, whose credential it needs. */
 export function modelProvider(model: RouterModelConfig): string {
   return model.provider ?? providerForModel(model.id);
+}
+
+/**
+ * The providers whose API key may serve a model, in order: the one its spec
+ * names, else those the catalog runs it on (see `modelKeyProviders`).
+ */
+export function keyProviders(model: RouterModelConfig): string[] {
+  return model.provider === undefined ? modelKeyProviders(model.id) : [model.provider];
 }
 
 export const ROUTER_ID_PATTERN = /^[A-Za-z0-9_-]+$/;

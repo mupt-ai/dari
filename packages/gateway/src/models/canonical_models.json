@@ -9,6 +9,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "openai"
     ]
   },
   {
@@ -21,6 +24,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "openai"
     ]
   },
   {
@@ -34,6 +40,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "openai"
     ]
   },
   {
@@ -46,6 +55,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "openai"
     ]
   },
   {
@@ -59,6 +71,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "openai"
     ]
   },
   {
@@ -72,6 +87,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "openai"
     ]
   },
   {
@@ -85,6 +103,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "openai"
     ]
   },
   {
@@ -98,6 +119,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "openai"
     ]
   },
   {
@@ -111,6 +135,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "openai"
     ]
   },
   {
@@ -124,6 +151,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "openai"
     ]
   },
   {
@@ -137,6 +167,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "anthropic"
     ]
   },
   {
@@ -150,6 +183,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "anthropic"
     ]
   },
   {
@@ -162,6 +198,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "anthropic"
     ]
   },
   {
@@ -175,6 +214,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "anthropic"
     ]
   },
   {
@@ -187,6 +229,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "anthropic"
     ]
   },
   {
@@ -199,6 +244,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "anthropic"
     ]
   },
   {
@@ -211,6 +259,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "anthropic"
     ]
   },
   {
@@ -223,6 +274,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "anthropic"
     ]
   },
   {
@@ -234,6 +288,9 @@
       "low",
       "medium",
       "high"
+    ],
+    "providers": [
+      "anthropic"
     ]
   },
   {
@@ -247,6 +304,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "meta"
     ]
   },
   {
@@ -260,6 +320,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "meta"
     ]
   },
   {
@@ -273,6 +336,9 @@
       "high",
       "xhigh",
       "max"
+    ],
+    "providers": [
+      "meta"
     ]
   },
   {
@@ -284,6 +350,11 @@
       "medium",
       "high",
       "xhigh"
+    ],
+    "providers": [
+      "fireworks",
+      "openrouter",
+      "vercel-ai-gateway"
     ]
   },
   {
@@ -296,6 +367,9 @@
       "medium",
       "high",
       "xhigh"
+    ],
+    "providers": [
+      "meta"
     ]
   },
   {
@@ -306,6 +380,13 @@
       "low",
       "high",
       "max"
+    ],
+    "providers": [
+      "fireworks",
+      "opencode-go",
+      "vercel-token-pass",
+      "openrouter",
+      "vercel-ai-gateway"
     ]
   },
   {
@@ -316,6 +397,13 @@
       "low",
       "high",
       "max"
+    ],
+    "providers": [
+      "fireworks",
+      "opencode-go",
+      "vercel-token-pass",
+      "openrouter",
+      "vercel-ai-gateway"
     ]
   },
   {
@@ -326,6 +414,13 @@
       "low",
       "high",
       "max"
+    ],
+    "providers": [
+      "fireworks",
+      "opencode-go",
+      "vercel-token-pass",
+      "openrouter",
+      "vercel-ai-gateway"
     ]
   },
   {
@@ -336,6 +431,13 @@
       "low",
       "high",
       "max"
+    ],
+    "providers": [
+      "fireworks",
+      "opencode-go",
+      "vercel-token-pass",
+      "openrouter",
+      "vercel-ai-gateway"
     ]
   },
   {
@@ -346,6 +448,11 @@
       "off",
       "high",
       "max"
+    ],
+    "providers": [
+      "fireworks",
+      "openrouter",
+      "vercel-ai-gateway"
     ]
   },
   {
@@ -356,6 +463,12 @@
       "off",
       "high",
       "max"
+    ],
+    "providers": [
+      "fireworks",
+      "opencode-go",
+      "openrouter",
+      "vercel-ai-gateway"
     ]
   },
   {
@@ -366,6 +479,11 @@
       "off",
       "high",
       "max"
+    ],
+    "providers": [
+      "fireworks",
+      "openrouter",
+      "vercel-ai-gateway"
     ]
   },
   {
@@ -376,6 +494,12 @@
       "off",
       "high",
       "max"
+    ],
+    "providers": [
+      "fireworks",
+      "opencode-go",
+      "openrouter",
+      "vercel-ai-gateway"
     ]
   },
   {
@@ -386,6 +510,12 @@
       "off",
       "high",
       "max"
+    ],
+    "providers": [
+      "fireworks",
+      "vercel-token-pass",
+      "openrouter",
+      "vercel-ai-gateway"
     ]
   },
   {
@@ -397,6 +527,9 @@
       "medium",
       "high",
       "xhigh"
+    ],
+    "providers": [
+      "xai"
     ]
   },
   {
@@ -408,6 +541,9 @@
       "medium",
       "high",
       "xhigh"
+    ],
+    "providers": [
+      "xai"
     ]
   },
   {
@@ -418,6 +554,9 @@
       "low",
       "medium",
       "high"
+    ],
+    "providers": [
+      "google"
     ]
   },
   {
@@ -428,6 +567,9 @@
       "low",
       "medium",
       "high"
+    ],
+    "providers": [
+      "google"
     ]
   },
   {
@@ -439,6 +581,9 @@
       "medium",
       "high",
       "xhigh"
+    ],
+    "providers": [
+      "google"
     ]
   },
   {
@@ -450,6 +595,9 @@
       "medium",
       "high",
       "xhigh"
+    ],
+    "providers": [
+      "google"
     ]
   },
   {
@@ -460,6 +608,9 @@
       "low",
       "medium",
       "high"
+    ],
+    "providers": [
+      "google"
     ]
   }
 ]

@@ -289,7 +289,7 @@ func askAutoRoutingKey(stdin io.Reader, stderr io.Writer) (string, error) {
 // localProviderKeys are the provider API keys the Accounts page saves for a
 // local gateway, by the environment variable the gateway reads: one for each
 // provider in gatewayCatalogProviders, so every model the picker offers can
-// be served.
+// be served, and the gateways that also serve open-weights models.
 var localProviderKeys = []struct{ name, article, env string }{
 	{"Anthropic", "an", "ANTHROPIC_API_KEY"},
 	{"OpenAI", "an", "OPENAI_API_KEY"},
@@ -299,6 +299,14 @@ var localProviderKeys = []struct{ name, article, env string }{
 	{"Fireworks", "a", "FIREWORKS_API_KEY"},
 	{"Google", "a", "GEMINI_API_KEY"},
 	{"OpenCode Go", "an", "OPENCODE_API_KEY"},
+	{"OpenRouter", "an", "OPENROUTER_API_KEY"},
+	{"Vercel AI Gateway", "a", "AI_GATEWAY_API_KEY"},
+}
+
+// localProviderKeyID is the provider ID of a localProviderKeys name, as
+// `dari accounts key` takes it: "OpenCode Go" is opencode-go.
+func localProviderKeyID(name string) string {
+	return strings.ToLower(strings.ReplaceAll(name, " ", "-"))
 }
 
 // allSubscriptionProviders are the plans `dari accounts` offers; it is not
@@ -381,11 +389,11 @@ func gatewayAgentModels(ctx context.Context, gw *gatewayConfig, baseURL string, 
 // gatewayNothingServedError says which accounts or keys would serve the
 // router's models, for a launch with no terminal to connect them in.
 func gatewayNothingServedError(ctx context.Context, gw *gatewayConfig, baseURL, agent string, err error) error {
-	lists, listsErr := fetchGatewayRouterModelLists(ctx, gw, baseURL)
-	if listsErr != nil {
+	_, missing, missingErr := fetchGatewayMissing(ctx, gw, baseURL, agent, nil)
+	if missingErr != nil {
 		return err
 	}
-	lines := gatewayMissingLines(gatewayMissingModels(gw, agent, lists.offered(agent), nil))
+	lines := gatewayMissingLines(missing)
 	if len(lines) == 0 {
 		return err
 	}
@@ -654,12 +662,11 @@ func reportGatewayModels(ctx context.Context, gw *gatewayConfig, baseURL, agent 
 		reportAgentModels(agent, models, false, stderr)
 		return models
 	}
-	lists, err := fetchGatewayRouterModelLists(ctx, gw, baseURL)
+	_, missing, err := fetchGatewayMissing(ctx, gw, baseURL, agent, models.Enabled)
 	if err != nil {
 		reportAgentModels(agent, models, false, stderr)
 		return models
 	}
-	missing := gatewayMissingModels(gw, agent, lists.offered(agent), models.Enabled)
 	for _, need := range missing {
 		models.Unavailable = append(models.Unavailable, need.model)
 	}

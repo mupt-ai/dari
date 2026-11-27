@@ -16,7 +16,7 @@ import { HostedSync, readHostedAccounts } from "./hosted_sync.js";
 import { createSelfHostedPlatform } from "./platform.js";
 import { checkProviderKey } from "../providers/key_check.js";
 import { CANONICAL_MODELS } from "../models/canonical.js";
-import { allRouterModels, loadGatewayConfig, modelProvider, type GatewayConfig, type RouterConfig } from "./config.js";
+import { allRouterModels, keyProviders, loadGatewayConfig, type GatewayConfig, type RouterConfig } from "./config.js";
 import {
   configuredProviderApiKey,
   gatewayKeyIndex,
@@ -261,7 +261,7 @@ async function checkConfiguredProviderKeys(
   providerApiKey: (provider: string) => Promise<string | undefined>,
 ): Promise<void> {
   const providers = new Set(
-    routers.flatMap((router) => allRouterModels(router).map(modelProvider)),
+    routers.flatMap((router) => allRouterModels(router).flatMap(keyProviders)),
   );
   const checks = await Promise.all([...providers].map(async (provider) => {
     const endpoint = config.providers[provider];

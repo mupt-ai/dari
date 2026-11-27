@@ -32,6 +32,7 @@ import type {
 } from "../types.js";
 import {
   allRouterModels,
+  keyProviders,
   modelProvider,
   routerModelsFor,
   type GatewayConfig,
@@ -234,10 +235,15 @@ export async function resolveSelfHostedRouter(
         },
       });
     }
+    // The first provider with a key serves: the one the spec names, else any
+    // the catalog runs the model on. A grant's keys serve as grantModels set.
+    const keyed = grant === null ? keyProviders(model) : [base];
     let keyCandidate = async (): Promise<Candidate | null> => {
-      const key = await apiKey(base);
-      if (key === undefined) return null;
-      return { provider: base, key };
+      for (const provider of keyed) {
+        const key = await apiKey(provider);
+        if (key !== undefined) return { provider, key };
+      }
+      return null;
     };
     // A self-hosted gateway has no managed keys.
     let managedCandidate = async (): Promise<Candidate | null> => null;
@@ -259,7 +265,7 @@ export async function resolveSelfHostedRouter(
 
     if (candidates.length === 0) {
       for (const kind of heldKinds) exhausted.add(kind);
-      unserved.add(base);
+      for (const provider of keyed) unserved.add(provider);
       // A granted plan may serve another maker's model: name the plan's provider too.
       if (grant !== null) for (const kind of heldKinds) unserved.add(subscriptionModelProvider(kind));
       if (modelHolds.length > 0) {
@@ -536,12 +542,16 @@ export async function providersWithoutCredentials(
 ): Promise<string[]> {
   const missing = new Set<string>();
   for (const model of allRouterModels(router)) {
-    const provider = modelProvider(model);
-    if (missing.has(provider)) continue;
     const sources = model.sources ?? SELF_HOSTED_DEFAULT_SOURCES;
     const plans = sources.includes("plan") ? modelSubscriptions(model.id) : [];
     if (plans.some((plan) => deps.subscriptions.list(plan).length > 0)) continue;
-    if (await configuredProviderApiKey(deps, provider) === undefined) missing.add(provider);
+    // Any of its key providers serves it, so each is named when none can.
+    const providers = keyProviders(model);
+    let keyed = false;
+    for (const provider of providers) {
+      if (await configuredProviderApiKey(deps, provider) !== undefined) keyed = true;
+    }
+    if (!keyed) for (const provider of providers) missing.add(provider);
   }
   return [...missing];
 }

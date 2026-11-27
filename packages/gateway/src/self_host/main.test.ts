@@ -379,11 +379,12 @@ hosted: { speculative_routing: true }
   );
 });
 
-// The CLI's model picker offers Dari's canonical models, under Dari's names.
+// The CLI's model picker offers Dari's canonical models, under Dari's names,
+// and says what serves a missing one from each model's providers.
 test("the canonical models are listed for the model picker", async () => {
   const response = await fetch(`${baseUrl}/v1/canonical-models`, { headers: authorized() });
   expect(response.status).toBe(200);
-  const { data } = await response.json() as { data: { id: string; name: string; maker: string; thinking_levels: string[] }[] };
+  const { data } = await response.json() as { data: { id: string; name: string; maker: string; thinking_levels: string[]; providers: string[] }[] };
   expect(data.length).toBeGreaterThan(0);
   for (const model of data) {
     expect(model).toEqual({
@@ -391,10 +392,17 @@ test("the canonical models are listed for the model picker", async () => {
       name: expect.any(String),
       maker: expect.any(String),
       thinking_levels: expect.any(Array),
+      providers: expect.any(Array),
     });
   }
   // The maker is who made the model, not who serves it: Fireworks serves Kimi.
   expect(data.find((model) => model.id === "moonshotai/Kimi-K3.1-Pro")?.maker).toBe("Moonshot AI");
+  // A model its own provider serves stays with it; an open-weights one runs
+  // on every provider and gateway the catalog maps it to.
+  expect(data.find((model) => model.id === "openai/gpt-6.1-sol")?.providers).toEqual(["openai"]);
+  expect(data.find((model) => model.id === "moonshotai/Kimi-K3.1-Pro")?.providers).toEqual(
+    ["fireworks", "opencode-go", "vercel-token-pass", "openrouter", "vercel-ai-gateway"],
+  );
 });
 
 // The CLI's first launch on a local gateway offers its model picker until

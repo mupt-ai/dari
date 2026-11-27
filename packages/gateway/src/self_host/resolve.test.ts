@@ -311,6 +311,39 @@ describe("resolveSelfHostedRouter", () => {
     expect(resolved.model_prices?.["zai-org/GLM-5.3"]).toBeDefined();
   });
 
+  // Kimi's id names its maker, which serves no API; any provider or gateway
+  // the catalog runs it on serves it with its key.
+  test("a model its maker does not serve runs on the key of a provider that runs it", async () => {
+    const config = { routers: { default: { models: ["moonshotai/Kimi-K3.1-Pro"] } } };
+    expect((await rejection(resolveSelfHostedRouter(deps({ config }), request()))).status).toBe(424);
+    const fireworks = await resolveSelfHostedRouter(
+      deps({ config, apiKeys: { fireworks: "fw-key", openrouter: "or-key" } }),
+      request(),
+    );
+    expect(fireworks).toMatchObject({ enabled_models: ["moonshotai/Kimi-K3.1-Pro"], provider_keys: { fireworks: "fw-key" } });
+    expect(fireworks.model_configs?.["moonshotai/Kimi-K3.1-Pro"]).toMatchObject({
+      provider: "fireworks",
+      native_model_id: "accounts/fireworks/models/kimi-k3p1-pro",
+    });
+    for (const [gateway, baseUrl] of [
+      ["openrouter", "https://openrouter.ai/api/v1"],
+      ["vercel-ai-gateway", "https://ai-gateway.vercel.sh/v1"],
+    ] as const) {
+      const resolved = await resolveSelfHostedRouter(deps({ config, apiKeys: { [gateway]: "gw-provider-key" } }), request());
+      expect(resolved.provider_keys).toEqual({ [gateway]: "gw-provider-key" });
+      expect(resolved.model_configs?.["moonshotai/Kimi-K3.1-Pro"]).toMatchObject({
+        provider: gateway,
+        native_model_id: "moonshotai/kimi-k3.1-pro",
+        api: "openai-completions",
+        base_url: baseUrl,
+      });
+      expect(resolved.model_prices?.["moonshotai/Kimi-K3.1-Pro"]).toBeDefined();
+    }
+    // A model its maker serves stays with its maker's key.
+    const openai = deps({ config: { routers: { default: { models: ["openai/gpt-6.1-sol"] } } }, apiKeys: { openrouter: "or-key" } });
+    expect((await rejection(resolveSelfHostedRouter(openai, request()))).status).toBe(424);
+  });
+
   test("xAI models are served on a Grok plan, and on the xAI key without one", async () => {
     const resolver = deps({
       apiKeys: { xai: "xai-key" },
@@ -376,6 +409,25 @@ describe("providersWithoutCredentials", () => {
     const resolverDeps = deps({ apiKeys: { openai: "sk-openai" } });
     expect(await providersWithoutCredentials(resolverDeps, resolverDeps.config.routers.default!)).toEqual([
       "anthropic",
+    ]);
+  });
+
+  test("counts the key of a provider that runs a model its maker does not serve", async () => {
+    const resolverDeps = deps({ apiKeys: { "vercel-ai-gateway": "vck" }, config: { routers: { default: { models: ["moonshotai/Kimi-K3"] } } } });
+    expect(await providersWithoutCredentials(resolverDeps, resolverDeps.config.routers.default!)).toEqual([]);
+  });
+
+  // Muse Spark Open runs on Fireworks and the gateways, not Meta: a Meta key
+  // serves its sibling, and the warning names who would serve it.
+  test("names the providers that run a model its maker does not serve", async () => {
+    const resolverDeps = deps({
+      apiKeys: { meta: "meta-key" },
+      config: { routers: { default: { models: ["meta/muse-spark-open", "meta/muse-spark-1.2"] } } },
+    });
+    expect(await providersWithoutCredentials(resolverDeps, resolverDeps.config.routers.default!)).toEqual([
+      "fireworks",
+      "openrouter",
+      "vercel-ai-gateway",
     ]);
   });
 

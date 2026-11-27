@@ -5,58 +5,130 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"slices"
 	"strings"
 
+	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/cli/agents"
 )
 
 // gatewayMissing is a gateway model no account or API key serves yet, and
 // what would serve it for the launched agent.
 type gatewayMissing struct {
-	model    string
-	provider string
-	// plans are the subscriptions that serve the provider for this agent: a
-	// Claude subscription serves only Claude Code.
+	model string
+	// providers serve the model: the one its router spec names, else those
+	// the gateway's catalog runs it on.
+	providers []string
+	// plans are the subscriptions that serve one of the providers for this
+	// agent: a Claude subscription serves only Claude Code.
 	plans []agentSubscriptionProvider
-	// key indexes localProviderKeys for the provider's API key, or is -1
-	// when it has none there. Only a local gateway's keys are the CLI's to
-	// set; another gateway reads them from its own environment.
-	key   int
+	// keys index localProviderKeys for the providers' API keys. Only a local
+	// gateway's keys are the CLI's to set; another gateway reads them from
+	// its own environment.
+	keys  []int
 	local bool
 }
 
-// gatewayModelProvider is the provider that serves a gateway model: the one
+// agentLimitedPlans serve only their own agent, as the gateway serves them:
+// a Claude Code plan only Claude Code, and a Muse Code plan only Muse Code.
+// Every other plan serves any agent.
+var agentLimitedPlans = []agentSubscriptionProvider{claudeSubscription, museSubscription}
+
+// gatewayModelProvider is the provider a gateway model's row shows: the one
 // its router spec names, else the one its ID starts with.
 func gatewayModelProvider(model gatewayModelConfig) string {
 	if model.Provider != "" {
 		return model.Provider
 	}
-	provider, _, _ := strings.Cut(model.ID, "/")
-	return provider
+	return providerOf(model.ID)
+}
+
+// fetchGatewayModelProviders are, by model ID, the providers whose plans and
+// API keys serve each canonical model on the gateway when a router spec names
+// none.
+func fetchGatewayModelProviders(ctx context.Context, gw *gatewayConfig) (map[string][]string, error) {
+	var canonical struct {
+		Data []struct {
+			ID        string   `json:"id"`
+			Providers []string `json:"providers"`
+		} `json:"data"`
+	}
+	if err := api.New(gw.url).WithBearer(gw.key).Do(ctx, http.MethodGet, "/v1/canonical-models", nil, &canonical); err != nil {
+		return nil, gatewayModelListsError(err)
+	}
+	providers := map[string][]string{}
+	for _, model := range canonical.Data {
+		providers[model.ID] = model.Providers
+	}
+	return providers, nil
 }
 
 // gatewayMissingModels are the models the router offers agent that are not
-// among the enabled ones, with what would serve each.
-func gatewayMissingModels(gw *gatewayConfig, agent string, offered []gatewayModelConfig, enabled []string) []gatewayMissing {
+// among the enabled ones, with what would serve each. catalog is
+// fetchGatewayModelProviders'.
+func gatewayMissingModels(gw *gatewayConfig, agent string, offered []gatewayModelConfig, enabled []string, catalog map[string][]string) []gatewayMissing {
 	var missing []gatewayMissing
 	for _, model := range offered {
 		if slices.Contains(enabled, model.ID) {
 			continue
 		}
-		provider := gatewayModelProvider(model)
-		need := gatewayMissing{model: model.ID, provider: provider, local: gw.local}
-		for _, plan := range templateSubscriptions(agentSetups[agent]) {
-			if plan.routerProvider == provider {
+		providers := catalog[model.ID]
+		if model.Provider != "" || len(providers) == 0 {
+			providers = []string{gatewayModelProvider(model)}
+		}
+		need := gatewayMissing{model: model.ID, providers: providers, local: gw.local}
+		for _, plan := range allSubscriptionProviders {
+			limited := slices.Contains(agentLimitedPlans, plan) && !slices.Contains(agentSetups[agent].subscriptions, plan)
+			if !limited && slices.Contains(providers, plan.routerProvider) {
 				need.plans = append(need.plans, plan)
 			}
 		}
-		need.key = slices.IndexFunc(localProviderKeys, func(key struct{ name, article, env string }) bool {
-			return strings.ToLower(strings.ReplaceAll(key.name, " ", "-")) == provider
-		})
+		for i, key := range localProviderKeys {
+			// A plan-only provider is offered as its plan.
+			if id := localProviderKeyID(key.name); slices.Contains(providers, id) && !subscriptionOnlyProviders[id] {
+				need.keys = append(need.keys, i)
+			}
+		}
 		missing = append(missing, need)
 	}
 	return missing
+}
+
+// fetchGatewayMissing reads the models the router at baseURL offers agent,
+// and which of them are missing: not among enabled.
+func fetchGatewayMissing(ctx context.Context, gw *gatewayConfig, baseURL, agent string, enabled []string) ([]gatewayModelConfig, []gatewayMissing, error) {
+	lists, err := fetchGatewayRouterModelLists(ctx, gw, baseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	catalog, err := fetchGatewayModelProviders(ctx, gw)
+	if err != nil {
+		return nil, nil, err
+	}
+	offered := lists.offered(agent)
+	return offered, gatewayMissingModels(gw, agent, offered, enabled, catalog), nil
+}
+
+// orList joins items as "a", "a or b", or "a, b, or c".
+func orList(items []string) string {
+	if len(items) < 3 {
+		return strings.Join(items, " or ")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + ", or " + items[len(items)-1]
+}
+
+// keyNames are the names of the missing model's API keys, or on a gateway
+// that is not local, their environment variables.
+func (need gatewayMissing) keyNames() []string {
+	names := make([]string, len(need.keys))
+	for i, key := range need.keys {
+		names[i] = localProviderKeys[key].name
+		if !need.local {
+			names[i] = localProviderKeys[key].env
+		}
+	}
+	return names
 }
 
 // help says what to run so the model is served.
@@ -70,15 +142,21 @@ func (need gatewayMissing) help() string {
 		}
 	}
 	switch {
-	case need.key >= 0 && need.local:
-		key := localProviderKeys[need.key]
-		ways = append(ways, fmt.Sprintf("add %s %s key (`dari accounts key %s <key>`)", key.article, key.name, need.provider))
-	case need.key >= 0:
-		ways = append(ways, "set "+localProviderKeys[need.key].env+" on the gateway")
+	case len(need.keys) > 0 && need.local:
+		ids := make([]string, len(need.keys))
+		for i, key := range need.keys {
+			ids[i] = localProviderKeyID(localProviderKeys[key].name)
+		}
+		provider := ids[0]
+		if len(ids) > 1 {
+			provider = "<" + strings.Join(ids, "|") + ">"
+		}
+		ways = append(ways, fmt.Sprintf("add %s %s key (`dari accounts key %s <key>`)", localProviderKeys[need.keys[0]].article, orList(need.keyNames()), provider))
+	case len(need.keys) > 0:
+		ways = append(ways, "set "+orList(need.keyNames())+" on the gateway")
 	case len(ways) == 0:
-		// No plan or known key is for this provider: an ID like
-		// deepseek-ai/... names the model's owner, not who serves it.
-		ways = append(ways, "name who serves it with `provider:` in the router spec, or set "+need.provider+"'s API key on the gateway")
+		// Nothing the catalog knows serves it.
+		ways = append(ways, "name who serves it with `provider:` in the router spec, or set "+need.providers[0]+"'s API key on the gateway")
 	}
 	return strings.Join(ways, " or ")
 }
@@ -90,45 +168,55 @@ func (need gatewayMissing) note() string {
 	for _, plan := range need.plans {
 		ways = append(ways, plan.name)
 	}
-	if need.key >= 0 {
-		key := localProviderKeys[need.key].name + " key"
+	if len(need.keys) > 0 {
+		key := orList(need.keyNames()) + " key"
 		if !need.local {
-			key = localProviderKeys[need.key].env + " on the gateway"
+			key = orList(need.keyNames()) + " on the gateway"
 		}
 		ways = append(ways, key)
 	}
 	note := "Needs " + strings.Join(ways, " or ")
 	if len(ways) == 0 {
-		// Its ID names who made it, not who serves it.
 		note = "Name its provider in the router spec"
 	}
-	for _, plan := range allSubscriptionProviders {
-		if plan.routerProvider == need.provider && !slices.Contains(need.plans, plan) {
+	for _, plan := range agentLimitedPlans {
+		if slices.Contains(need.providers, plan.routerProvider) && !slices.Contains(need.plans, plan) {
 			note += " · " + plan.name + " plans serve " + plan.name + " only"
 		}
 	}
 	return note
 }
 
-// gatewayMissingLines say, one provider a line, which models are not served
-// yet and what to run for each.
-func gatewayMissingLines(missing []gatewayMissing) []string {
-	var providers []string
-	byProvider := map[string][]gatewayMissing{}
-	for _, need := range missing {
-		if _, ok := byProvider[need.provider]; !ok {
-			providers = append(providers, need.provider)
-		}
-		byProvider[need.provider] = append(byProvider[need.provider], need)
+// sources are the connect page's ways to serve the model: each plan to
+// connect, then on a local gateway each API key to add, or skipping it.
+func (need gatewayMissing) sources() []agentModelSource {
+	var ways []agentModelSource
+	for _, plan := range need.plans {
+		ways = append(ways, agentModelSource{kind: "connect", provider: plan.routerProvider, credentialID: plan.id, label: "Connect " + plan.name})
 	}
-	lines := make([]string, 0, len(providers))
-	for _, provider := range providers {
-		needs := byProvider[provider]
-		models := make([]string, len(needs))
-		for i, need := range needs {
-			models[i] = need.model
+	if need.local {
+		for _, key := range need.keys {
+			ways = append(ways, agentModelSource{kind: "add-key", provider: localProviderKeyID(localProviderKeys[key].name), label: "Add " + localProviderKeys[key].name + " Key"})
 		}
-		lines = append(lines, fmt.Sprintf("Not available yet: %s. To use: %s.", strings.Join(models, ", "), needs[0].help()))
+	}
+	return append(ways, agentModelSource{kind: "skip", provider: need.providers[0], label: "Skip For Now"})
+}
+
+// gatewayMissingLines say, one line for each way to serve them, which models
+// are not served yet and what to run for each.
+func gatewayMissingLines(missing []gatewayMissing) []string {
+	var helps []string
+	models := map[string][]string{}
+	for _, need := range missing {
+		help := need.help()
+		if _, ok := models[help]; !ok {
+			helps = append(helps, help)
+		}
+		models[help] = append(models[help], need.model)
+	}
+	lines := make([]string, 0, len(helps))
+	for _, help := range helps {
+		lines = append(lines, fmt.Sprintf("Not available yet: %s. To use: %s.", strings.Join(models[help], ", "), help))
 	}
 	return lines
 }
@@ -145,12 +233,10 @@ func connectGatewayMissing(ctx context.Context, gw *gatewayConfig, baseURL strin
 		if err != nil && !errors.Is(err, errNoProviderCredentials) {
 			return agents.Models{}, err
 		}
-		lists, listsErr := fetchGatewayRouterModelLists(ctx, gw, baseURL)
-		if listsErr != nil {
+		offered, missing, missingErr := fetchGatewayMissing(ctx, gw, baseURL, launch.name, models.Enabled)
+		if missingErr != nil {
 			return models, err
 		}
-		offered := lists.offered(launch.name)
-		missing := gatewayMissingModels(gw, launch.name, offered, models.Enabled)
 		if len(missing) == 0 {
 			return models, err
 		}
@@ -164,14 +250,7 @@ func connectGatewayMissing(ctx context.Context, gw *gatewayConfig, baseURL strin
 			sources[model.ID] = []agentModelSource{{kind: "ready", provider: provider, label: "Ready"}}
 		}
 		for _, need := range missing {
-			var ways []agentModelSource
-			for _, plan := range need.plans {
-				ways = append(ways, agentModelSource{kind: "connect", provider: need.provider, credentialID: plan.id, label: "Connect " + plan.name})
-			}
-			if need.key >= 0 && need.local {
-				ways = append(ways, agentModelSource{kind: "add-key", provider: need.provider, label: "Add " + localProviderKeys[need.key].name + " Key"})
-			}
-			sources[need.model] = append(ways, agentModelSource{kind: "skip", provider: need.provider, label: "Skip For Now"})
+			sources[need.model] = need.sources()
 		}
 		p := newAgentPickerState(rows, ids, nil, nil, sources)
 		slices.SortStableFunc(p.rows, func(a, b agentPickerRow) int { return slices.Index(ids, a.model.ID) - slices.Index(ids, b.model.ID) })
@@ -205,7 +284,7 @@ func connectGatewayMissing(ctx context.Context, gw *gatewayConfig, baseURL strin
 			}
 		case "add-key":
 			key := localProviderKeys[slices.IndexFunc(localProviderKeys, func(key struct{ name, article, env string }) bool {
-				return strings.ToLower(strings.ReplaceAll(key.name, " ", "-")) == step.provider
+				return localProviderKeyID(key.name) == step.provider
 			})]
 			_, keyErr := runAgentSecretInputTUI(stdin, stderr, key.name+" API Key", nil, func(value string) error {
 				return setLocalProviderKey(ctx, gw, stderr, key.env, value)

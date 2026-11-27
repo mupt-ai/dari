@@ -113,12 +113,14 @@ test("a model names another provider only when that provider serves it", () => {
   const parsed = parseGatewayConfig({
     routers: { default: { models: [
       { id: "deepseek-ai/DeepSeek-V4.1-Flash-1017", provider: "fireworks" },
+      { id: "moonshotai/Kimi-K3.1-Pro", provider: "openrouter" },
       // The provider its id names needs no `provider`.
       { id: "openai/gpt-6.1-sol", provider: "openai" },
     ] } },
   });
   expect(parsed.routers.default!.models).toEqual([
     { id: "deepseek-ai/DeepSeek-V4.1-Flash-1017", provider: "fireworks" },
+    { id: "moonshotai/Kimi-K3.1-Pro", provider: "openrouter" },
     { id: "openai/gpt-6.1-sol" },
   ]);
   expect(() => parseGatewayConfig({
@@ -126,7 +128,7 @@ test("a model names another provider only when that provider serves it", () => {
   })).toThrow("cannot be served by provider opencode-go on a self-hosted gateway; leave out `provider` to use google.");
   expect(() => parseGatewayConfig({
     routers: { default: { models: [{ id: "deepseek-ai/DeepSeek-V4.1-Flash-1017", provider: "xai" }] } },
-  })).toThrow("use fireworks or opencode-go, or leave out `provider`");
+  })).toThrow("use fireworks or opencode-go or openrouter or vercel-ai-gateway, or leave out `provider`");
 });
 
 test("a config file router reads back as an equivalent spec", () => {

@@ -43,7 +43,7 @@ export function internalChatCompletionsToInteraction(request: ChatCompletionRequ
       continue;
     }
 
-    const reasoningItems = chatReasoningItems(message, messageIndex);
+    const reasoningItems = chatReasoningItems(message);
     items.push(...reasoningItems);
     items.push({
       type: "message",
@@ -171,17 +171,17 @@ function hostedToolCallStatus(
   throw new HttpError(400, `${param} is not supported.`, "invalid_request_error", param);
 }
 
-function chatReasoningItems(message: ChatMessage, messageIndex: number): InteractionItem[] {
+function chatReasoningItems(message: ChatMessage): InteractionItem[] {
   if (message.role !== "assistant") return [];
   const readable = [message.reasoning_content, message.reasoning, message.reasoning_text]
     .find((value) => typeof value === "string" && value.length > 0);
-  const continuations = (message.reasoning_details ?? []).map((detail, detailIndex) => {
-    if (detail.type !== "reasoning.encrypted" || typeof detail.data !== "string") {
-      throw invalidChatContinuation(messageIndex, detailIndex);
-    }
+  // A conversation begun on another provider carries that provider's reasoning
+  // details. They name no provider or model, so they cannot be replayed; the
+  // turn keeps its readable reasoning and the conversation continues.
+  const continuations = (message.reasoning_details ?? []).flatMap((detail) => {
+    if (detail.type !== "reasoning.encrypted" || typeof detail.data !== "string") return [];
     const continuation = decodeUntrustedProviderContinuationState(detail.data);
-    if (!continuation) throw invalidChatContinuation(messageIndex, detailIndex);
-    return continuation;
+    return continuation ? [continuation] : [];
   });
   if (continuations.length === 0) {
     return readable
@@ -195,16 +195,6 @@ function chatReasoningItems(message: ChatMessage, messageIndex: number): Interac
     source: continuation.source,
     continuation,
   }));
-}
-
-function invalidChatContinuation(messageIndex: number, detailIndex: number): HttpError {
-  const param = `messages.${messageIndex}.reasoning_details.${detailIndex}.data`;
-  return new HttpError(
-    400,
-    `${param} must be a Dari provider continuation envelope; raw provider state has no recoverable provider/model provenance.`,
-    "invalid_provider_continuation_state",
-    param,
-  );
 }
 
 function contentShape(content: ChatMessage["content"]): InteractionMessage["contentShape"] {

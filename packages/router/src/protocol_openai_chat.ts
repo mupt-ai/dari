@@ -453,33 +453,23 @@ function openAIReasoningItems(
       `messages.${messageIndex}.reasoning_details`,
     );
   }
-  const entries = (details ?? []).map((detail, detailIndex) => {
+  // A conversation begun on another provider carries that provider's reasoning
+  // details. They name no provider or model, so they cannot be replayed; the
+  // turn keeps its readable reasoning and the conversation continues.
+  const entries = (details ?? []).flatMap((detail, detailIndex) => {
     const param = `messages.${messageIndex}.reasoning_details.${detailIndex}`;
     if (!isRecord(detail)) throw invalid(`${param} must be an object.`, param);
-    rejectUnknownFields(detail, ["type", "id", "data"], param);
-    if (detail.type !== "reasoning.encrypted" || typeof detail.data !== "string") {
-      throw invalid(
-        `${param}.data must be a Dari reasoning-state envelope.`,
-        `${param}.data`,
-      );
-    }
+    if (detail.type !== "reasoning.encrypted" || typeof detail.data !== "string") return [];
     const continuation = decodeUntrustedProviderContinuationState(detail.data);
     const portable = continuation ? null : decodeUntrustedPortableReasoningState(detail.data);
-    if (!continuation && !portable) {
-      throw new RouterFrameworkError(
-        "invalid_request",
-        `${param}.data must be a Dari reasoning-state envelope; raw provider state has no recoverable provider/model provenance.`,
-        "invalid_provider_continuation_state",
-        `${param}.data`,
-      );
-    }
-    return {
+    if (!continuation && !portable) return [];
+    return [{
       id: typeof detail.id === "string" && detail.id.length > 0
         ? detail.id
         : portable?.itemId,
       continuation,
       portable,
-    };
+    }];
   });
   if (entries.length === 0) {
     return readable

@@ -4,6 +4,9 @@ import providerModels from "./provider_models.json" with { type: "json" };
 export type CanonicalModel = {
   id: string;
   name: string;
+  // Who made it, which model pickers group by: "Moonshot AI", not the
+  // provider serving it.
+  maker: string;
   // The default provider's accepted thinking levels.
   thinking_levels: string[];
 };

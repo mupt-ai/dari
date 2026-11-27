@@ -515,26 +515,33 @@ func chooseGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, s
 		Data []struct {
 			ID             string   `json:"id"`
 			Name           string   `json:"name"`
+			Maker          string   `json:"maker"`
 			ThinkingLevels []string `json:"thinking_levels"`
 		} `json:"data"`
 	}
 	if err := client.Do(ctx, http.MethodGet, "/v1/canonical-models", nil, &canonical); err != nil {
 		return gatewayModelListsError(err)
 	}
-	canonicalIDs := map[string]bool{}
+	makerOf := map[string]string{}
+	// Makers are listed in the order the catalog first names them.
+	makers := []string{}
 	for _, model := range canonical.Data {
-		canonicalIDs[model.ID] = true
+		makerOf[model.ID] = model.Maker
+		if !slices.Contains(makers, model.Maker) {
+			makers = append(makers, model.Maker)
+		}
 	}
 	offered := []agentModel{}
 	for _, model := range models {
-		if canonicalIDs[model.ID] {
+		if maker, ok := makerOf[model.ID]; ok {
+			model.Maker = maker
 			offered = append(offered, model)
 		}
 	}
 	for _, model := range canonical.Data {
 		if _, ok := known[model.ID]; !ok {
 			known[model.ID] = model.ThinkingLevels
-			offered = append(offered, agentModel{ID: model.ID, DisplayName: model.Name, Provider: providerOf(model.ID), SupportedLevels: model.ThinkingLevels})
+			offered = append(offered, agentModel{ID: model.ID, DisplayName: model.Name, Maker: model.Maker, Provider: providerOf(model.ID), SupportedLevels: model.ThinkingLevels})
 		}
 	}
 	models = offered
@@ -551,13 +558,13 @@ func chooseGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, s
 			models = append(models, agentModel{ID: model.ID, DisplayName: model.ID, Provider: providerOf(model.ID)})
 		}
 	}
-	// Group by provider in a fixed order, then by name within each group;
-	// a raw id sorts by its model name, not its provider prefix.
-	providerRank := func(provider string) int {
-		if i := slices.Index(strings.Split(gatewayCatalogProviders, ","), provider); i >= 0 {
+	// Group by maker, then by name within each group; a raw id sorts by its
+	// model name, not its namespace.
+	makerRank := func(m agentModel) int {
+		if i := slices.Index(makers, agentModelMaker(m)); i >= 0 {
 			return i
 		}
-		return len(gatewayCatalogProviders)
+		return len(makers)
 	}
 	sortName := func(m agentModel) string {
 		if _, name, ok := strings.Cut(m.ID, "/"); ok && m.DisplayName == m.ID {
@@ -576,9 +583,11 @@ func chooseGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, s
 		if si, sj := servedFirst(models[i]), servedFirst(models[j]); si != sj {
 			return si < sj
 		}
-		pi, pj := providerRank(models[i].Provider), providerRank(models[j].Provider)
-		if pi != pj {
-			return pi < pj
+		if ri, rj := makerRank(models[i]), makerRank(models[j]); ri != rj {
+			return ri < rj
+		}
+		if mi, mj := agentModelMaker(models[i]), agentModelMaker(models[j]); mi != mj {
+			return mi < mj
 		}
 		return sortName(models[i]) < sortName(models[j])
 	})

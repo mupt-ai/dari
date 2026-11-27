@@ -1439,11 +1439,11 @@ func agentPickerSummary(p *agentPickerState) string {
 	return strings.Join(names, ", ")
 }
 
-// agentProviderNames name the providers the model picker groups by.
-var agentProviderNames = map[string]string{
-	"anthropic": "Anthropic", "openai": "OpenAI", "google": "Google", "xai": "xAI", "meta": "Meta",
-	"deepseek": "DeepSeek", "deepseek-ai": "DeepSeek", "fireworks": "Fireworks", "mistral": "Mistral", "moonshotai": "Moonshot AI",
-	"zai-org": "Z.ai", "qwen": "Qwen", "opencode": "OpenCode",
+// agentModelMaker is the picker heading a model sits under: who made it, as
+// the model catalog names it, not who serves it. A model the catalog does
+// not know falls back to its ID's namespace.
+func agentModelMaker(model agentModel) string {
+	return cmp.Or(model.Maker, providerOf(model.ID))
 }
 
 // agentPickerLines draws the model picker's page: the models and their
@@ -1468,11 +1468,11 @@ func agentPickerLines(title string, note []string, p *agentPickerState) []string
 	// Where the thinking levels start, which an open model's choices line up
 	// under.
 	levelColumn := 2 + 2 + nameWidth + 3
-	provider := ""
+	maker := ""
 	for i, row := range p.rows {
-		if row.model.Provider != provider {
-			provider = row.model.Provider
-			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset, "")
+		if agentModelMaker(row.model) != maker {
+			maker = agentModelMaker(row.model)
+			lines = append(lines, "", "  "+ansiBold+maker+ansiReset, "")
 		}
 		focused := item(focus, "model", i, 0)
 		name := padRight(row.model.DisplayName, nameWidth)
@@ -1549,12 +1549,12 @@ func agentPayingLines(title string, note []string, p *agentPickerState) []string
 	if p.fixed {
 		lines = append(lines, "")
 	}
-	provider := ""
+	maker := ""
 	for _, i := range shown {
 		row := p.rows[i]
-		if !p.fixed && row.model.Provider != provider {
-			provider = row.model.Provider
-			lines = append(lines, "", "  "+ansiBold+cmp.Or(agentProviderNames[provider], provider)+ansiReset, "")
+		if !p.fixed && agentModelMaker(row.model) != maker {
+			maker = agentModelMaker(row.model)
+			lines = append(lines, "", "  "+ansiBold+maker+ansiReset, "")
 		}
 		focused := focus == agentPickerItem{kind: "source", row: i}
 		name := padRight(row.model.DisplayName, nameWidth)

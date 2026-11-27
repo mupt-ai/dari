@@ -144,8 +144,11 @@ func (router agentRouter) roleOf(model string) string {
 }
 
 type agentModel struct {
-	ID                   string   `json:"id"`
-	DisplayName          string   `json:"display_name"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	// Maker is who made the model, which the picker groups by; Provider is
+	// who serves it.
+	Maker                string   `json:"maker"`
 	Provider             string   `json:"provider"`
 	DefaultProvider      string   `json:"default_provider"`
 	DefaultThinkingLevel string   `json:"default_thinking_level"`
@@ -1372,16 +1375,16 @@ func newAgentPickerState(
 		row.sources = sources[model.ID]
 		state.rows = append(state.rows, row)
 	}
-	// Models are shown under their provider, providers in the order they
-	// first appear.
+	// Models are shown under their maker, makers in the order they first
+	// appear.
 	order := []string{}
 	for _, row := range state.rows {
-		if !slices.Contains(order, row.model.Provider) {
-			order = append(order, row.model.Provider)
+		if maker := agentModelMaker(row.model); !slices.Contains(order, maker) {
+			order = append(order, maker)
 		}
 	}
 	slices.SortStableFunc(state.rows, func(a, b agentPickerRow) int {
-		return slices.Index(order, a.model.Provider) - slices.Index(order, b.model.Provider)
+		return slices.Index(order, agentModelMaker(a.model)) - slices.Index(order, agentModelMaker(b.model))
 	})
 	return state
 }

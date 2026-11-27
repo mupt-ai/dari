@@ -1327,6 +1327,7 @@ func testAgentModels() []agentModel {
 	return []agentModel{
 		{
 			ID:                   "anthropic/claude-fable-5",
+			Maker:                "Anthropic",
 			DisplayName:          "Fable",
 			Provider:             "anthropic",
 			DefaultProvider:      "anthropic",
@@ -1334,6 +1335,7 @@ func testAgentModels() []agentModel {
 		},
 		{
 			ID:                   "zai-org/GLM-5.3",
+			Maker:                "Z.ai",
 			DisplayName:          "GLM",
 			Provider:             "fireworks",
 			DefaultProvider:      "fireworks",
@@ -1341,6 +1343,7 @@ func testAgentModels() []agentModel {
 		},
 		{
 			ID:                   "openai/gpt-5.6-sol",
+			Maker:                "OpenAI",
 			DisplayName:          "Sol",
 			Provider:             "openai",
 			DefaultProvider:      "openai",
@@ -1457,14 +1460,19 @@ func TestAgentRouterNeedsUpdateIgnoresModelOrder(t *testing.T) {
 	}
 }
 
-func TestAgentPickerLinesGroupByProviderAndAlign(t *testing.T) {
+func TestAgentPickerLinesGroupByMakerAndAlign(t *testing.T) {
 	models := testAgentModels()
 	models[0].DisplayName = "A Very Long Model Name Indeed"
 	p := newAgentPickerState(models, []string{"anthropic/claude-fable-5"}, nil, testRecommendedLevels(), nil)
 	plain := stripANSI(strings.Join(agentPickerLines("Choose models", []string{"note one", "note two"}, p), "\n"))
 
-	// Each provider heads its models; Continue and the keys, one to a line, follow.
-	for _, want := range []string{"  note one\n  note two\n\n  Anthropic\n", "\n  Fireworks\n", "\n  OpenAI\n", "Continue →\n\n  ↑↓ move · enter select · → thinking levels · ← close · esc back"} {
+	// Each maker the catalog names heads its models, not the provider
+	// serving them (GLM is served by Fireworks); Continue and the keys, one
+	// to a line, follow.
+	if strings.Contains(plain, "Fireworks") {
+		t.Fatalf("GLM headed by the provider serving it:\n%s", plain)
+	}
+	for _, want := range []string{"  note one\n  note two\n\n  Anthropic\n", "\n  Z.ai\n", "\n  OpenAI\n", "Continue →\n\n  ↑↓ move · enter select · → thinking levels · ← close · esc back"} {
 		if !strings.Contains(plain, want) {
 			t.Fatalf("missing %q in:\n%s", want, plain)
 		}

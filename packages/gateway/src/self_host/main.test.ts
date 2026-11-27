@@ -383,15 +383,18 @@ hosted: { speculative_routing: true }
 test("the canonical models are listed for the model picker", async () => {
   const response = await fetch(`${baseUrl}/v1/canonical-models`, { headers: authorized() });
   expect(response.status).toBe(200);
-  const { data } = await response.json() as { data: { id: string; name: string; thinking_levels: string[] }[] };
+  const { data } = await response.json() as { data: { id: string; name: string; maker: string; thinking_levels: string[] }[] };
   expect(data.length).toBeGreaterThan(0);
   for (const model of data) {
     expect(model).toEqual({
       id: expect.stringMatching(/^[a-z0-9.-]+\/\S+$/),
       name: expect.any(String),
+      maker: expect.any(String),
       thinking_levels: expect.any(Array),
     });
   }
+  // The maker is who made the model, not who serves it: Fireworks serves Kimi.
+  expect(data.find((model) => model.id === "moonshotai/Kimi-K3.1-Pro")?.maker).toBe("Moonshot AI");
 });
 
 // The CLI's first launch on a local gateway offers its model picker until

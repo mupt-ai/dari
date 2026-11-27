@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // Copies the canonical models from the monorepo's router model catalog into
 // src/models/canonical_models.json, the list the local model picker shows:
-// each model's id, display name, and its default provider's thinking levels.
+// each model's id, display name, maker, and its default provider's thinking
+// levels.
 // Also writes src/models/provider_models.json: each other provider a
 // self-hosted gateway can serve a model through (a router spec's `provider`),
 // with the model's id, API, and endpoint there.
@@ -24,7 +25,10 @@ const CLOUD_ACCOUNT_PROVIDERS = new Set(["azure", "amazon-bedrock"]);
 
 const root = resolve(import.meta.dir, "..");
 const config = join(root, "../../../dari-backend/config");
-const catalog = await Bun.file(join(config, "router-model-catalog.json")).json() as { models: CatalogModel[] };
+const catalog = await Bun.file(join(config, "router-model-catalog.json")).json() as {
+  makers: Record<string, string>;
+  models: CatalogModel[];
+};
 const mappings = await Bun.file(join(config, "provider-model-mappings.json")).json() as {
   provider_model_mappings: ProviderMapping[];
 };
@@ -33,7 +37,9 @@ const models = catalog.models.map((model) => {
     (row) => row.model_id === model.id && row.provider === model.default_provider,
   );
   if (mapping === undefined) throw new Error(`${model.id} has no ${model.default_provider} mapping`);
-  return { id: model.id, name: model.display_name, thinking_levels: mapping.supported_thinking_levels ?? [] };
+  const maker = catalog.makers[model.id.split("/")[0]!];
+  if (maker === undefined) throw new Error(`${model.id} has no maker`);
+  return { id: model.id, name: model.display_name, maker, thinking_levels: mapping.supported_thinking_levels ?? [] };
 });
 await Bun.write(join(root, "src/models/canonical_models.json"), `${JSON.stringify(models, null, 2)}\n`);
 console.log(`wrote ${models.length} canonical models`);

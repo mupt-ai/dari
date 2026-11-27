@@ -2,6 +2,7 @@
   {
     "id": "openai/gpt-6.2-astra",
     "name": "GPT-6.2 Astra",
+    "maker": "OpenAI",
     "thinking_levels": [
       "low",
       "medium",
@@ -13,6 +14,7 @@
   {
     "id": "openai/gpt-6-astra",
     "name": "GPT-6 Astra",
+    "maker": "OpenAI",
     "thinking_levels": [
       "low",
       "medium",
@@ -24,6 +26,7 @@
   {
     "id": "openai/gpt-6.1-terra",
     "name": "GPT-6.1 Terra",
+    "maker": "OpenAI",
     "thinking_levels": [
       "off",
       "low",
@@ -36,6 +39,7 @@
   {
     "id": "openai/gpt-6.2-sol",
     "name": "GPT-6.2 Sol",
+    "maker": "OpenAI",
     "thinking_levels": [
       "low",
       "medium",
@@ -47,6 +51,7 @@
   {
     "id": "openai/gpt-6.1-sol",
     "name": "GPT-6.1 Sol",
+    "maker": "OpenAI",
     "thinking_levels": [
       "off",
       "low",
@@ -59,6 +64,7 @@
   {
     "id": "openai/gpt-6-sol",
     "name": "GPT-6 Sol",
+    "maker": "OpenAI",
     "thinking_levels": [
       "off",
       "low",
@@ -71,6 +77,7 @@
   {
     "id": "openai/gpt-6-luna",
     "name": "GPT-6 Luna",
+    "maker": "OpenAI",
     "thinking_levels": [
       "off",
       "low",
@@ -83,6 +90,7 @@
   {
     "id": "openai/gpt-5.6-sol",
     "name": "GPT-5.6 Sol",
+    "maker": "OpenAI",
     "thinking_levels": [
       "off",
       "low",
@@ -95,6 +103,7 @@
   {
     "id": "openai/gpt-5.6-terra",
     "name": "GPT-5.6 Terra",
+    "maker": "OpenAI",
     "thinking_levels": [
       "off",
       "low",
@@ -107,6 +116,7 @@
   {
     "id": "openai/gpt-5.6-luna",
     "name": "GPT-5.6 Luna",
+    "maker": "OpenAI",
     "thinking_levels": [
       "off",
       "low",
@@ -119,6 +129,7 @@
   {
     "id": "anthropic/claude-opus-5-5",
     "name": "Claude Opus 5.5",
+    "maker": "Anthropic",
     "thinking_levels": [
       "off",
       "low",
@@ -131,6 +142,7 @@
   {
     "id": "anthropic/claude-opus-5",
     "name": "Claude Opus 5",
+    "maker": "Anthropic",
     "thinking_levels": [
       "off",
       "low",
@@ -143,6 +155,7 @@
   {
     "id": "anthropic/claude-sonnet-5-5",
     "name": "Claude Sonnet 5.5",
+    "maker": "Anthropic",
     "thinking_levels": [
       "low",
       "medium",
@@ -154,6 +167,7 @@
   {
     "id": "anthropic/claude-sonnet-5",
     "name": "Claude Sonnet 5",
+    "maker": "Anthropic",
     "thinking_levels": [
       "off",
       "low",
@@ -166,6 +180,7 @@
   {
     "id": "anthropic/claude-fable-5-2",
     "name": "Claude Fable 5.2",
+    "maker": "Anthropic",
     "thinking_levels": [
       "low",
       "medium",
@@ -177,6 +192,7 @@
   {
     "id": "anthropic/claude-fable-5-1",
     "name": "Claude Fable 5.1",
+    "maker": "Anthropic",
     "thinking_levels": [
       "low",
       "medium",
@@ -188,6 +204,7 @@
   {
     "id": "anthropic/claude-fable-5",
     "name": "Claude Fable 5",
+    "maker": "Anthropic",
     "thinking_levels": [
       "low",
       "medium",
@@ -199,6 +216,7 @@
   {
     "id": "anthropic/claude-haiku-5-5",
     "name": "Claude Haiku 5.5",
+    "maker": "Anthropic",
     "thinking_levels": [
       "low",
       "medium",
@@ -210,6 +228,7 @@
   {
     "id": "anthropic/claude-haiku-4-5",
     "name": "Claude Haiku 4.5",
+    "maker": "Anthropic",
     "thinking_levels": [
       "off",
       "low",
@@ -220,6 +239,7 @@
   {
     "id": "meta/muse-wonder-1.0",
     "name": "Muse Wonder 1.0",
+    "maker": "Meta",
     "thinking_levels": [
       "minimal",
       "low",
@@ -232,6 +252,7 @@
   {
     "id": "meta/muse-spark-1.3",
     "name": "Muse Spark 1.3",
+    "maker": "Meta",
     "thinking_levels": [
       "minimal",
       "low",
@@ -244,6 +265,7 @@
   {
     "id": "meta/muse-ember",
     "name": "Muse Ember",
+    "maker": "Meta",
     "thinking_levels": [
       "minimal",
       "low",
@@ -256,6 +278,7 @@
   {
     "id": "meta/muse-spark-open",
     "name": "Muse Spark Open",
+    "maker": "Meta",
     "thinking_levels": [
       "low",
       "medium",
@@ -266,6 +289,7 @@
   {
     "id": "meta/muse-spark-1.2",
     "name": "Muse Spark 1.2",
+    "maker": "Meta",
     "thinking_levels": [
       "minimal",
       "low",
@@ -277,6 +301,7 @@
   {
     "id": "moonshotai/Kimi-K3",
     "name": "Kimi K3",
+    "maker": "Moonshot AI",
     "thinking_levels": [
       "low",
       "high",
@@ -286,6 +311,7 @@
   {
     "id": "moonshotai/Kimi-K3.1-Pro",
     "name": "Kimi K3.1 Pro",
+    "maker": "Moonshot AI",
     "thinking_levels": [
       "low",
       "high",
@@ -295,6 +321,7 @@
   {
     "id": "zai-org/GLM-5.3",
     "name": "GLM 5.3",
+    "maker": "Z.ai",
     "thinking_levels": [
       "low",
       "high",
@@ -304,6 +331,7 @@
   {
     "id": "zai-org/GLM-5.3-Flash",
     "name": "GLM 5.3 Flash",
+    "maker": "Z.ai",
     "thinking_levels": [
       "low",
       "high",
@@ -313,6 +341,7 @@
   {
     "id": "deepseek-ai/DeepSeek-V4-Pro-0813",
     "name": "DeepSeek V4 Pro 0813",
+    "maker": "DeepSeek",
     "thinking_levels": [
       "off",
       "high",
@@ -322,6 +351,7 @@
   {
     "id": "zai-org/GLM-5.2",
     "name": "GLM 5.2",
+    "maker": "Z.ai",
     "thinking_levels": [
       "off",
       "high",
@@ -331,6 +361,7 @@
   {
     "id": "deepseek-ai/DeepSeek-V4-Flash-0731",
     "name": "DeepSeek V4 Flash 0731",
+    "maker": "DeepSeek",
     "thinking_levels": [
       "off",
       "high",
@@ -340,6 +371,7 @@
   {
     "id": "deepseek-ai/DeepSeek-V4.1-Flash-1017",
     "name": "DeepSeek V4.1 Flash 1017",
+    "maker": "DeepSeek",
     "thinking_levels": [
       "off",
       "high",
@@ -349,6 +381,7 @@
   {
     "id": "deepseek-ai/DeepSeek-V4.1-Flash",
     "name": "DeepSeek V4.1 Flash",
+    "maker": "DeepSeek",
     "thinking_levels": [
       "off",
       "high",
@@ -358,6 +391,7 @@
   {
     "id": "xai/grok-4.6",
     "name": "Grok 4.6",
+    "maker": "xAI",
     "thinking_levels": [
       "low",
       "medium",
@@ -368,6 +402,7 @@
   {
     "id": "xai/grok-4.7",
     "name": "Grok 4.7",
+    "maker": "xAI",
     "thinking_levels": [
       "low",
       "medium",
@@ -378,6 +413,7 @@
   {
     "id": "google/gemini-4-argon",
     "name": "Gemini 4 Argon",
+    "maker": "Google",
     "thinking_levels": [
       "low",
       "medium",
@@ -387,6 +423,7 @@
   {
     "id": "google/gemini-4-carbon",
     "name": "Gemini 4 Carbon",
+    "maker": "Google",
     "thinking_levels": [
       "low",
       "medium",
@@ -396,6 +433,7 @@
   {
     "id": "google/gemini-4-neon",
     "name": "Gemini 4 Neon",
+    "maker": "Google",
     "thinking_levels": [
       "low",
       "medium",
@@ -406,6 +444,7 @@
   {
     "id": "google/gemini-4-hydrogen",
     "name": "Gemini 4 Hydrogen",
+    "maker": "Google",
     "thinking_levels": [
       "low",
       "medium",
@@ -416,6 +455,7 @@
   {
     "id": "google/gemini-3.8-flash",
     "name": "Gemini 3.8 Flash",
+    "maker": "Google",
     "thinking_levels": [
       "low",
       "medium",

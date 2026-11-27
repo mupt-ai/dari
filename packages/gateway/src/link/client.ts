@@ -182,7 +182,8 @@ export async function registerClient(
  * `clients` names the clients the app runs, such as `claude_code`, so the
  * user can grant plans that serve only those. `plans` limits the page to
  * those plan kinds, such as `openai_codex`, or `"supported"`. `purposes` says what the app does
- * with each audience's plans, shown beside them. `grantId` (update mode)
+ * with each audience's plans, shown beside them. The user shares at most one
+ * account per provider unless `allowPooling`. `grantId` (update mode)
  * opens the page on that existing grant: the user changes its plans in place,
  * its id and tokens stay, and the new code redeems for more tokens of it.
  */
@@ -213,6 +214,7 @@ export async function createLinkToken(
       ...(args.clients?.length ? { client: args.clients } : {}),
       ...(args.keyProviders?.length ? { key_providers: args.keyProviders } : {}),
       ...(args.purposes ? { purposes: args.purposes } : {}),
+      ...(args.allowPooling ? { allow_pooling: true } : {}),
       ...(args.grantId ? { grant_id: args.grantId } : {}),
     }),
   });
@@ -233,6 +235,9 @@ export type AuthorizeOptions = {
   // ["anthropic", "openrouter"]; omit to offer every one.
   keyProviders?: string[];
   purposes?: { any_app?: string; claude_code?: string; muse_code?: string };
+  // Let the user share several accounts of one provider, such as two Claude
+  // plans, which Dari pools; by default they share at most one per provider.
+  allowPooling?: boolean;
   grantId?: string;
   // `web_message` posts the result to the window that opened the page.
   responseMode?: "query" | "web_message";
@@ -264,6 +269,7 @@ function authorizationUrl(args: AuthorizeOptions & { codeChallenge: string; stat
     ...(args.clients?.length ? { client: args.clients.join(" ") } : {}),
     ...(args.plans?.length ? { plans: [args.plans].flat().join(" ") } : {}),
     ...(args.keyProviders?.length ? { key_providers: args.keyProviders.join(" ") } : {}),
+    ...(args.allowPooling ? { allow_pooling: "true" } : {}),
     ...(args.grantId ? { grant_id: args.grantId } : {}),
     ...Object.fromEntries(
       Object.entries(args.purposes ?? {}).flatMap(([audience, purpose]) => purpose ? [[`purpose_${audience}`, purpose]] : []),

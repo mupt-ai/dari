@@ -384,3 +384,24 @@ test("DariLink.open takes a challenge and state from the server, and refuses an 
   const tokens = await exchange({ ...client, code: result.code, codeVerifier: pkce.codeVerifier });
   expect(tokens.accessToken).toStartWith("dlk_at_");
 });
+
+test("an app gets one account per provider unless it allows pooling", async () => {
+  const gateway = await startStubGateway({ plans: ["openai_codex", "openai_codex"] });
+  stop = gateway.stop;
+  const { app } = gateway;
+
+  const single = await exchange({ ...app, ...(await gateway.connect()) });
+  expect(single.plans.map((plan) => plan.id)).toEqual([gateway.planIds[0]!]);
+
+  const { linkToken } = await createLinkToken({ ...app, allowPooling: true });
+  const { message } = await gateway.approve(`${app.gatewayUrl}/v1/link/authorize?link_token=${encodeURIComponent(linkToken)}`);
+  const pooled = await exchange({ ...app, code: message.code! });
+  expect(pooled.plans.map((plan) => plan.id).sort()).toEqual([...gateway.planIds].sort());
+
+  // Reopened without pooling, the pooled grant opens with one ticked, and saves as it opens.
+  const update = await createLinkToken({ ...app, grantId: pooled.grantId });
+  const saved = await gateway.approve(`${app.gatewayUrl}/v1/link/authorize?link_token=${encodeURIComponent(update.linkToken)}`);
+  const updated = await exchange({ ...app, code: saved.message.code! });
+  expect(updated.grantId).toBe(pooled.grantId);
+  expect(updated.plans).toHaveLength(1);
+});

@@ -1118,8 +1118,8 @@ function oauthError(
  * secret alone: no state or PKCE for the app to keep. JSON body:
  * `client_id`, `secret` (or HTTP Basic), and optionally `redirect_uri` (one
  * the app registered; default its first), `plans`, `client`, `key_providers`
- * (arrays), `purposes` ({ any_app, claude_code, muse_code }), and `grant_id`
- * for update mode.
+ * (arrays), `purposes` ({ any_app, claude_code, muse_code }), `allow_pooling`
+ * (true), and `grant_id` for update mode.
  */
 async function createLinkToken(link: LinkPlatform, request: Request): Promise<Response> {
   let body: Record<string, unknown>;
@@ -1143,6 +1143,7 @@ async function createLinkToken(link: LinkPlatform, request: Request): Promise<Re
     ...(list("plans") ? { plans: list("plans") } : {}),
     ...(list("client") ? { client: list("client") } : {}),
     ...(list("key_providers") ? { key_providers: list("key_providers") } : {}),
+    ...(body.allow_pooling === true ? { allow_pooling: "true" } : {}),
     ...(typeof body.grant_id === "string" ? { grant_id: body.grant_id } : {}),
     ...Object.fromEntries(PLAN_AUDIENCES.flatMap((audience) =>
       typeof purposes[audience] === "string" ? [[`purpose_${audience}`, purposes[audience] as string]] : []
@@ -1210,6 +1211,9 @@ type AuthorizeRequest = {
   keyProviders: string[] | null;
   // What the app says it does with each audience's plans, shown beside them.
   purposes: Partial<Record<PlanAudience, string>>;
+  // Whether the user may share several accounts of one provider, which Dari
+  // then pools; by default one per provider.
+  allowPooling: boolean;
   // Update mode: the user's grant for this app whose plans to change in place.
   grantId: string | null;
 };
@@ -1282,6 +1286,10 @@ async function authorizeRequest(link: LinkPlatform, params: URLSearchParams): Pr
     const purpose = params.get(`purpose_${audience}`)?.trim();
     if (purpose) purposes[audience] = purpose.slice(0, MAX_PURPOSE_CHARS);
   }
+  const allowPooling = params.get("allow_pooling");
+  if (allowPooling !== null && allowPooling !== "true" && allowPooling !== "false") {
+    return badRequest("allow_pooling is true or false.");
+  }
   const grantId = params.get("grant_id");
   if (grantId !== null && !GRANT_ID.test(grantId)) {
     return badRequest("grant_id names one of the user's grants for this app.");
@@ -1296,6 +1304,7 @@ async function authorizeRequest(link: LinkPlatform, params: URLSearchParams): Pr
     plans: plans.length === 0 ? null : plans as OfferKind[],
     keyProviders: keyProviders.length === 0 ? null : keyProviders,
     purposes,
+    allowPooling: allowPooling === "true",
     grantId,
   };
 }
@@ -1427,6 +1436,12 @@ async function authorizeSubmit(link: LinkPlatform, request: Request, form: URLSe
   const usable = new Set(shareable(authorize, subscriptions).map((subscription) => subscription.id));
   if (!credentialIds.every((id) => usable.has(id))) {
     return choosePage(authorize, session, subscriptions, current, `${authorize.app.name} cannot use one of the plans you chose.`);
+  }
+  const pooled = authorize.allowPooling ? undefined : subscriptions.find((subscription, index) =>
+    credentialIds.includes(subscription.id)
+    && subscriptions.slice(0, index).some((other) => credentialIds.includes(other.id) && pool(other) === pool(subscription)));
+  if (pooled !== undefined) {
+    return choosePage(authorize, session, subscriptions, current, `${authorize.app.name} uses one account per provider: choose one ${planName(pooled)}${pooled.apiKeyProvider === undefined ? " account" : ""}.`);
   }
   const limits = limitsFromForm(form, credentialIds);
   if (limits === null) return choosePage(authorize, session, subscriptions, current, LIMITS_ERROR);
@@ -1986,8 +2001,13 @@ function choosePage(
 ): Response {
   const app = escapeHtml(authorize.app.name);
   const plans = shareable(authorize, subscriptions);
-  // A new connection starts with every plan ticked; an update, with the plans it shares now.
-  const ticked = new Set(current?.credentialIds ?? plans.map((plan) => plan.id));
+  // A new connection starts with every plan ticked; an update, with the plans
+  // it shares now. Without pooling, only the first of each provider's, so an
+  // update of a grant made with pooling saves as it opens.
+  const candidates = plans.filter((plan) => current === null || current.credentialIds.includes(plan.id));
+  const ticked = new Set(candidates
+    .filter((plan, index) => authorize.allowPooling || !candidates.slice(0, index).some((other) => pool(other) === pool(plan)))
+    .map((plan) => plan.id));
   return pane(authorize, {
     title: current === null ? `Connect ${authorize.app.name}` : `Update Plans For ${authorize.app.name}`,
     step: "choose_plans",
@@ -2010,8 +2030,15 @@ ${plans.map((plan) => {
   });
 }
 
+// Plans and keys of one pool: one kind of plan, or one provider's API keys.
+function pool(subscription: LinkSubscription): string {
+  return subscription.apiKeyProvider === undefined ? subscription.provider : `api_key:${subscription.apiKeyProvider}`;
+}
+
 function planOption(authorize: AuthorizeRequest, subscription: LinkSubscription, ticked: boolean): string {
-  const box = `<input type="checkbox" name="credential_id" value="${escapeHtml(subscription.id)}"${ticked ? " checked" : ""}>`;
+  // Without pooling, ticking one of a pool unticks the rest (see `page`).
+  const pooled = authorize.allowPooling ? "" : ` data-pool="${escapeHtml(pool(subscription))}"`;
+  const box = `<input type="checkbox"${pooled} name="credential_id" value="${escapeHtml(subscription.id)}"${ticked ? " checked" : ""}>`;
   if (subscription.apiKeyProvider !== undefined) {
     return `<label class="option pick">${logo(subscription.apiKeyProvider, subscription.name)}<span class="grow"><strong>${escapeHtml(subscription.name)}</strong><small>API key &middot; ${escapeHtml(planLabel(subscription))}</small></span>${box}</label>`;
   }
@@ -2056,6 +2083,7 @@ function authorizeFields(authorize: AuthorizeRequest): Record<string, string> {
     ...(authorize.clients.length > 0 ? { client: authorize.clients.join(" ") } : {}),
     ...(authorize.plans !== null ? { plans: authorize.plans.join(" ") } : {}),
     ...(authorize.keyProviders !== null ? { key_providers: authorize.keyProviders.join(" ") } : {}),
+    ...(authorize.allowPooling ? { allow_pooling: "true" } : {}),
     ...Object.fromEntries(Object.entries(authorize.purposes).map(([audience, purpose]) => [`purpose_${audience}`, purpose])),
     ...(authorize.grantId !== null ? { grant_id: authorize.grantId } : {}),
   };
@@ -2116,6 +2144,11 @@ function page(
   const button = event.submitter;
   if (!(button instanceof HTMLButtonElement) || button.form?.target) return;
   setTimeout(() => { button.disabled = true; button.setAttribute("aria-busy", "true"); button.prepend(Object.assign(document.createElement("span"), { className: "spin" })); });
+});
+document.addEventListener("change", (event) => {
+  const box = event.target;
+  if (!(box instanceof HTMLInputElement) || !box.checked || !box.dataset.pool) return;
+  for (const other of box.form?.querySelectorAll("input[data-pool]") ?? []) if (other !== box && other.dataset.pool === box.dataset.pool) other.checked = false;
 });</script>`;
   options = { ...options, scriptNonce: busyNonce };
   if (options.event !== undefined) {

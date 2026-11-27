@@ -86,8 +86,13 @@ function gateway(
       const response = await open();
       return await (response.status === 303 ? await open() : response).text();
     },
-    submit: async (form: Record<string, string>, headers: Record<string, string> = {}) =>
-      await send(new Request(`${BASE}/v1/link/authorize`, { method: "POST", headers, body: new URLSearchParams({ ...params, ...form }) })),
+    // Pairs repeat a field, as several ticked plans do.
+    submit: async (form: Record<string, string> | Array<[string, string]>, headers: Record<string, string> = {}) =>
+      await send(new Request(`${BASE}/v1/link/authorize`, {
+        method: "POST",
+        headers,
+        body: new URLSearchParams(Array.isArray(form) ? [...Object.entries(params), ...form] : { ...params, ...form }),
+      })),
     connections: async () => await (await send(new Request(`${BASE}/v1/link/connections`))).text(),
     manage: async (form: Record<string, string>) =>
       await send(new Request(`${BASE}/v1/link/connections`, { method: "POST", body: new URLSearchParams(form) })),
@@ -385,4 +390,40 @@ test("a browser Link remembered before it had accounts signs in", async () => {
   expect(await browser.page()).toContain("Notes App Uses Dari To Connect Your AI Subscriptions");
   expect(new URL((await browser.submit({ decision: "select" })).headers.get("location")!).pathname).toBe("/link/sign-in");
   expect(await browser.connections()).toContain('value="sign_in"');
+});
+
+// One account per provider unless the app allows pooling: the page ticks the
+// first of each, ticking another unticks it, and the server holds to it.
+test("a user shares one account per provider unless the app allows pooling", async () => {
+  const twoChatGpts = async (request: Record<string, string> = {}) => {
+    const browser = gateway([1, 2].flatMap((account) => [
+      jsonResponse({ device_auth_id: `dev_${account}`, user_code: "ABCD-1234" }),
+      jsonResponse({ authorization_code: "code", code_verifier: "verifier" }),
+      jsonResponse({ access_token: codexAccessToken(`acct_${account}`), refresh_token: "r", expires_in: 3600 }),
+    ]), undefined, request);
+    for (let account = 0; account < 2; account++) {
+      expect((await browser.submit({ connect: "openai_codex" })).status).toBe(303);
+      await browser.page();
+    }
+    const page = await browser.page();
+    const ids = [...page.matchAll(/name="credential_id" value="([^"]+)"/g)].map((match) => match[1]!);
+    const csrf = /name="csrf" value="([^"]+)"/.exec(page)![1]!;
+    const approve = async (chosen: string[]) =>
+      await browser.submit([["decision", "approve"], ["csrf", csrf], ...chosen.map((id): [string, string] => ["credential_id", id])]);
+    return { page, ids, approve };
+  };
+
+  const single = await twoChatGpts();
+  expect(single.ids).toHaveLength(2);
+  expect(single.page).toContain(`data-pool="openai_codex" name="credential_id" value="${single.ids[0]}" checked>`);
+  expect(single.page).toContain(`data-pool="openai_codex" name="credential_id" value="${single.ids[1]}">`);
+  const refused = await single.approve(single.ids);
+  expect(refused.status).toBe(200);
+  expect(await refused.text()).toContain("Notes App uses one account per provider: choose one ChatGPT account.");
+  expect((await single.approve([single.ids[1]!])).status).toBe(303);
+
+  const pooled = await twoChatGpts({ allow_pooling: "true" });
+  expect(pooled.page).not.toContain("data-pool=");
+  expect(pooled.page).toContain(`value="${pooled.ids[1]}" checked>`);
+  expect((await pooled.approve(pooled.ids)).status).toBe(303);
 });

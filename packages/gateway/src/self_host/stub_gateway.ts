@@ -22,12 +22,12 @@
  * `gateway.connect()` (or `POST <controlUrl>/connect`) is its user approving
  * it: it resolves with what `DariLink.open` hands your page, `{code,
  * codeVerifier, state}`, or rejects with the `LinkError` it would (`deny`).
- * `clients`, `plans`, `keyProviders`, and `grantId` are `DariLink.open`'s.
+ * `clients`, `plans`, `keyProviders`, `allowPooling`, and `grantId` are `DariLink.open`'s.
  *
  * To drive an approval for an app you registered yourself:
  * `gateway.approve(authorizeUrl)` (or `POST <controlUrl>/approve` with
  * `{"url"}`) opens the approval page as the user who connected the stand-in
- * plans, ticks every plan the app can use (or `credentialIds`), approves (or
+ * plans, keeps the plans the page ticks (or ticks `credentialIds`), approves (or
  * denies with `deny`), and returns what the page hands the app:
  * `{message, targetOrigin}`, the `web_message` post or the redirect's query.
  * Each lands in `gateway.messages` and `GET <controlUrl>/messages`.
@@ -121,13 +121,16 @@ export type StubGatewayOptions = {
 export type StubLinkApp = { gatewayUrl: string; clientId: string; clientSecret: string; redirectUri: string };
 
 export type StubConnectOptions = {
-  // The plans and keys the user shares. Default: every one the app can use.
+  // The plans and keys the user shares. Default: those the page ticks, every
+  // one the app can use (one per provider without `allowPooling`), or in
+  // update mode the ones the grant shares now.
   credentialIds?: string[];
   deny?: boolean;
   // As `DariLink.open` takes them.
   clients?: string[];
   plans?: string[];
   keyProviders?: string[];
+  allowPooling?: boolean;
   grantId?: string;
 };
 
@@ -227,6 +230,7 @@ export async function startStubGateway(options: StubGatewayOptions = {}): Promis
           clients?: string[];
           plans?: string[];
           key_providers?: string[];
+          allow_pooling?: boolean;
           grant_id?: string;
         };
         try {
@@ -236,6 +240,7 @@ export async function startStubGateway(options: StubGatewayOptions = {}): Promis
             ...(body.clients ? { clients: body.clients } : {}),
             ...(body.plans ? { plans: body.plans } : {}),
             ...(body.key_providers ? { keyProviders: body.key_providers } : {}),
+            ...(body.allow_pooling ? { allowPooling: true } : {}),
             ...(body.grant_id ? { grantId: body.grant_id } : {}),
           });
           return Response.json({ code: result.code, code_verifier: result.codeVerifier, state: result.state });
@@ -445,8 +450,8 @@ ${keys.filter((key) => key === "openrouter").map((key) => `  ${key}:\n    baseUr
   };
 }
 
-// The approval page as the plans' user goes through it: tick the plans,
-// approve or deny; then what the page hands the app.
+// The approval page as the plans' user goes through it: keep the plans it
+// ticks (or tick the given ones), approve or deny; then what the page hands the app.
 async function driveApproval(
   baseUrl: string,
   cookie: string,
@@ -464,7 +469,7 @@ async function driveApproval(
         + 'A Claude Code plan serves only an app that asks for clients: ["claude_code"].',
     );
   }
-  const usable = [...choose.matchAll(/name="credential_id" value="([^"]+)"/g)].map((match) => match[1]!);
+  const ticked = [...choose.matchAll(/name="credential_id" value="([^"]+)"[^>]* checked>/g)].map((match) => match[1]!);
   const decided = await fetch(`${baseUrl}${url.pathname}`, {
     method: "POST",
     redirect: "manual",
@@ -473,7 +478,7 @@ async function driveApproval(
       ...params,
       ["csrf", csrf],
       ["decision", options.deny ? "deny" : "approve"],
-      ...(options.credentialIds ?? usable).map((id) => ["credential_id", id]),
+      ...(options.credentialIds ?? ticked).map((id) => ["credential_id", id]),
     ]),
   });
   const location = decided.headers.get("location");

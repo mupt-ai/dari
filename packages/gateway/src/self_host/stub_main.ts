@@ -11,7 +11,7 @@
  * page's user's: `userCookie` is the `Cookie` header that opens the page as them. `app` is a server
  * app registered on the gateway (`gatewayUrl`, `clientId`, `clientSecret`, `redirectUri`), and
  * `POST <controlUrl>/connect` (with `{"credential_ids"?, "deny"?, "clients"?, "plans"?,
- * "key_providers"?, "grant_id"?}`, all optional) is its user approving it: it answers
+ * "key_providers"?, "allow_pooling"?, "grant_id"?}`, all optional) is its user approving it: it answers
  * `{"code", "code_verifier", "state"}`, what Connect with Dari hands your page. `GET <controlUrl>/served`
  * answers `{"calls": [...]}`: every provider call so far, with its path,
  * model, thinking, and client headers. For an app you registered yourself, `POST <controlUrl>/approve` with

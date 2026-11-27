@@ -78,7 +78,8 @@ export async function handleRoutedCompletion(args: {
     for (const [name, value] of Object.entries(args.responseHeaders?.(prepared.credentials) ?? {})) {
       response.headers.set(name, value);
     }
-    return responseWithRequestId(response, requestId);
+    // Its X-Request-Id is the request the client is told it made.
+    return response;
   } catch (error) {
     const terminal = prepared.reporter.freezeFailure(error);
     terminal.report();

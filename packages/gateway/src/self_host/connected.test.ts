@@ -36,6 +36,8 @@ const SUBAGENT = {
   "x-claude-code-agent-type": "Explore",
 };
 const ROLE_PROMPT = "Delegate exploration to subagents.";
+// The request ID hosted Dari logs a request it serves under.
+const HOSTED_REQUEST_ID = crypto.randomUUID();
 const providerBodies: string[] = [];
 const hostedCalls: HostedCall[] = [];
 const providerTokens: string[] = [];
@@ -100,7 +102,7 @@ beforeAll(async () => {
         });
       }
       // Hosted Dari serving a model it was asked for.
-      if (pathname === "/rtr_1/v1/messages") return anthropicReply();
+      if (pathname === "/rtr_1/v1/messages") return anthropicReply({ "x-request-id": HOSTED_REQUEST_ID });
       if (pathname === "/rtr_1/v1/responses") return codexReply("gpt-6.1-sol");
       if (pathname === "/v1/gateway/accounts") return Response.json({ accounts: [] });
       if (pathname === "/v1/gateway/requests") return Response.json({ stored: ["x"], rejected: [] });
@@ -212,9 +214,11 @@ test("serves a model its plan serves locally and sends the request to hosted Act
   const body = JSON.parse(sync!.body);
   expect(body.gateway_id).toBe("gw_test");
   expect(body.requests).toHaveLength(1);
+  // Under the request ID the client was told, which Activity finds it by.
   expect(body.requests[0].row).toMatchObject({
     router_id: "rtr_1",
     selected_model: SONNET,
+    request_id: response.headers.get("x-request-id"),
     // Hosted Activity names the plan, which it otherwise never sees.
     request_metadata: expect.objectContaining({ subscription_account: "me@example.com" }),
   });
@@ -226,7 +230,11 @@ test("sends a model only Dari serves to hosted Dari as that model, with the Dari
     output_config: { effort: "high" },
   });
   expect(response.status).toBe(200);
-  expect(await response.text()).toContain("hi");
+  const text = await response.text();
+  expect(text).toContain("hi");
+  // The client is told hosted's request, which is the one Activity has.
+  expect(response.headers.get("x-request-id")).toBe(HOSTED_REQUEST_ID);
+  expect(text).toContain(`"request_id":"${HOSTED_REQUEST_ID}"`);
   const [served] = hosted("/rtr_1/v1/messages");
   expect(served!.apiKey).toBe(HOSTED_KEY);
   // Hosted Dari tells Claude Code by its own headers, passed on unchanged.

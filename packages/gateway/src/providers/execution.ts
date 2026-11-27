@@ -25,6 +25,7 @@ import {
 import type { RoutedProtocol } from "../runtime/routed_protocol.js";
 import { trackBackgroundTelemetry } from "../telemetry/background.js";
 import { gatewayPlatform, type SubscriptionHold } from "../platform/platform.js";
+import { HOSTED_DARI_PROVIDER } from "../platform/routing_contract.js";
 import { reportRoutingUsage } from "../telemetry/usage.js";
 import {
   prepareProviderExecution,
@@ -86,6 +87,8 @@ export type PreparedStreamExecution = {
 
 export type CompletedNonStreamingExecution = {
   choice: ProviderChoice;
+  // The request the client is told it made; see servedRequestId.
+  requestId: string;
   output: ReturnType<typeof piMessageToInteractionOutput>;
   responseBody: Record<string, unknown>;
   reportBarrierError?: unknown;
@@ -93,6 +96,7 @@ export type CompletedNonStreamingExecution = {
 
 type CompletedNonStreamingAttempt = {
   completion: CompletedProviderCall;
+  responseCapture?: ProviderResponseCapture;
 };
 
 export async function executeNonStreaming(args: {
@@ -116,7 +120,11 @@ export async function executeNonStreaming(args: {
     });
   }
   return Response.json(result.responseBody, {
-    headers: { ...result.choice.execution.headers, ...linkUsageHeaders(result) },
+    headers: {
+      ...result.choice.execution.headers,
+      ...linkUsageHeaders(result),
+      "X-Request-Id": result.requestId,
+    },
   });
 }
 
@@ -170,9 +178,10 @@ export async function completeNonStreaming(args: {
   }
 
   const {
-    value: { completion },
+    value: { completion, responseCapture },
     choice,
   } = result;
+  const requestId = servedRequestId(args.requestId, choice.execution, responseCapture);
   let output: ReturnType<typeof piMessageToInteractionOutput>;
   let responseBody: Record<string, unknown>;
   try {
@@ -182,7 +191,7 @@ export async function completeNonStreaming(args: {
       args.interaction,
     );
     responseBody = args.protocol.responseBody({
-      id: args.requestId,
+      id: requestId,
       model: choice.execution.model,
       output,
       modelCost: args.reporter.modelCost({
@@ -247,6 +256,7 @@ export async function completeNonStreaming(args: {
   await args.reporter.waitForPrefixEntryWrite();
   return {
     choice,
+    requestId,
     output,
     responseBody,
     ...(reportBarrierError === undefined ? {} : { reportBarrierError }),
@@ -329,7 +339,7 @@ async function runCompletionAttempt(args: {
     }
     return {
       kind: "succeeded",
-      value: { completion },
+      value: { completion, responseCapture: started.responseCapture },
       latencyMs: completion.providerLatencyMs,
     };
   } catch (error) {
@@ -613,6 +623,7 @@ async function runStreamSetupAttempt(args: {
           source: started.providerStream.source,
         },
         customerAbort: started.customerAbort,
+        responseCapture: started.responseCapture,
       },
       latencyMs: 0,
     };
@@ -653,6 +664,7 @@ export async function executeStreaming(args: {
 }): Promise<Response> {
   const { execution } = args.choice;
   const started = args.startedStream;
+  const requestId = servedRequestId(args.requestId, execution, started.responseCapture);
   args.reporter.attachServingDecision(args.choice.decision);
   const observed = observeDeliveredOutput(started.providerStream.events);
   const finalizer = createStreamFinalizer({
@@ -672,7 +684,7 @@ export async function executeStreaming(args: {
   });
   return new Response(
     args.protocol.streamBody({
-      id: args.requestId,
+      id: requestId,
       model: execution.model,
       routing: args.choice.decision,
       events: observed.events,
@@ -695,17 +707,32 @@ export async function executeStreaming(args: {
         trackBackgroundTelemetry(finalizer.afterResponseDetached(outcome));
       },
     }),
-    { headers: streamHeaders(execution) },
+    { headers: streamHeaders(execution, requestId) },
   );
 }
 
-function streamHeaders(execution: ProviderExecution): Record<string, string> {
+function streamHeaders(execution: ProviderExecution, requestId: string): Record<string, string> {
   return {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
     "Connection": "keep-alive",
     ...execution.headers,
+    "X-Request-Id": requestId,
   };
+}
+
+/**
+ * The request ID the client is told, in the response and its `X-Request-Id`:
+ * this gateway's own, except for a request hosted Dari served. Hosted logs
+ * that one under the ID it answered with, and Activity finds it only by that.
+ */
+function servedRequestId(
+  requestId: string,
+  execution: ProviderExecution,
+  capture: ProviderResponseCapture | undefined,
+): string {
+  if (execution.provider !== HOSTED_DARI_PROVIDER) return requestId;
+  return capture?.succeeded?.get("x-request-id")?.trim() || requestId;
 }
 
 function customerAbortRequested(

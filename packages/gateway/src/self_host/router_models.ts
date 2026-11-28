@@ -7,7 +7,7 @@
 import type { Database } from "bun:sqlite";
 
 import { errorResponse, HttpError } from "../http/errors.js";
-import { CLIENT_HARNESSES } from "../ingress/client_harness.js";
+import { CLIENT_HARNESSES } from "../harnesses/index.js";
 import { DEFAULT_ROUTER_ALIAS } from "../platform/routing_contract.js";
 import type { ClientHarness } from "../types.js";
 import {

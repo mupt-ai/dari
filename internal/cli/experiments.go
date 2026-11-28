@@ -436,7 +436,7 @@ func applyAgentExperiment(
 	if err := postRouterSetup(ctx, client, agent, path, nil, &router, stdin, stderr); err != nil {
 		return "", err
 	}
-	assigned := slices.Contains(router.CodingAgents, setup.codingAgent)
+	assigned := slices.Contains(router.CodingAgents, setup.CodingAgent)
 
 	models, err := listAgentModels(ctx, client)
 	if err != nil {
@@ -561,10 +561,10 @@ func applyAgentExperiment(
 		break
 	}
 	if experiment.makeDefault && !assigned {
-		if err := assignAgentRouter(ctx, client, router.ID, setup.codingAgent); err != nil {
+		if err := assignAgentRouter(ctx, client, router.ID, setup.CodingAgent); err != nil {
 			return "", err
 		}
-		agentStep(stderr, experiment.Name+" is now your default for "+setup.label)
+		agentStep(stderr, experiment.Name+" is now your default for "+setup.Label)
 		return router.ID, nil
 	}
 	if !ask {
@@ -575,15 +575,15 @@ func applyAgentExperiment(
 	if experiment.Description != "" {
 		details = []string{experiment.Description}
 	}
-	choice, err := runAgentChoiceTUI(stdin, stderr, fmt.Sprintf("Make %s Your Default Setup for %s?", experiment.Name, setup.label), details, []agentChoiceOption{
+	choice, err := runAgentChoiceTUI(stdin, stderr, fmt.Sprintf("Make %s Your Default Setup for %s?", experiment.Name, setup.Label), details, []agentChoiceOption{
 		{label: "Just This Launch", done: "Using template " + experiment.Name + " for this launch"},
-		{label: "Make It My Default", description: fmt.Sprintf("Plain `dari %s` uses it too.", agent), done: experiment.Name + " is now your default for " + setup.label},
+		{label: "Make It My Default", description: fmt.Sprintf("Plain `dari %s` uses it too.", agent), done: experiment.Name + " is now your default for " + setup.Label},
 	})
 	if err != nil {
 		return "", err
 	}
 	if choice == 1 {
-		if err := assignAgentRouter(ctx, client, router.ID, setup.codingAgent); err != nil {
+		if err := assignAgentRouter(ctx, client, router.ID, setup.CodingAgent); err != nil {
 			return "", err
 		}
 	}

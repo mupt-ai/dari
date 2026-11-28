@@ -226,7 +226,7 @@ func gatewayMissingLines(missing []gatewayMissing) []string {
 // until none is missing or the user continues without them. It returns the
 // router's models as served afterwards.
 func connectGatewayMissing(ctx context.Context, gw *gatewayConfig, baseURL string, launch agentLaunch, stdin io.Reader, stderr io.Writer) (agents.Models, error) {
-	label := agentSetups[launch.name].label
+	label := agentSetups[launch.name].Label
 	cursor, warning := 0, ""
 	for {
 		models, err := routerModels(ctx, baseURL, gw.key, launch.name)

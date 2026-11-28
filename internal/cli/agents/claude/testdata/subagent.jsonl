@@ -1,0 +1,2 @@
+{"type":"user","sessionId":"sess-claude","agentId":"agent-a","isSidechain":true,"timestamp":"2026-03-02T02:00:00.000Z","message":{"role":"user","content":"review the diff"}}
+{"type":"assistant","sessionId":"sess-claude","agentId":"agent-a","isSidechain":true,"timestamp":"2026-03-02T02:00:01.000Z","message":{"id":"msg_sub","model":"claude-haiku-4-5","role":"assistant","content":[{"type":"text","text":"Looks right."}],"stop_reason":"end_turn","usage":{"input_tokens":2,"output_tokens":3}}}

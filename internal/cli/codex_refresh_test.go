@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/mupt-ai/dari/internal/cli/agents/codex"
 )
 
 // fakeCodexRouter serves a router's model list as the gateway does: to the
@@ -91,7 +93,7 @@ func TestCodexRefreshOnALiveList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+	if err := codex.Agent.Setup.Save(context.Background(), "k", server.URL, models); err != nil {
 		t.Fatal(err)
 	}
 	config := readFile(t, filepath.Join(home, "config.toml"))
@@ -132,7 +134,7 @@ func TestCodexRefreshMovesACopyToTheLiveList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+	if err := codex.Agent.Setup.Save(context.Background(), "k", server.URL, models); err != nil {
 		t.Fatal(err)
 	}
 	if config := readFile(t, filepath.Join(home, "config.toml")); !strings.Contains(config, "model_catalog_json") {
@@ -160,7 +162,7 @@ func TestCodexRefreshRewritesTheCopyOnAnOlderGateway(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 	models, _ := routerModels(context.Background(), server.URL, "k", "codex")
-	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+	if err := codex.Agent.Setup.Save(context.Background(), "k", server.URL, models); err != nil {
 		t.Fatal(err)
 	}
 	router.set([]string{"dari/routing", "dari/model/a/two"}, false)
@@ -184,7 +186,7 @@ func TestCodexRefreshKeepsOrReportsTheSavedPick(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 	models, _ := routerModels(context.Background(), server.URL, "k", "codex")
-	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+	if err := codex.Agent.Setup.Save(context.Background(), "k", server.URL, models); err != nil {
 		t.Fatal(err)
 	}
 	// What Codex's /model leaves in the config.
@@ -228,7 +230,7 @@ func TestCodexRefreshWithARefusedKeyOrNoSetup(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 	models, _ := routerModels(context.Background(), server.URL, "old", "codex")
-	if err := saveAgentConfig(context.Background(), "codex", "old", server.URL, models); err != nil {
+	if err := codex.Agent.Setup.Save(context.Background(), "old", server.URL, models); err != nil {
 		t.Fatal(err)
 	}
 	before := readFile(t, filepath.Join(home, "config.toml"))
@@ -250,7 +252,7 @@ func TestCodexRefreshKeepsALiveSetupWhenTheCheckFails(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 	models, _ := routerModels(context.Background(), server.URL, "k", "codex")
-	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+	if err := codex.Agent.Setup.Save(context.Background(), "k", server.URL, models); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(home, "config.toml")
@@ -273,9 +275,9 @@ func TestCodexRefreshKeepsALiveSetupWhenTheCheckFails(t *testing.T) {
 
 func setCodexVersion(t *testing.T, version string) {
 	t.Helper()
-	saved := codexVersion
-	codexVersion = func(context.Context) (string, error) { return version, nil }
-	t.Cleanup(func() { codexVersion = saved })
+	saved := codex.Version
+	codex.Version = func(context.Context) (string, error) { return version, nil }
+	t.Cleanup(func() { codex.Version = saved })
 }
 
 // A Codex too old to read model_catalog_url accepts it and shows OpenAI's own
@@ -287,7 +289,7 @@ func TestCodexSetupKeepsACopyForACodexTooOldForTheLiveList(t *testing.T) {
 	server := httptest.NewServer(router)
 	defer server.Close()
 	models, _ := routerModels(context.Background(), server.URL, "k", "codex")
-	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+	if err := codex.Agent.Setup.Save(context.Background(), "k", server.URL, models); err != nil {
 		t.Fatal(err)
 	}
 	if config := readFile(t, filepath.Join(home, "config.toml")); !strings.Contains(config, "model_catalog_json") || strings.Contains(config, "model_catalog_url") {
@@ -302,7 +304,7 @@ func TestCodexSetupKeepsACopyForACodexTooOldForTheLiveList(t *testing.T) {
 	}
 	// No Codex on PATH: only the Codex app reads the config, and its Codex is new enough.
 	setCodexVersion(t, "")
-	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+	if err := codex.Agent.Setup.Save(context.Background(), "k", server.URL, models); err != nil {
 		t.Fatal(err)
 	}
 	if config := readFile(t, filepath.Join(home, "config.toml")); !strings.Contains(config, "model_catalog_url") {
@@ -322,12 +324,12 @@ func TestCodexSetupKeepsItsListWhenTheVersionCannotBeRead(t *testing.T) {
 	broken := func(context.Context) (string, error) { return "", errors.New("timed out") }
 
 	// Live before: stays live.
-	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+	if err := codex.Agent.Setup.Save(context.Background(), "k", server.URL, models); err != nil {
 		t.Fatal(err)
 	}
-	saved := codexVersion
-	codexVersion = broken
-	t.Cleanup(func() { codexVersion = saved })
+	saved := codex.Version
+	codex.Version = broken
+	t.Cleanup(func() { codex.Version = saved })
 	if err := runCodexRefresh(context.Background(), io.Discard); err != nil {
 		t.Fatal(err)
 	}
@@ -337,10 +339,10 @@ func TestCodexSetupKeepsItsListWhenTheVersionCannotBeRead(t *testing.T) {
 
 	// A copy before: stays a copy.
 	setCodexVersion(t, "codex-cli 0.153.4")
-	if err := saveAgentConfig(context.Background(), "codex", "k", server.URL, models); err != nil {
+	if err := codex.Agent.Setup.Save(context.Background(), "k", server.URL, models); err != nil {
 		t.Fatal(err)
 	}
-	codexVersion = broken
+	codex.Version = broken
 	if err := runCodexRefresh(context.Background(), io.Discard); err != nil {
 		t.Fatal(err)
 	}

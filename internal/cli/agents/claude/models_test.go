@@ -134,7 +134,7 @@ func TestWarnings(t *testing.T) {
 func TestConfigureWithoutRouting(t *testing.T) {
 	saved := agents.RoutingModel
 	command := agents.Command{Path: "/claude", Env: []string{subagentModelEnv + "=dari/model/anthropic/claude-haiku-5-5", "KEEP=1"}}
-	if err := Configure(&command, "dak", "https://routing.dari.dev", agents.Models{Enabled: claudeRouter, Saved: saved}); err != nil {
+	if err := Configure(&command, "dak", "https://routing.dari.dev", agents.Models{Enabled: claudeRouter, Saved: saved}, false); err != nil {
 		t.Fatal(err)
 	}
 	if got := agents.EnvironmentValue(command.Env, subagentModelEnv); got != "" || slices.ContainsFunc(command.Env, func(e string) bool { return strings.HasPrefix(e, subagentModelEnv+"=") }) {

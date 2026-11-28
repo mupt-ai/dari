@@ -31,11 +31,25 @@ export type AgentSpec = {
   mainClass: "main" | "unknown";
   // The type the agent gives a subagent it starts; absent when it has none.
   subagentType?: string;
+  // False for an agent `dari setup <agent> --cli` does not set up.
+  cliSetup?: false;
 };
 
 const TIMEOUT_MS = 180_000;
 
 export function agentSuite(spec: AgentSpec): void {
+  if (spec.cliSetup !== false) {
+    // Setup writes Dari into the agent's own config, which the agent may
+    // prefer over what a launch hands it; the launch must still win.
+    test.concurrent(`${spec.agent} runs a prompt after \`dari setup ${spec.agent} --cli\``, async () => {
+      const session = await launch(spec.agent, spec.args("e2e:tool", "computer"), { model: spec.onPlan.model, setUp: true });
+      expectAnswer(session, `${DONE} ${TOOL_OUTPUT}`);
+      const turn = session.calls.filter((call) => call.step === "shell" || call.step === "answer");
+      expect(turn.map((call) => call.step)).toEqual(["shell", "answer"]);
+      for (const call of turn) expect(call.token).toBe(spec.onPlan.token);
+    }, TIMEOUT_MS);
+  }
+
   const served = [
     { how: "on this computer's plan", model: spec.onPlan.model, token: spec.onPlan.token, by: "computer" as const },
     { how: "by hosted Dari over Anthropic's API", model: ON_DARI_CLAUDE, token: DARI_ANTHROPIC_KEY, by: "dari" as const },
@@ -63,6 +77,10 @@ export function agentSuite(spec: AgentSpec): void {
       expect(steps[0]!.session).not.toBeNull();
       expect(steps[1]!.session).toBe(steps[0]!.session);
       expectNamed(session, spec, path.by);
+
+      // The Activity link in Claude Code's status line opens the request
+      // where it was served.
+      if (spec.agent === "claude") expect(session.statusLine).toMatchObject({ linkOpens: path.by });
     }, TIMEOUT_MS);
 
     const subagentType = spec.subagentType;

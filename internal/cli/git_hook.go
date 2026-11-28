@@ -52,12 +52,6 @@ var pendingSessionRetries = []time.Duration{15 * time.Second, 30 * time.Second, 
 
 var errSessionPending = errors.New("session not recorded yet")
 
-// The agent's session ID in its own shell commands' environment.
-var harnessSessionEnv = []struct{ harness, env string }{
-	{"claude_code", "CLAUDE_CODE_SESSION_ID"},
-	{"codex", "CODEX_THREAD_ID"},
-}
-
 // activeSession is an agent session noted in a worktree. KeyDigest names the
 // key its requests used without storing the key in the repository.
 type activeSession struct {
@@ -320,9 +314,13 @@ type commitSession struct {
 func commitSessions(ctx context.Context, dir string, now time.Time) []commitSession {
 	key, baseURL := os.Getenv(agents.RoutingAPIKeyEnv), os.Getenv(agents.RoutingBaseURLEnv)
 	if key != "" && baseURL != "" {
-		for _, harness := range harnessSessionEnv {
-			if id := os.Getenv(harness.env); id != "" {
-				return []commitSession{{harness.harness, id, baseURL, key}}
+		// The agent's session ID in its own shell commands' environment.
+		for _, agent := range agentList {
+			if agent.SessionEnv == "" {
+				continue
+			}
+			if id := os.Getenv(agent.SessionEnv); id != "" {
+				return []commitSession{{agent.CodingAgent, id, baseURL, key}}
 			}
 		}
 	}

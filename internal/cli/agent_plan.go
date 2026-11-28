@@ -41,7 +41,7 @@ func routerModels(ctx context.Context, baseURL, key, agent string) (agents.Model
 	req.Header.Set("Authorization", "Bearer "+key)
 	// Both hosted and gateway routers need the agent identity to list models
 	// served by agent-specific subscriptions (Claude Code, Muse Code).
-	if client := agentSetups[agent].codingAgent; client != "" {
+	if client := agentSetups[agent].CodingAgent; client != "" {
 		req.Header.Set(agents.ClientHarnessHeader, client)
 	}
 	resp, err := http.DefaultClient.Do(req)

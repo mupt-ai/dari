@@ -4,20 +4,20 @@ import type {
   SourceProtocol,
 } from "../interaction/types.js";
 import {
-  chatCompletionsConversationIdentity,
   claudeCodeConversationIdentity,
-  codexConversationIdentity,
-  codexRequestContext,
-  codexRequestPurpose,
-  museCodeConversationIdentity,
-  openCodeRequestContext,
-  piRequestContext,
+  claudeCodeRequestContext,
+  isClaudeCodeRequest,
+} from "../harnesses/claude_code.js";
+import { codexConversationIdentity, codexRequestContext, codexRequestPurpose } from "../harnesses/codex.js";
+import { museCodeClientId, museCodeConversationIdentity } from "../harnesses/muse_code.js";
+import { openCodeRequestContext } from "../harnesses/opencode.js";
+import { piRequestContext } from "../harnesses/pi.js";
+import {
+  chatCompletionsConversationIdentity,
   type HarnessConversationIdentity,
 } from "../runtime/harness_identity/index.js";
 import type { ClientHarness } from "../types.js";
-import { claudeCodeRequestContext, isClaudeCodeRequest } from "./claude_code/request_context.js";
 import { claimedClientHarness } from "./client_harness.js";
-import { museCodeClientId } from "./muse_code.js";
 
 /** The coding agent a request comes from, and what the agent says of it. */
 export type HarnessRequest = {

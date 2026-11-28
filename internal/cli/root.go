@@ -36,9 +36,10 @@ func Execute(version string) int {
 				return 1
 			}
 		}
-		if launch.localModel != "" || launch.name == "codex" || launch.name == "opencode" {
+		if agent, _ := agentNamed(launch.name); launch.localModel != "" || agent.HandlesInterrupt {
 			// Ctrl-C belongs to the agent (interrupt turn / exit), not the
-			// wrapper. Keep cleanup alive until its TUI exits.
+			// wrapper. Keep cleanup alive until its TUI exits. A launch that
+			// hands its process over to the agent drops these handlers there.
 			interrupts := make(chan os.Signal, 1)
 			signal.Notify(interrupts, os.Interrupt)
 			defer signal.Stop(interrupts)
@@ -139,7 +140,7 @@ func registerCommands(root *cobra.Command, gf *globalFlags) {
 		&cobra.Group{ID: hostedGroup, Title: "Hosted Dari Commands"},
 	)
 	for _, command := range root.Commands() {
-		if _, ok := agentLaunchers[command.Name()]; ok {
+		if _, ok := agentNamed(command.Name()); ok {
 			command.GroupID = "agents"
 			continue
 		}

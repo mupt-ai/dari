@@ -201,7 +201,9 @@ func SignedInToClaudeAI(executable string) bool {
 // Configure points Claude Code at the router at baseURL, starts it on
 // StartModel and, unless the user passed their own --settings,
 // adds Dari's status line and lists the router's models in /model.
-func Configure(command *agents.Command, key, baseURL string, models agents.Models) error {
+// ownKey is a launch whose key is not the hosted routing key `dari setup
+// claude --cli` saves, such as one through this computer's gateway.
+func Configure(command *agents.Command, key, baseURL string, models agents.Models, ownKey bool) error {
 	headers := agents.EnvironmentValue(command.Env, customHeadersEnv)
 	env := routingEnvironment(key, baseURL, headers, SignedInToClaudeAI(command.Path), models)
 	command.Env = agents.WithEnvironment(command.Env, env)
@@ -210,7 +212,7 @@ func Configure(command *agents.Command, key, baseURL string, models agents.Model
 		command.Env = agents.WithoutEnvironment(command.Env, subagentModelEnv)
 	}
 	if !agents.ArgsContainFlag(command.Args, "--settings") {
-		if err := injectSettings(command, models, env); err != nil {
+		if err := injectSettings(command, models, env, ownKey); err != nil {
 			return err
 		}
 	}
@@ -261,11 +263,14 @@ func statusLineSettings() (map[string]any, error) {
 // pass an inline JSON argument through intact.
 //
 // They carry the launch's router too. `dari setup claude --cli` writes a
-// router into Claude Code's own settings, whose env wins over the process
-// environment; without this a launch on another router (--router) would be
-// sent to the one set up. The key stays out of the arguments, which other
-// processes can read: it is the same for every router.
-func injectSettings(command *agents.Command, models agents.Models, env map[string]string) error {
+// router and the hosted routing key into Claude Code's own settings, whose
+// env wins over the process environment; without this a launch on another
+// router (--router) would be sent to the one set up. The hosted key is the
+// same for every router, so it stays out of the arguments, which other
+// processes can read. A launch with its own key (ownKey) carries it too, in
+// a temporary file only this user can read, or the saved hosted key would
+// be sent in its place and refused.
+func injectSettings(command *agents.Command, models agents.Models, env map[string]string, ownKey bool) error {
 	statusLine, err := statusLineSettings()
 	if err != nil {
 		return err
@@ -278,7 +283,7 @@ func injectSettings(command *agents.Command, models agents.Models, env map[strin
 	// one in Claude Code's own settings.
 	routing := map[string]string{subagentModelEnv: ""}
 	for name, value := range env {
-		if name != "ANTHROPIC_AUTH_TOKEN" && name != "ANTHROPIC_API_KEY" && name != customHeadersEnv {
+		if ownKey || (name != "ANTHROPIC_AUTH_TOKEN" && name != "ANTHROPIC_API_KEY" && name != customHeadersEnv) {
 			routing[name] = value
 		}
 	}
@@ -297,7 +302,7 @@ func injectSettings(command *agents.Command, models agents.Models, env map[strin
 	if err != nil {
 		return fmt.Errorf("encode Claude status settings: %w", err)
 	}
-	if agents.CanReplaceProcess {
+	if agents.CanReplaceProcess && !ownKey {
 		command.Args = agents.InsertBeforeDoubleDash(command.Args, []string{"--settings", string(body)})
 		return nil
 	}

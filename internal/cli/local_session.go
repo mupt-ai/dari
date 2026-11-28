@@ -149,8 +149,8 @@ func (s *localSession) engine(ctx context.Context, l agentLaunch, stderr io.Writ
 	}
 	child := exec.CommandContext(ctx, runtime, "run", model, "--port", "0")
 	child.Env = agents.WithEnvironment(os.Environ(), map[string]string{"HF_HUB_OFFLINE": "1"})
-	if l.name == "hermes" && os.Getenv("DARI_CONTEXT_LENGTH") == "" {
-		child.Args = append(child.Args, "--context-window", "64000")
+	if agent, _ := agentNamed(l.name); agent.LocalContextWindow > 0 && os.Getenv("DARI_CONTEXT_LENGTH") == "" {
+		child.Args = append(child.Args, "--context-window", strconv.Itoa(agent.LocalContextWindow))
 	}
 	base, err = s.start(ctx, child, stderr)
 	// Cancelling startup or a slow load says nothing about missing weights.

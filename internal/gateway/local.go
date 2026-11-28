@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,16 +21,16 @@ import (
 	"github.com/mupt-ai/dari/internal/selfupdate"
 )
 
-const (
-	// LocalPort is where a local gateway listens, on loopback only.
-	LocalPort = 7340
+const binaryName = "dari-gateway"
 
-	binaryName = "dari-gateway"
-)
+// localPort is where a local gateway listens, on loopback only:
+// DARI_GATEWAY_PORT, else 7340. Another port keeps a second gateway, such as
+// a test's, apart from the one this computer runs.
+var localPort = cmp.Or(strings.TrimSpace(os.Getenv("DARI_GATEWAY_PORT")), "7340")
 
 // LocalURL is a local gateway's base URL.
 func LocalURL() string {
-	return "http://127.0.0.1:" + strconv.Itoa(LocalPort)
+	return "http://127.0.0.1:" + localPort
 }
 
 // inheritedEnv are the only variables a local gateway takes from the shell
@@ -281,7 +282,7 @@ func command(settings Settings, out io.Writer) (*exec.Cmd, error) {
 		"DARI_GATEWAY_KEYS": settings.LocalKey,
 		"DARI_GATEWAY_DB":   p.db,
 		"DARI_GATEWAY_HOST": "127.0.0.1",
-		"PORT":              strconv.Itoa(LocalPort),
+		"PORT":              localPort,
 	}
 	// Earlier CLI versions wrote the chosen models here; the gateway now
 	// saves them itself, in place of this file's.

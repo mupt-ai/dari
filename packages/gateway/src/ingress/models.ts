@@ -16,6 +16,7 @@ import { modelSupportsImageInput, modelSupportsNativeCompaction } from "../provi
 import { modelMetadataLookup } from "../providers/pi.js";
 import { resolveRouter } from "../strategies/routing.js";
 import { anthropicModelsResponse } from "./anthropic_models.js";
+import { OWN_PLAN_HARNESSES } from "../harnesses/index.js";
 import { namedClientHarness } from "./client_harness.js";
 import { codexModelsEtag, codexModelsResponse } from "./codex_models.js";
 import { CANONICAL_ROUTER_MODEL, explicitModelSlug, LINK_CHILD_TOKEN_PREFIX } from "../protocol/input/router_model.js";
@@ -101,7 +102,7 @@ export async function handleModels(request: Request, routerId: string): Promise<
 // A child token's one model, when it serves only Claude Code or Muse Code.
 async function childTokenModels(routerId: string, apiKey: string): Promise<string[]> {
   if (!apiKey.startsWith(LINK_CHILD_TOKEN_PREFIX)) return [];
-  for (const clientHarness of ["claude_code", "muse_code"] as const) {
+  for (const clientHarness of OWN_PLAN_HARNESSES) {
     try {
       const router = await resolveRouter({ routerId, apiKey, clientHarness, provisional: true });
       return router.link_models ?? router.enabled_models;

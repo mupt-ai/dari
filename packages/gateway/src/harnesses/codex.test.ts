@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { codexConversationIdentity, codexRequestContext } from "./extract.js";
+import { codexConversationIdentity, codexRequestContext } from "./codex.js";
 
 for (const [kind, requestClass] of [["turn", "main"], ["prewarm", "auxiliary"], ["memory", "auxiliary"], ["compaction", "compaction"], ["future", "unknown"]] as const) {
   test(`Codex ${kind} is ${requestClass}`, () => {

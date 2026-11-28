@@ -20,7 +20,7 @@ func TestFreshMachineReusesConfiguredDefaultRouter(t *testing.T) {
 			var codingAgents []string
 			if agentSetups[agent].ownsRouter() {
 				clientKey = ownRouterKey(agent, false)
-				codingAgents = []string{agentSetups[agent].codingAgent}
+				codingAgents = []string{agentSetups[agent].CodingAgent}
 			}
 			server := newAgentTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {

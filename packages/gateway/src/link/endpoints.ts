@@ -94,6 +94,7 @@ import { catalogModelFor } from "./grant_access.js";
 import { registeredRedirect } from "./grants.js";
 import { requestTags } from "../runtime/request_tags.js";
 import type { ClientHarness, ResolvedRouter, SubscriptionKind } from "../types.js";
+import { CLIENT_HARNESSES } from "../harnesses/index.js";
 import { parseJsonRequest } from "../ingress/json.js";
 import { DARI_MARK, ICONS, linkLogo } from "./assets.js";
 import { GEIST_WOFF2 } from "./font.js";
@@ -155,9 +156,6 @@ const CHILD_TOKEN_MAX_SECONDS = 12 * 60 * 60;
 const MAX_MODEL_CHARS = 200;
 const MAX_PURPOSE_CHARS = 200;
 const MAX_CHILD_MODELS = 16;
-// Clients an app can say it runs with `client` on the authorize request.
-// Claude Code and Muse Code plans serve only an app that runs those.
-const CLIENTS: readonly ClientHarness[] = ["claude_code", "codex", "muse_code", "opencode", "pi", "openclaw", "hermes"];
 const PLAN_KINDS = Object.keys(SUBSCRIPTION_PLAN_LABELS) as SubscriptionKind[];
 // An API key, as a kind an app asks for in `plans` and reads on a grant.
 const API_KEY = "api_key";
@@ -1270,8 +1268,10 @@ async function authorizeRequest(link: LinkPlatform, params: URLSearchParams): Pr
     return badRequest(`The only scope is ${LINK_SCOPE}.`);
   }
   const clients = listParam(params.get("client"));
-  if (!clients.every((client) => (CLIENTS as readonly string[]).includes(client))) {
-    return badRequest(`client lists the clients the app runs: ${CLIENTS.join(", ")}.`);
+  // The clients an app can say it runs. Claude Code and Muse Code plans serve
+  // only an app that runs those.
+  if (!clients.every((client) => CLIENT_HARNESSES.includes(client))) {
+    return badRequest(`client lists the clients the app runs: ${CLIENT_HARNESSES.join(", ")}.`);
   }
   const plans = [...new Set(listParam(params.get("plans")).flatMap((plan): string[] => plan === SUPPORTED ? [...SUPPORTED_KINDS] : [plan]))];
   if (!plans.every((plan) => (OFFER_KINDS as readonly string[]).includes(plan))) {

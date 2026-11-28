@@ -6,12 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -40,7 +38,7 @@ func newSetupCmd() *cobra.Command {
 		Use:   "setup <agent>",
 		Short: "Choose an agent's router, models, and payment; --cli and --desktop set up the agent run directly",
 		Long: "Choose the router a coding agent uses, its models, and how each is paid for, hosted or on a\n" +
-			"local or self-hosted gateway. Agents are " + strings.Join(slices.Sorted(maps.Keys(agentLaunchers)), ", ") + ".\n\n" +
+			"local or self-hosted gateway. Agents are " + strings.Join(agentNames(), ", ") + ".\n\n" +
 			"With no flags it opens the models picker on the agent's router. --router uses another:\n" +
 			"  dari setup claude --router opus-5-5-deepseek-subagents   # a template (`dari router experiments`)\n" +
 			"  dari setup claude --router ./router.yaml                  # a router spec file\n" +
@@ -56,8 +54,8 @@ func newSetupCmd() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name := args[0]
-			if _, ok := agentLaunchers[name]; !ok {
-				return fmt.Errorf("unknown agent %q; use one of %s", name, strings.Join(slices.Sorted(maps.Keys(agentLaunchers)), ", "))
+			if _, ok := agentNamed(name); !ok {
+				return fmt.Errorf("unknown agent %q; use one of %s", name, strings.Join(agentNames(), ", "))
 			}
 			if refresh {
 				if name != "codex" {
@@ -79,7 +77,7 @@ func newSetupCmd() *cobra.Command {
 				launch.args = append(launch.args, "--default")
 			}
 			if setup, ok := agentSetups[name]; ok {
-				agentSubtitle = "Setting up " + setup.label
+				agentSubtitle = "Setting up " + setup.Label
 			}
 			stdin, stderr := cmd.InOrStdin(), cmd.ErrOrStderr()
 			if launch.setup() || launch.removeSetup {
@@ -126,10 +124,10 @@ func useHostedRouter(ctx context.Context, client *api.Client, agent string, choi
 		agentStep(stderr, "Using "+applied.Name)
 	}
 	if choice.makeDefault {
-		if err := assignAgentRouter(ctx, client, routerID, agentSetups[agent].codingAgent); err != nil {
+		if err := assignAgentRouter(ctx, client, routerID, agentSetups[agent].CodingAgent); err != nil {
 			return "", err
 		}
-		agentStep(stderr, "It is now your default for "+agentSetups[agent].label)
+		agentStep(stderr, "It is now your default for "+agentSetups[agent].Label)
 	}
 	return routerID, nil
 }
@@ -179,7 +177,7 @@ func gatewayAgentRouter(ctx context.Context, gw *gatewayConfig, launch *agentLau
 			// A spec router's models are its file's; the picker edits only
 			// the gateway's default router.
 			agentStep(stderr, fmt.Sprintf("%s uses %s, a router spec: change it with `dari router get %s > %s.yaml` and `dari router apply %s.yaml`, or go back with `dari setup %s --router default --default`",
-				agentSetups[launch.name].label, id, id, id, id, launch.name))
+				agentSetups[launch.name].Label, id, id, id, id, launch.name))
 		}
 		return gw.url + "/" + url.PathEscape(id), nil
 	}
@@ -219,7 +217,7 @@ func gatewayAgentRouter(ctx context.Context, gw *gatewayConfig, launch *agentLau
 		if err := gateway.Save(gw.settings); err != nil {
 			return "", err
 		}
-		agentStep(stderr, fmt.Sprintf("%s is now your default for %s", id, agentSetups[launch.name].label))
+		agentStep(stderr, fmt.Sprintf("%s is now your default for %s", id, agentSetups[launch.name].Label))
 	}
 	if id == "default" {
 		return gw.url, nil

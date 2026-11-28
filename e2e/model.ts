@@ -8,7 +8,8 @@
  * coding agent through every provider:
  *
  * - `e2e:tool` in the user's prompt: call the agent's shell tool once
- *   (`echo E2E_TOOL_RAN`), then answer `E2E_DONE` with what the tool printed.
+ *   (`echo E2E_TOOL_RAN`; Claude Code's also keeps its environment in
+ *   ~/agent.env), then answer `E2E_DONE` with what the tool printed.
  * - `e2e:subagent`: start one subagent with the agent's own tool for that,
  *   then answer `E2E_DONE`. The subagent's prompt is `e2e:child`, which is
  *   answered `E2E_CHILD`.
@@ -149,7 +150,13 @@ function shellCall(tools: Tool[]): Reply {
   const tool = tools.find((candidate) => SHELL_TOOLS.includes(candidate.name));
   if (tool === undefined) return { type: "text", text: `no shell tool among: ${tools.map((candidate) => candidate.name).join(", ")}` };
   return { type: "tool", name: tool.name, input: filled(tool, (name) =>
-    name === "command" || name === "cmd" ? `echo ${TOOL_OUTPUT}` : undefined) };
+    name === "command" || name === "cmd" ? shellCommand(tool.name) : undefined) };
+}
+
+// Claude Code's command also keeps the environment it gives the commands it
+// runs, which its status line runs in too.
+function shellCommand(tool: string): string {
+  return tool === "Bash" ? `env > "$HOME/agent.env"; echo ${TOOL_OUTPUT}` : `echo ${TOOL_OUTPUT}`;
 }
 
 function subagentCall(tools: Tool[]): Reply {

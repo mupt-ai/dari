@@ -28,7 +28,7 @@
  */
 import { Database } from "bun:sqlite";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -90,6 +90,14 @@ export type Session = {
   activity: ActivityStep[];
   /** The headers of each request hosted Dari was asked to serve. */
   dariRequests: Array<Record<string, string>>;
+  /**
+   * Claude Code's status line after the session, as Dari renders it in the
+   * environment Claude Code runs commands in, and where the Activity link at
+   * its end opens: the request this computer uploaded under that ID, the one
+   * hosted Dari served under it, or nothing. Null for other agents, and when
+   * the agent ran no command.
+   */
+  statusLine: { text: string; linkOpens: ActivityStep["servedBy"] | "nothing" | "no link" } | null;
 };
 
 // The CLI under test: this checkout's, built once per run.
@@ -112,6 +120,8 @@ export async function launch(agent: Agent, args: string[], options: {
   model: string;
   // The plans on this computer are at their usage limit.
   plansAtLimit?: boolean;
+  // `dari setup <agent> --cli` runs first.
+  setUp?: boolean;
 }): Promise<Session> {
   const dari = await buildDari();
   const dir = mkdtempSync(join(tmpdir(), "dari-e2e-"));
@@ -165,6 +175,23 @@ export async function launch(agent: Agent, args: string[], options: {
     maxRequestBodySize: 64 * 1024 * 1024,
     async fetch(request) {
       const url = new URL(request.url);
+      // The routing key a launch issues itself.
+      if (url.pathname === "/v1/organizations/current/api-keys") return Response.json({ api_key: DARI_KEY });
+      // The organization's one router, which every agent is assigned.
+      if (url.pathname === "/v1/organizations/current/routers") {
+        return Response.json({ routers: [{
+          id: "default",
+          name: "default",
+          is_default: true,
+          coding_agents: ["claude_code", "codex", "muse_code", "opencode", "pi"],
+          enabled_models: router.models.map((entry) => entry.id),
+        }] });
+      }
+      // The plans are on this computer, none on hosted Dari.
+      if (url.pathname === "/v1/organizations/current/credentials") return Response.json({ credentials: [] });
+      if (url.pathname.startsWith("/v1/organizations/current/agent-preferences/")) {
+        return Response.json({ subscription_opt_out: false });
+      }
       if (url.pathname === "/v1/gateway/router") return Response.json(router);
       if (url.pathname === "/v1/gateway/accounts") return Response.json({ accounts: [] });
       if (url.pathname === "/v1/gateway/requests") {
@@ -190,6 +217,7 @@ export async function launch(agent: Agent, args: string[], options: {
       if (request.method === "POST" && /\/(messages|responses|chat\/completions)$/.test(url.pathname)) {
         dariRequests.push(Object.fromEntries(request.headers));
       }
+      if (process.env.E2E_DEBUG) console.error(`hosted: ${request.method} ${url.pathname}${url.search}`);
       const headers = new Headers(request.headers);
       headers.delete("host");
       headers.delete("content-length");
@@ -201,14 +229,37 @@ export async function launch(agent: Agent, args: string[], options: {
       const responseHeaders = new Headers(response.headers);
       responseHeaders.delete("content-encoding");
       responseHeaders.delete("content-length");
+      if (request.method === "GET" && url.pathname === "/v1/models" && response.ok) {
+        // Hosted Dari lists dari/routing first on a router the organization
+        // may autoroute, as this one may.
+        const catalog = await response.json() as { models: Array<{ slug: string }> };
+        if (!catalog.models.some((entry) => entry.slug === "dari/routing")) catalog.models.unshift({ slug: "dari/routing" });
+        return Response.json(catalog, { headers: responseHeaders });
+      }
       return new Response(response.body, { status: response.status, headers: responseHeaders });
     },
   });
 
-  // This computer's gateway, connected to hosted Dari, with its plans.
-  const gatewayDb = join(dir, "gateway.db");
+  // This computer's gateway, as a launch signed in to Dari runs it: the CLI
+  // starts the gateway installed in its config directory, on the key saved
+  // there, connected to hosted Dari with the user's key. Here it is installed
+  // beforehand, with its plans and the stand-in provider.
+  const home = join(dir, "home");
+  const work = join(home, "work");
+  mkdirSync(work, { recursive: true });
+  const gatewayDir = join(home, ".config/dari/gateway");
+  mkdirSync(join(gatewayDir, "bin"), { recursive: true });
+  // It keeps its installed path as its command, which is how the CLI knows
+  // the process is its gateway.
+  writeFileSync(join(gatewayDir, "bin/dari-gateway"), `#!/bin/bash\nexec -a "$0" "${process.execPath}" "${GATEWAY_MAIN}"\n`, { mode: 0o755 });
   const encryptionKey = randomBytes(32).toString("base64");
-  const plans = new SubscriptionStore(new Database(gatewayDb), secretBoxFromEnv(encryptionKey));
+  writeFileSync(join(gatewayDir, "settings.json"), JSON.stringify({
+    mode: "hosted",
+    local_key: GATEWAY_KEY,
+    gateway_id: "gw_e2e",
+    encryption_key: encryptionKey,
+  }));
+  const plans = new SubscriptionStore(new Database(join(gatewayDir, "gateway.db")), secretBoxFromEnv(encryptionKey));
   const expiresAt = new Date(Date.now() + 86_400_000);
   plans.connect({
     provider: "anthropic_claude_code",
@@ -226,56 +277,37 @@ export async function launch(agent: Agent, args: string[], options: {
     accountId: "acct_e2e",
     accountEmail: "e2e@example.com",
   }, null);
-  const gatewayConfig = join(dir, "gateway.json");
-  writeFileSync(gatewayConfig, JSON.stringify({
+  writeFileSync(join(gatewayDir, "config.json"), JSON.stringify({
     routers: { default: { models: [ON_PLAN_CLAUDE] } },
     providers: {
       anthropic: { baseUrl: `${model.url}/anthropic`, api: "anthropic-messages" },
       "openai-codex": { baseUrl: `${model.url}/backend-api` },
     },
   }));
-  const gateway = await startGateway({
-    DARI_GATEWAY_KEYS: GATEWAY_KEY,
-    DARI_GATEWAY_CONFIG: gatewayConfig,
-    DARI_GATEWAY_DB: gatewayDb,
-    DARI_GATEWAY_ENCRYPTION_KEY: encryptionKey,
-    DARI_HOSTED_URL: `http://127.0.0.1:${hosted.port}`,
-    DARI_HOSTED_API_KEY: DARI_KEY,
-    DARI_GATEWAY_ID: "gw_e2e",
-    DARI_GATEWAY_NAME: "e2e",
-  });
-
-  try {
-    const home = join(dir, "home");
-    const work = join(home, "work");
-    mkdirSync(work, { recursive: true });
-    const child = Bun.spawn([dari, agent, ...args], {
-      cwd: work,
-      // Nothing of the developer's own setup: no keys, no agent config.
-      env: {
-        PATH: process.env.PATH ?? "",
-        TMPDIR: process.env.TMPDIR ?? tmpdir(),
-        LANG: "en_US.UTF-8",
-        TERM: "dumb",
-        HOME: home,
-        XDG_CONFIG_HOME: join(home, ".config"),
-        XDG_DATA_HOME: join(home, ".local/share"),
-        XDG_STATE_HOME: join(home, ".local/state"),
-        XDG_CACHE_HOME: join(home, ".cache"),
-        // The gateway the launch runs through. A launch signed in to Dari
-        // starts its own on a fixed port; naming this one here is the only
-        // difference from that launch.
-        DARI_GATEWAY_URL: gateway.url,
-        DARI_GATEWAY_KEY: GATEWAY_KEY,
-        // No agent updates itself mid-run.
-        DISABLE_AUTOUPDATER: "1",
-        OPENCODE_DISABLE_AUTOUPDATE: "1",
-        MUSE_NO_AUTO_UPDATE: "1",
-      },
-      stdin: "ignore",
-      stdout: "pipe",
-      stderr: "pipe",
-    });
+  const hostedURL = `http://127.0.0.1:${hosted.port}`;
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? "",
+    TMPDIR: process.env.TMPDIR ?? tmpdir(),
+    LANG: "en_US.UTF-8",
+    TERM: "dumb",
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_DATA_HOME: join(home, ".local/share"),
+    XDG_STATE_HOME: join(home, ".local/state"),
+    XDG_CACHE_HOME: join(home, ".cache"),
+    // Signed in to hosted Dari, which is the stand-in.
+    DARI_API_KEY: DARI_KEY,
+    DARI_API_URL: hostedURL,
+    DARI_ROUTING_URL: hostedURL,
+    // This computer's gateway, on a port of its own.
+    DARI_GATEWAY_PORT: String(await gatewayPort()),
+    // No agent updates itself mid-run.
+    DISABLE_AUTOUPDATER: "1",
+    OPENCODE_DISABLE_AUTOUPDATE: "1",
+    MUSE_NO_AUTO_UPDATE: "1",
+  };
+  const run = async (command: string[]) => {
+    const child = Bun.spawn(command, { cwd: work, env, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(child.stdout).text(),
@@ -283,6 +315,18 @@ export async function launch(agent: Agent, args: string[], options: {
       child.exited,
     ]);
     clearTimeout(timer);
+    if (process.env.E2E_DEBUG) console.error(`${command.slice(1).join(" ")}: exit ${exitCode}\n${stderr}`);
+    return { exitCode, stdout, stderr };
+  };
+
+  try {
+    if (options.setUp) {
+      // `dari setup <agent> --cli`, so the agent run directly routes through
+      // Dari too, before the launch.
+      const setup = await run([dari, "setup", agent, "--cli"]);
+      if (setup.exitCode !== 0) throw new Error(`dari setup ${agent} --cli failed:\n${setup.stderr}`);
+    }
+    const { exitCode, stdout, stderr } = await run([dari, agent, ...args]);
 
     // The gateway uploads what it served in the background, a moment after
     // it answers.
@@ -293,14 +337,62 @@ export async function launch(agent: Agent, args: string[], options: {
       ...uploads.map(uploadedStep),
       ...await dariActivity(dariGateway.url),
     ];
-    return { exitCode, stdout, stderr, calls: model.calls, activity, dariRequests };
+    const statusLine = agent === "claude" ? await claudeStatusLine(dari, home, uploads, dariGateway.url) : null;
+    return { exitCode, stdout, stderr, calls: model.calls, activity, dariRequests, statusLine };
   } finally {
-    await gateway.stop();
+    stopGateway(gatewayDir);
     await dariGateway.stop();
     await hosted.stop(true);
     await model.stop();
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// Claude Code's status line: Dari's status command, run as Claude Code runs it
+// (in its environment, given the session's transcript), and where the
+// Activity link it ends with opens.
+async function claudeStatusLine(
+  dari: string,
+  home: string,
+  uploads: Array<Record<string, unknown>>,
+  dariURL: string,
+): Promise<Session["statusLine"]> {
+  let agentEnv: Record<string, string>;
+  try {
+    agentEnv = Object.fromEntries(readFileSync(join(home, "agent.env"), "utf8").split("\n")
+      .filter((line) => line.includes("="))
+      .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
+  } catch {
+    return null;
+  }
+  const transcripts = [...new Bun.Glob(".claude/projects/*/*.jsonl").scanSync({ cwd: home, absolute: true, dot: true })];
+  if (transcripts.length !== 1) throw new Error(`Expected one Claude Code session transcript, found ${transcripts.length}`);
+  const status = Bun.spawn([dari, "agent-status", "--claude"], {
+    env: agentEnv,
+    stdin: new TextEncoder().encode(JSON.stringify({ transcript_path: transcripts[0] })),
+    stdout: "pipe",
+  });
+  const text = (await new Response(status.stdout).text()).split("\n")[0]!.trim();
+  const linked = /\/activity\/conversations\/(\S+)$/.exec(text)?.[1];
+  if (linked === undefined) return { text, linkOpens: "no link" };
+  const id = decodeURIComponent(linked);
+  if (uploads.some((row) => row.request_id === id)) return { text, linkOpens: "computer" };
+  const hosted = await fetch(`${dariURL}/v1/organizations/current/routing/activity/conversations/${encodeURIComponent(id)}`, {
+    headers: { authorization: `Bearer ${DARI_KEY}` },
+  });
+  return { text, linkOpens: hosted.ok ? "dari" : "nothing" };
+}
+
+// Stops the gateway a launch started in the background, by the pid it saved.
+function stopGateway(gatewayDir: string): void {
+  if (process.env.E2E_DEBUG) {
+    try {
+      process.stderr.write(readFileSync(join(gatewayDir, "gateway.log")));
+    } catch { /* never started */ }
+  }
+  try {
+    process.kill(Number(readFileSync(join(gatewayDir, "gateway.pid"), "utf8")));
+  } catch { /* never started, or already stopped */ }
 }
 
 // A request this computer's gateway served, as it uploads it to hosted Activity.
@@ -380,6 +472,22 @@ async function startGateway(env: Record<string, string>): Promise<{ url: string;
       await child.exited;
     },
   };
+}
+
+// A port for this computer's gateway, which the CLI binds only later in the
+// launch. It comes from below the ephemeral range, where the servers started
+// meanwhile on port 0 (in this launch and the ones running alongside it)
+// never land, and is never handed out twice.
+let nextGatewayPort = 20_000 + Math.floor(Math.random() * 5_000);
+async function gatewayPort(): Promise<number> {
+  for (;;) {
+    const port = nextGatewayPort++;
+    try {
+      const probe = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response() });
+      await probe.stop(true);
+      return port;
+    } catch { /* taken; try the next */ }
+  }
 }
 
 async function freePort(): Promise<number> {

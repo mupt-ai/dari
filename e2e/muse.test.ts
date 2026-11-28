@@ -7,6 +7,7 @@ agentSuite({
   agent: "muse",
   harness: "muse_code",
   args: (prompt) => ["exec", prompt],
+  cliSetup: false,
   onPlan: { model: ON_PLAN_GPT, token: CHATGPT_PLAN_TOKEN },
   mainClass: "unknown",
 });

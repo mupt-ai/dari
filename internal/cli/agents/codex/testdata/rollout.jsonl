@@ -1,0 +1,15 @@
+{"timestamp":"2026-03-02T01:00:00.000Z","type":"session_meta","payload":{"id":"sess-codex","session_id":"sess-codex","model_provider":"openai","base_instructions":{"text":"be brief"}}}
+{"timestamp":"2026-03-02T01:00:00.100Z","type":"turn_context","payload":{"model":"gpt-5.5","effort":"medium","summary":"auto"}}
+{"timestamp":"2026-03-02T01:00:00.200Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"rules"}]}}
+{"timestamp":"2026-03-02T01:00:00.300Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the bug"}]}}
+{"timestamp":"2026-03-02T01:00:01.000Z","type":"response_item","payload":{"type":"reasoning","summary":[{"type":"summary_text","text":"look first"}],"content":null,"encrypted_content":"opaque"}}
+{"timestamp":"2026-03-02T01:00:02.000Z","type":"response_item","payload":{"type":"function_call","call_id":"call_1","name":"exec","namespace":"shell","arguments":"{\"cmd\":\"ls\"}"}}
+{"timestamp":"2026-03-02T01:00:02.100Z","type":"token_usage_record","payload":{"response_id":"resp_1","usage":{"input_tokens":150,"cached_input_tokens":100,"cache_write_input_tokens":20,"output_tokens":7,"total_tokens":157}}}
+{"timestamp":"2026-03-02T01:00:02.500Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_text","text":"bug.go"}]}}
+{"timestamp":"2026-03-02T01:00:02.600Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":150,"cached_input_tokens":100,"output_tokens":7}}}}
+{"timestamp":"2026-03-02T01:00:03.000Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"call_2","name":"apply_patch","input":"*** Begin Patch"}}
+{"timestamp":"2026-03-02T01:00:03.100Z","type":"token_usage_record","payload":{"response_id":"resp_2","usage":{"input_tokens":30,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":4,"total_tokens":34}}}
+{"timestamp":"2026-03-02T01:00:03.500Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_2","output":"Done"}}
+{"timestamp":"2026-03-02T01:00:04.000Z","type":"compacted","payload":{"message":"","replacement_history":[{"type":"message","role":"user","content":[{"type":"input_text","text":"Summary so far."}]}]}}
+{"timestamp":"2026-03-02T01:00:05.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Fixed."}]}}
+{"timestamp":"2026-03-02T01:00:05.100Z","type":"token_usage_record","payload":{"response_id":"resp_3","usage":{"input_tokens":9,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2,"total_tokens":11}}}

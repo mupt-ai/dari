@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { subscriptionServes } from "../models/subscriptions.js";
-import { museCodeConversationIdentity } from "../runtime/harness_identity/index.js";
-import { museCodeClientId } from "./muse_code.js";
+import { museCodeClientId, museCodeConversationIdentity } from "./muse_code.js";
 
 test("recognizes each Muse Code surface by its x-client-id", () => {
   for (const clientId of ["tbh:tui", "tbh:exec", "tbh:desktop", "TBH:Serve "]) {

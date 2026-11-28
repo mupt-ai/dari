@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/mupt-ai/dari/internal/cli/agents"
+	"github.com/mupt-ai/dari/internal/cli/agents/claude"
 	"github.com/mupt-ai/dari/internal/gateway"
 )
 
@@ -621,7 +622,7 @@ func TestClaudeSetupWithoutDesktopLeavesTheApp(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".claude", "settings.json")); err != nil {
 		t.Fatalf("Claude Code settings were not written: %v", err)
 	}
-	if claudeAppSetUp() {
+	if claude.AppSetUp() {
 		t.Fatal("--setup-cli set up the Claude app")
 	}
 	err := runAgentSetup(context.Background(), agentLaunch{name: "pi", setupDesktop: true}, strings.NewReader(""), &stderr)
@@ -644,8 +645,8 @@ func TestClaudeDesktopSetupLeavesClaudeCode(t *testing.T) {
 	if err := runAgentSetup(context.Background(), agentLaunch{name: "claude", setupDesktop: true}, strings.NewReader(""), &stderr); err != nil {
 		t.Fatalf("setup: %v, %s", err, stderr.String())
 	}
-	if !claudeAppSetUp() || claudeCLISetUp() {
-		t.Fatalf("app set up = %v, Claude Code set up = %v; want only the app", claudeAppSetUp(), claudeCLISetUp())
+	if !claude.AppSetUp() || claude.CLISetUp() {
+		t.Fatalf("app set up = %v, Claude Code set up = %v; want only the app", claude.AppSetUp(), claude.CLISetUp())
 	}
 }
 

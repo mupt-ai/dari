@@ -561,7 +561,7 @@ func newRouterAssignAgentCmd(gf *globalFlags) *cobra.Command {
 			if !ok {
 				return fmt.Errorf("unknown coding agent %q; use one of %s", args[1], strings.Join(codingAgentNames(), ", "))
 			}
-			path := "/v1/organizations/current/routers/" + url.PathEscape(routerID) + "/coding-agents/" + url.PathEscape(setup.codingAgent)
+			path := "/v1/organizations/current/routers/" + url.PathEscape(routerID) + "/coding-agents/" + url.PathEscape(setup.CodingAgent)
 			var resp map[string]any
 			if err := orgKeyRequest(cmd, gf, http.MethodPut, path, nil, &resp); err != nil {
 				return err

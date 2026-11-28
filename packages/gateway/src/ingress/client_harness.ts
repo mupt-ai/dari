@@ -1,46 +1,9 @@
-import type { ClientHarness } from "../types.js";
+import { CLIENT_HARNESSES, HARNESSES, OWN_PLAN_HARNESSES, type ClientHarness } from "../harnesses/index.js";
 
 export const CLIENT_HARNESS_HEADER = "x-dari-client-harness";
 
-export const CLIENT_HARNESSES: readonly string[] = [
-  "claude_code",
-  "codex",
-  "muse_code",
-  "opencode",
-  "pi",
-  "openclaw",
-  "hermes",
-] satisfies ClientHarness[];
-
-// The headers a coding agent describes itself and each request with: which
-// agent it is, its session, and what the request is for. harness_request.ts
-// reads every one of them.
-const CLIENT_HEADERS = [
-  // Claude Code
-  "user-agent",
-  "x-app",
-  "anthropic-beta",
-  "x-claude-code-session-id",
-  "x-claude-code-request-class",
-  "x-claude-code-agent-id",
-  "x-claude-code-parent-agent-id",
-  "x-claude-code-agent-type",
-  // Codex
-  "x-codex-turn-metadata",
-  "thread-id",
-  // Muse Code
-  "x-client-id",
-  "x-tbh-thread-id",
-  // OpenCode, with the `dari opencode` plugin's request kind and agent
-  "x-opencode-session-id",
-  "x-opencode-parent-session-id",
-  "x-opencode-request-kind",
-  "x-opencode-agent",
-  "x-session-affinity",
-  // Pi
-  "x-pi-session-id",
-  "x-pi-request-kind",
-];
+// Every coding agent's own headers. harness_request.ts reads every one of them.
+const CLIENT_HEADERS = HARNESSES.flatMap((harness) => harness.headers);
 
 /**
  * The headers of `CLIENT_HEADERS` the request carries, as the client sent
@@ -72,5 +35,5 @@ export function namedClientHarness(headers: Headers): ClientHarness | undefined 
  */
 export function claimedClientHarness(headers: Headers): ClientHarness | undefined {
   const named = namedClientHarness(headers);
-  return named === "claude_code" || named === "muse_code" ? undefined : named;
+  return named === undefined || OWN_PLAN_HARNESSES.includes(named) ? undefined : named;
 }

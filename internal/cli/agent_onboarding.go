@@ -16,46 +16,39 @@ import (
 
 	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/auth"
+	"github.com/mupt-ai/dari/internal/cli/agents"
 )
 
-// agentSetup is how dari sets up one coding agent's routing.
+// agentSetup is a coding agent as dari sets up its routing, with the
+// personal subscriptions it can use.
 type agentSetup struct {
-	label string
-	// suggestion is the model preset the model picker starts from, the same
-	// one the frontend shows.
-	suggestion string
-	// subscriptions are the personal subscriptions the agent can use, its own
-	// first: a ChatGPT plan serves OpenAI models to any client, while Claude
-	// Code and Muse Code plans serve only their own agent.
+	agents.Agent
 	subscriptions []agentSubscriptionProvider
-	// routerKey names the router the agent sets up for itself; empty shares
-	// the organization's default router.
-	routerKey string
-	// codingAgent identifies the agent in the organization's router
-	// assignments.
-	codingAgent string
 }
 
 // agentSetups are the agents dari sets up, by launcher name.
-var agentSetups = map[string]agentSetup{
-	"claude":   {label: "Claude Code", suggestion: "claude", subscriptions: []agentSubscriptionProvider{claudeSubscription, codexSubscription}, routerKey: "dari-cli:claude-code", codingAgent: "claude_code"},
-	"codex":    {label: "Codex", suggestion: "codex", subscriptions: []agentSubscriptionProvider{codexSubscription}, routerKey: "dari-cli:codex", codingAgent: "codex"},
-	"muse":     {label: "Muse Code", suggestion: "muse", subscriptions: []agentSubscriptionProvider{museSubscription}, routerKey: "dari-cli:muse-code", codingAgent: "muse_code"},
-	"opencode": {label: "OpenCode", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}, codingAgent: "opencode"},
-	"pi":       {label: "Pi", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}, codingAgent: "pi"},
-	"openclaw": {label: "OpenClaw", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}, codingAgent: "openclaw"},
-	"hermes":   {label: "Hermes Agent", suggestion: "default", subscriptions: []agentSubscriptionProvider{codexSubscription}, codingAgent: "hermes"},
-}
+var agentSetups = func() map[string]agentSetup {
+	setups := map[string]agentSetup{}
+	for _, agent := range agentList {
+		setup := agentSetup{Agent: agent}
+		for _, id := range agent.Subscriptions {
+			i := slices.IndexFunc(allSubscriptionProviders, func(provider agentSubscriptionProvider) bool { return provider.id == id })
+			setup.subscriptions = append(setup.subscriptions, allSubscriptionProviders[i])
+		}
+		setups[agent.Name] = setup
+	}
+	return setups
+}()
 
 // ownsRouter reports whether the agent sets up a router of its own.
 func (setup agentSetup) ownsRouter() bool {
-	return setup.routerKey != ""
+	return setup.RouterKey != ""
 }
 
 // isOwnRouter reports whether router is one dari set up for this agent.
 func (setup agentSetup) isOwnRouter(router agentRouter) bool {
 	return setup.ownsRouter() &&
-		(router.ClientKey == setup.routerKey || router.ClientKey == setup.routerKey+"-managed")
+		(router.ClientKey == setup.RouterKey || router.ClientKey == setup.RouterKey+"-managed")
 }
 
 // assignedAgentRouter is the router the organization assigned to this agent,
@@ -64,7 +57,7 @@ func (setup agentSetup) isOwnRouter(router agentRouter) bool {
 // default router's setup.
 func (setup agentSetup) assignedAgentRouter(routers []agentRouter) (agentRouter, bool) {
 	assigned, ok := findAgentRouter(routers, func(router agentRouter) bool {
-		return slices.Contains(router.CodingAgents, setup.codingAgent)
+		return slices.Contains(router.CodingAgents, setup.CodingAgent)
 	})
 	if !ok || setup.isOwnRouter(assigned) || (assigned.IsDefault && !setup.ownsRouter()) {
 		return agentRouter{}, false
@@ -85,9 +78,9 @@ func assignAgentRouter(ctx context.Context, client *api.Client, routerID, coding
 // user's personal subscriptions, or a managed one without them.
 func (setup agentSetup) ownRouter(personal bool) (clientKey, name string) {
 	if personal {
-		return setup.routerKey, "Dari " + setup.label
+		return setup.RouterKey, "Dari " + setup.Label
 	}
-	return setup.routerKey + "-managed", "Dari " + setup.label + " (Managed)"
+	return setup.RouterKey + "-managed", "Dari " + setup.Label + " (Managed)"
 }
 
 var openAgentBrowser = auth.OpenBrowser
@@ -294,7 +287,7 @@ func ensureAgentRouter(
 	// `dari setup <agent>` opens the picker on the router the agent uses.
 	if reconfigure && agentInputIsTerminal(stdin) {
 		target, found := findAgentRouter(routers, func(router agentRouter) bool {
-			return slices.Contains(router.CodingAgents, setup.codingAgent)
+			return slices.Contains(router.CodingAgents, setup.CodingAgent)
 		})
 		if !found && !setup.ownsRouter() {
 			target, found = defaultRouter, true
@@ -308,8 +301,8 @@ func ensureAgentRouter(
 	}
 	// The agent's own router, once chosen, is the one it is assigned.
 	ownRouter := func(router agentRouter) (string, error) {
-		if !slices.Contains(router.CodingAgents, setup.codingAgent) {
-			if err := assignAgentRouter(ctx, client, router.ID, setup.codingAgent); err != nil {
+		if !slices.Contains(router.CodingAgents, setup.CodingAgent) {
+			if err := assignAgentRouter(ctx, client, router.ID, setup.CodingAgent); err != nil {
 				return "", err
 			}
 		}
@@ -381,8 +374,8 @@ func ensureAgentRouter(
 		}
 	}
 
-	title := "Choose Models for " + setup.label
-	suggestion, err := fetchAgentModelSuggestion(ctx, client, setup.suggestion)
+	title := "Choose Models for " + setup.Label
+	suggestion, err := fetchAgentModelSuggestion(ctx, client, setup.Suggestion)
 	if err != nil {
 		return "", err
 	}
@@ -446,7 +439,7 @@ func ensureAgentRouter(
 				return "", err
 			}
 		}
-		agentStep(stderr, setup.label+" will use your default router")
+		agentStep(stderr, setup.Label+" will use your default router")
 	} else {
 		body := agentRouterCreateBody(setup, models, choices, subscribed)
 		// The agent's own plan must have a model to serve, or connecting it
@@ -463,7 +456,7 @@ func ensureAgentRouter(
 		createErr := client.Do(ctx, http.MethodPost, "/v1/organizations/current/routers", body, &created)
 		if createErr == nil {
 			routerID = created.ID
-			agentStep(stderr, setup.label+" router created")
+			agentStep(stderr, setup.Label+" router created")
 		} else if api.AsHTTPError(createErr) != nil && api.AsHTTPError(createErr).Status == http.StatusConflict {
 			routers, err := listAgentRouters(ctx, client)
 			if err != nil {
@@ -514,14 +507,14 @@ func reconfigureAgentRouter(ctx context.Context, client *api.Client, setup agent
 	if err != nil {
 		return err
 	}
-	suggestion, err := fetchAgentModelSuggestion(ctx, client, setup.suggestion)
+	suggestion, err := fetchAgentModelSuggestion(ctx, client, setup.Suggestion)
 	if err != nil {
 		return err
 	}
 	modelProviders := agentProvidersFor(models, modelIDs(models))
 	maps.Copy(modelProviders, router.ModelProviders)
 	picked, err := pickAgentModels(ctx, client, stdin, stderr, agentModelPickInput{
-		title:             "Choose Models for " + setup.label,
+		title:             "Choose Models for " + setup.Label,
 		intro:             "Checked models are in use.",
 		models:            models,
 		defaultIDs:        router.EnabledModels,
@@ -1591,7 +1584,7 @@ func agentRouterCreateBody(
 	return agentRouterCreateRequest{
 		Name:                name,
 		ClientKey:           clientKey,
-		CodingAgent:         setup.codingAgent,
+		CodingAgent:         setup.CodingAgent,
 		EnabledModels:       ids,
 		ModelProviders:      providers,
 		ModelThinkingLevels: choiceLevels(choices),

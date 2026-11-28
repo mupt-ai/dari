@@ -420,7 +420,7 @@ type gatewayModelLists struct {
 // offered is the list the router offers agent: its own when it has one, else
 // the router's. "" is no agent.
 func (lists gatewayModelLists) offered(agent string) []gatewayModelConfig {
-	if own := lists.AgentModels[agentSetups[agent].codingAgent]; len(own) > 0 {
+	if own := lists.AgentModels[agentSetups[agent].CodingAgent]; len(own) > 0 {
 		return own
 	}
 	return lists.Models
@@ -432,7 +432,7 @@ func gatewayModelListsPath(agent string) string {
 	if agent == "" {
 		return "/v1/router/models"
 	}
-	return "/v1/router/models/" + agentSetups[agent].codingAgent
+	return "/v1/router/models/" + agentSetups[agent].CodingAgent
 }
 
 func fetchGatewayModelLists(ctx context.Context, gw *gatewayConfig) (gatewayModelLists, error) {
@@ -602,9 +602,9 @@ func chooseGatewayModels(ctx context.Context, gw *gatewayConfig, agent string, s
 	title, saved := "Models", "Models"
 	note := []string{"Models from a provider serve once it has a connected account or API key."}
 	if agent != "" {
-		title = "Models for " + agentSetups[agent].label
-		saved = agentSetups[agent].label + " models"
-		note = append(note, fmt.Sprintf("%s is offered these in place of the gateway's models. Undo with `dari gateway models --agent %s --reset`.", agentSetups[agent].label, agent))
+		title = "Models for " + agentSetups[agent].Label
+		saved = agentSetups[agent].Label + " models"
+		note = append(note, fmt.Sprintf("%s is offered these in place of the gateway's models. Undo with `dari gateway models --agent %s --reset`.", agentSetups[agent].Label, agent))
 	}
 	choices, err := selectAgentModels(stdin, stderr, title, note, false, models, defaults, currentLevels, nil, nil)
 	if err != nil {

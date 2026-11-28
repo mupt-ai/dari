@@ -13,7 +13,7 @@ import (
 )
 
 func TestLocalHarnessLaunchSyntax(t *testing.T) {
-	for name := range agentLaunchers {
+	for _, name := range agentNames() {
 		for _, tc := range []struct {
 			args   []string
 			model  string

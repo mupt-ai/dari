@@ -15,6 +15,7 @@ import (
 
 	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/cli/agents"
+	"github.com/mupt-ai/dari/internal/cli/agents/claude"
 	"github.com/mupt-ai/dari/internal/gateway"
 )
 
@@ -146,7 +147,7 @@ func TestChangingTheRouterMovesAnExistingCLISetup(t *testing.T) {
 		t.Fatalf("sync wrote a setup where there was none: %v", err)
 	}
 
-	if err := saveAgentConfig(context.Background(), "claude", "dari_key", "https://routing.dari.dev/rtr_old", models); err != nil {
+	if err := claude.Agent.Setup.Save(context.Background(), "dari_key", "https://routing.dari.dev/rtr_old", models); err != nil {
 		t.Fatal(err)
 	}
 	syncAgentSetup(context.Background(), "claude", "dari_key", "https://routing.dari.dev/rtr_new", models, io.Discard)

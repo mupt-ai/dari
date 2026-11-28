@@ -2,21 +2,14 @@ package cli
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/mupt-ai/dari/internal/cli/agents"
 	"github.com/spf13/cobra"
-
-	"github.com/mupt-ai/dari/internal/cli/agents/claude"
-	"github.com/mupt-ai/dari/internal/cli/agents/codex"
-	"github.com/mupt-ai/dari/internal/cli/agents/pi"
 )
 
 func init() {
@@ -35,112 +28,6 @@ const (
 	importMaxRequestBytes = 24 << 20
 	importRequestTimeout  = 5 * time.Minute
 )
-
-// A traceSource is one coding agent's local session storage.
-type traceSource struct {
-	agent string
-	label string
-	// path is where the agent keeps its sessions.
-	path func() (string, error)
-	// sessions reads the sessions with model calls at or after since.
-	sessions func(path string, since time.Time, visit func(importSession) error) error
-}
-
-var traceSources = []traceSource{
-	{
-		agent: "claude", label: "Claude Code",
-		path: func() (string, error) {
-			settings, err := claude.SettingsPath()
-			return filepath.Join(filepath.Dir(settings), "projects"), err
-		},
-		sessions: transcriptFiles(parseClaudeTranscript, "*.jsonl"),
-	},
-	{
-		agent: "codex", label: "Codex",
-		path: func() (string, error) {
-			home, err := codex.Home()
-			return filepath.Join(home, "sessions"), err
-		},
-		sessions: transcriptFiles(parseCodexRollout, "rollout-*.jsonl"),
-	},
-	{
-		agent: "opencode", label: "OpenCode",
-		path: func() (string, error) {
-			data := os.Getenv("XDG_DATA_HOME")
-			if data == "" {
-				home, err := os.UserHomeDir()
-				if err != nil {
-					return "", fmt.Errorf("find home directory: %w", err)
-				}
-				data = filepath.Join(home, ".local", "share")
-			}
-			return filepath.Join(data, "opencode", "opencode.db"), nil
-		},
-		sessions: openCodeSessions,
-	},
-	{
-		agent: "pi", label: "Pi",
-		path: func() (string, error) {
-			dir, err := pi.AgentDir()
-			return filepath.Join(dir, "sessions"), err
-		},
-		sessions: transcriptFiles(parsePiSession, "*.jsonl"),
-	},
-}
-
-// transcriptFiles reads every transcript under a directory whose name matches
-// and that changed since the cutoff.
-func transcriptFiles(parse func(path string, since time.Time) ([]importSession, error), pattern string) func(string, time.Time, func(importSession) error) error {
-	return func(root string, since time.Time, visit func(importSession) error) error {
-		return filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
-			if err != nil || entry.IsDir() {
-				return err
-			}
-			if matched, _ := filepath.Match(pattern, entry.Name()); !matched {
-				return nil
-			}
-			if info, err := entry.Info(); err != nil || info.ModTime().Before(since) {
-				return err
-			}
-			sessions, err := parse(path, since)
-			if err != nil {
-				return fmt.Errorf("read %s: %w", path, err)
-			}
-			for _, session := range sessions {
-				if err := visit(session); err != nil {
-					return err
-				}
-			}
-			return nil
-		})
-	}
-}
-
-// openCodeSessions reads OpenCode's SQLite database through the sqlite3
-// command, which keeps a database driver out of the CLI.
-func openCodeSessions(path string, since time.Time, visit func(importSession) error) error {
-	sqlite, err := exec.LookPath("sqlite3")
-	if err != nil {
-		return errors.New("reading OpenCode sessions needs the sqlite3 command")
-	}
-	output, err := exec.Command(sqlite, "-readonly", "-json", path,
-		"select session_id, id, type, data from session_message order by session_id, seq").Output()
-	if err != nil {
-		return fmt.Errorf("read %s: %w", path, err)
-	}
-	var messages []openCodeMessage
-	if len(output) > 0 {
-		if err := json.Unmarshal(output, &messages); err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-	}
-	for _, session := range parseOpenCodeMessages(messages, since) {
-		if err := visit(session); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 func newTracesImportCmd(gf *globalFlags) *cobra.Command {
 	var agent, since string
@@ -190,7 +77,7 @@ func newTracesImportCmd(gf *globalFlags) *cobra.Command {
 				sessions := map[string]bool{}
 				var turns, imported int
 				var uploadErr error
-				err := source.sessions(source.root, cutoff, func(session importSession) error {
+				err := source.Traces.Sessions(source.root, cutoff, func(session agents.Session) error {
 					sessions[session.SessionID] = true
 					turns += len(session.Turns)
 					if dryRun {
@@ -201,7 +88,7 @@ func newTracesImportCmd(gf *globalFlags) *cobra.Command {
 					imported += added
 					tooLarge += skipped
 					if progress {
-						fmt.Fprintf(stderr, "\r%s: %d turns", source.label, turns)
+						fmt.Fprintf(stderr, "\r%s: %d turns", source.Label, turns)
 					}
 					return uploadErr
 				})
@@ -213,10 +100,10 @@ func newTracesImportCmd(gf *globalFlags) *cobra.Command {
 					if agent != "" || uploadErr != nil {
 						return err
 					}
-					fmt.Fprintf(stderr, "Skipped %s: %v\n", source.label, err)
+					fmt.Fprintf(stderr, "Skipped %s: %v\n", source.Label, err)
 					continue
 				}
-				row := []any{source.label, len(sessions), turns}
+				row := []any{source.Label, len(sessions), turns}
 				if !dryRun {
 					row = append(row, imported)
 				}
@@ -235,8 +122,9 @@ func newTracesImportCmd(gf *globalFlags) *cobra.Command {
 	return cmd
 }
 
+// selectedTraceSource is an agent's session storage found on this machine.
 type selectedTraceSource struct {
-	traceSource
+	agents.Agent
 	root string
 }
 
@@ -245,18 +133,21 @@ type selectedTraceSource struct {
 func selectedTraceSources(agent string) ([]selectedTraceSource, error) {
 	var selected []selectedTraceSource
 	var known []string
-	for _, source := range traceSources {
-		known = append(known, source.agent)
-		if agent != "" && agent != source.agent {
+	for _, source := range agentList {
+		if source.Traces == nil {
 			continue
 		}
-		root, err := source.path()
+		known = append(known, source.Name)
+		if agent != "" && agent != source.Name {
+			continue
+		}
+		root, err := source.Traces.Path()
 		if err != nil {
 			return nil, err
 		}
 		if _, err := os.Stat(root); err != nil {
 			if agent != "" {
-				return nil, fmt.Errorf("no %s sessions at %s", source.label, root)
+				return nil, fmt.Errorf("no %s sessions at %s", source.Label, root)
 			}
 			continue
 		}
@@ -287,7 +178,7 @@ func parseImportSince(value string) (time.Time, error) {
 // request with the conversation up to its last call. It answers how many
 // calls were new, and how many were left out because their conversation is
 // too large for one request.
-func importSessionRequests(session importSession, send func(body []byte) (int, error)) (imported, tooLarge int, err error) {
+func importSessionRequests(session agents.Session, send func(body []byte) (int, error)) (imported, tooLarge int, err error) {
 	for start := 0; start < len(session.Turns); {
 		end := min(start+importTurnsPerRequest, len(session.Turns))
 		for {

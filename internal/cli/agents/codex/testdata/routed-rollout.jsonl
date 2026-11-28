@@ -1,0 +1,5 @@
+{"timestamp":"2026-03-02T01:00:00.000Z","type":"session_meta","payload":{"id":"sess-routed","model_provider":"dari"}}
+{"timestamp":"2026-03-02T01:00:00.100Z","type":"turn_context","payload":{"model":"dari/routing"}}
+{"timestamp":"2026-03-02T01:00:00.300Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}}
+{"timestamp":"2026-03-02T01:00:01.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}}
+{"timestamp":"2026-03-02T01:00:01.100Z","type":"token_usage_record","payload":{"response_id":"resp_r","usage":{"input_tokens":12,"output_tokens":1}}}

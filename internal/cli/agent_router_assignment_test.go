@@ -49,7 +49,7 @@ func TestAgentLaunchUsesTheRouterItIsAssigned(t *testing.T) {
 			routerID, requests := launchWithRouters(t, agent, []map[string]any{
 				{"id": "rtr_default", "is_default": true, "enabled_models": []string{"openai/gpt-5.6-sol"}},
 				{"id": "rtr_own", "client_key": ownRouterKey("claude", true)},
-				{"id": "rtr_fast", "coding_agents": []string{agentSetups[agent].codingAgent}},
+				{"id": "rtr_fast", "coding_agents": []string{agentSetups[agent].CodingAgent}},
 			})
 			if routerID != "rtr_fast" || len(requests) != 0 {
 				t.Fatalf("router = %q, requests = %v", routerID, requests)

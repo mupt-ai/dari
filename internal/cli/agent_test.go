@@ -97,21 +97,21 @@ func TestAgentExecutableUsesManagedPathOverride(t *testing.T) {
 	}
 	t.Setenv("DARI_CLAUDE_PATH", path)
 
-	got, err := agentExecutable("claude")
+	got, err := agents.Executable("claude")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != path {
-		t.Fatalf("agentExecutable() = %q, want %q", got, path)
+		t.Fatalf("agents.Executable() = %q, want %q", got, path)
 	}
 }
 
 func TestAgentExecutableReportsInvalidManagedPathOverride(t *testing.T) {
 	t.Setenv("DARI_CLAUDE_PATH", t.TempDir()+"/missing")
 
-	_, err := agentExecutable("claude")
+	_, err := agents.Executable("claude")
 	if err == nil || !strings.Contains(err.Error(), "DARI_CLAUDE_PATH does not point to an executable file") {
-		t.Fatalf("agentExecutable() error = %v", err)
+		t.Fatalf("agents.Executable() error = %v", err)
 	}
 }
 
@@ -328,6 +328,42 @@ func TestClaudeCommandUsesSelectedRouter(t *testing.T) {
 				t.Fatalf("base URL = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A launch through this computer's gateway sends Claude Code the gateway's
+// key, which `dari setup claude --cli`'s saved hosted key would otherwise
+// override; a launch straight to Dari keeps the key out of its settings.
+func TestClaudeLaunchThroughThisComputerCarriesTheGatewayKey(t *testing.T) {
+	command, err := buildAgentCommand("/claude", agentLaunch{name: "claude", onComputer: true}, "gateway-key", "http://127.0.0.1:7340/rtr_a", agents.Models{Routing: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command.Cleanup == nil {
+		t.Fatal("the settings file holding the gateway key is never removed")
+	}
+	defer command.Cleanup()
+	at := slices.Index(command.Args, "--settings")
+	if at < 0 {
+		t.Fatalf("args = %q", command.Args)
+	}
+	data, err := os.ReadFile(command.Args[at+1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "gateway-key") {
+		t.Fatal("settings do not carry the gateway key")
+	}
+
+	hosted, err := buildAgentCommand("/claude", agentLaunch{name: "claude"}, "dari_route", routingBaseURL, agents.Models{Routing: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hosted.Cleanup != nil {
+		defer hosted.Cleanup()
+	}
+	if strings.Contains(strings.Join(hosted.Args, " "), "dari_route") {
+		t.Fatal("a hosted launch puts its key in the process arguments")
 	}
 }
 

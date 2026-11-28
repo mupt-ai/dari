@@ -19,11 +19,6 @@ import (
 	"github.com/mupt-ai/dari/internal/api"
 	"github.com/mupt-ai/dari/internal/auth"
 	"github.com/mupt-ai/dari/internal/cli/agents"
-	"github.com/mupt-ai/dari/internal/cli/agents/claude"
-	"github.com/mupt-ai/dari/internal/cli/agents/codex"
-	"github.com/mupt-ai/dari/internal/cli/agents/muse"
-	"github.com/mupt-ai/dari/internal/cli/agents/opencode"
-	"github.com/mupt-ai/dari/internal/cli/agents/pi"
 	"github.com/mupt-ai/dari/internal/state"
 )
 
@@ -31,26 +26,17 @@ import (
 // the CLI at another deployment's, as DARI_API_URL does for the API.
 var routingBaseURL = strings.TrimRight(cmp.Or(strings.TrimSpace(os.Getenv("DARI_ROUTING_URL")), "https://routing.dari.dev"), "/")
 
-// agentLaunchers maps each agent subcommand to its help text. Execute
-// dispatches them before Cobra parses anything, so every following argument
-// reaches the agent untouched. Cobra only sees them when a Dari flag comes
-// first, which would be dropped, so those commands refuse to run.
-var agentLaunchers = map[string]string{
-	"claude":   "Launch Claude Code through Dari; forward all following arguments (`dari setup claude` for setup)",
-	"codex":    "Launch Codex through Dari; forward all following arguments (`dari setup codex` for setup)",
-	"opencode": "Launch OpenCode through Dari; forward all following arguments (`dari setup opencode` for setup)",
-	"pi":       "Launch Pi through Dari; forward all following arguments",
-	"muse":     "Launch Muse Code through Dari; forward all following arguments (`dari setup muse` for setup)",
-	"openclaw": "Launch OpenClaw, set up once with `dari setup openclaw --cli`; forward all following arguments",
-	"hermes":   "Launch Hermes Agent, set up once with `dari setup hermes --cli`; forward all following arguments",
-}
-
+// Each agent has a subcommand. Execute dispatches them before Cobra parses
+// anything, so every following argument reaches the agent untouched. Cobra
+// only sees them when a Dari flag comes first, which would be dropped, so
+// those commands refuse to run.
 func init() {
 	commandRegistrars = append(commandRegistrars, func(root *cobra.Command, _ *globalFlags) {
-		for name, short := range agentLaunchers {
+		for _, agent := range agentList {
+			name := agent.Name
 			root.AddCommand(&cobra.Command{
 				Use:                name + " [--include-local | --local MODEL] [args...]",
-				Short:              short,
+				Short:              agent.Help,
 				DisableFlagParsing: true,
 				RunE: func(*cobra.Command, []string) error {
 					return fmt.Errorf("%q must be the first argument so Dari can forward all agent arguments", name)
@@ -98,7 +84,7 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 		return agentLaunch{}, false
 	}
 
-	if _, ok := agentLaunchers[args[0]]; !ok {
+	if _, ok := agentNamed(args[0]); !ok {
 		return agentLaunch{}, false
 	}
 	launch := agentLaunch{name: args[0], args: args[1:]}
@@ -111,10 +97,13 @@ func parseAgentLaunch(args []string) (agentLaunch, bool) {
 }
 
 func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, stdout, stderr io.Writer) int {
-	if setup, ok := agentSetups[launch.name]; ok {
-		agentSubtitle = "Setting up " + setup.label
+	agent, ok := agentNamed(launch.name)
+	if !ok {
+		fmt.Fprintf(stderr, "unsupported coding agent %q\n", launch.name)
+		return 1
 	}
-	path, err := agentExecutable(launch.name)
+	agentSubtitle = "Setting up " + agent.Label
+	path, err := agents.Executable(launch.name)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 127
@@ -124,15 +113,15 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 		return runLocalHarness(ctx, path, launch, stdin, stdout, stderr)
 	}
 
-	if routesOnlyWhenSetUp[launch.name] && !agents.OnlyRequestsInfo(launch.args) {
+	if agent.RoutesOnlyWhenSetUp() && !agents.OnlyRequestsInfo(launch.args) {
 		// Their launches run on the setup in the agent's own config, in the
 		// organization it was made in, so one launch cannot run in another.
 		if agents.ArgsContainFlag(launch.args, "--org") {
-			fmt.Fprintf(stderr, "%s routes on the setup in its own config, so --org does not apply to it; to move it, run `dari org switch` and then `dari setup %s --cli`\n", agentApps[launch.name].name, launch.name)
+			fmt.Fprintf(stderr, "%s routes on the setup in its own config, so --org does not apply to it; to move it, run `dari org switch` and then `dari setup %s --cli`\n", agent.Label, launch.name)
 			return 1
 		}
-		if !gatewayAgentSetUp(ctx, launch.name) {
-			fmt.Fprintf(stderr, "%s routes through Dari only once it is set up; run `dari setup %s --cli` first\n", agentApps[launch.name].name, launch.name)
+		if cli, _ := agent.Setup.IsSetUp(ctx); !cli {
+			fmt.Fprintf(stderr, "%s routes through Dari only once it is set up; run `dari setup %s --cli` first\n", agent.Label, launch.name)
 			return 1
 		}
 		// Its config may name the local gateway, which launches start as they
@@ -150,7 +139,7 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 	var models agents.Models
 	// OpenClaw and Hermes route on the setup in their own config, so their
 	// launches need no routing of their own.
-	if !agents.OnlyRequestsInfo(launch.args) && !routesOnlyWhenSetUp[launch.name] {
+	if !agents.OnlyRequestsInfo(launch.args) && !agent.RoutesOnlyWhenSetUp() {
 		key, baseURL, models, err = resolveAgentRouting(ctx, &launch, stdin, stderr)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
@@ -171,7 +160,7 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 
 	// Claude Code and Codex name their session to the commands they run, so a
 	// commit they make is reported for their session.
-	if (launch.name == "claude" || launch.name == "codex") && !agents.OnlyRequestsInfo(launch.args) {
+	if agent.SessionEnv != "" && !agents.OnlyRequestsInfo(launch.args) {
 		linkAgentCommits(ctx, stderr)
 	}
 
@@ -186,18 +175,8 @@ func runAgentLaunch(ctx context.Context, launch agentLaunch, stdin io.Reader, st
 			command.Cleanup()
 		}
 	}()
-	if launch.name == "codex" && !agents.OnlyRequestsInfo(launch.args) {
-		if err := codex.PrepareCatalog(ctx, &command, key, baseURL, models); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		if err := codex.PrepareStatus(ctx, &command, launch.args, key, baseURL); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-	}
-	if launch.name == "muse" && !agents.OnlyRequestsInfo(launch.args) {
-		if err := muse.Prepare(&command, launch.args, key, baseURL); err != nil {
+	if agent.Prepare != nil && !agents.OnlyRequestsInfo(launch.args) {
+		if err := agent.Prepare(ctx, &command, launch.args, key, baseURL, models); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -390,42 +369,26 @@ func agentUsesRouter(ctx context.Context, client *api.Client, agent, routerID st
 		return false
 	}
 	router, ok := findAgentRouter(routers, func(router agentRouter) bool { return router.ID == routerID })
-	return ok && slices.Contains(router.CodingAgents, agentSetups[agent].codingAgent)
+	return ok && slices.Contains(router.CodingAgents, agentSetups[agent].CodingAgent)
 }
 
-// startModel is the model a launch of agent starts on. Claude Code keeps the
-// user's pick even while the router cannot serve it.
-func startModel(agent string, models agents.Models) string {
-	if agent == "claude" {
-		return claude.StartModel(models)
+// startModel is the model a launch of agent starts on.
+func startModel(name string, models agents.Models) string {
+	if agent, _ := agentNamed(name); agent.StartModel != nil {
+		return agent.StartModel(models)
 	}
 	return models.Default()
 }
 
 // reportAgentModels warns about model choices the router cannot serve.
-func reportAgentModels(agent string, models agents.Models, hosted bool, stderr io.Writer) {
-	if agent != "claude" {
+func reportAgentModels(name string, models agents.Models, hosted bool, stderr io.Writer) {
+	agent, _ := agentNamed(name)
+	if agent.Warnings == nil {
 		return
 	}
-	for _, warning := range claude.Warnings(models, hosted) {
+	for _, warning := range agent.Warnings(models, hosted) {
 		agentPrintln(stderr, warning)
 	}
-}
-
-func agentExecutable(name string) (string, error) {
-	envName := "DARI_" + strings.ToUpper(name) + "_PATH"
-	if path := strings.TrimSpace(os.Getenv(envName)); path != "" {
-		resolved, err := exec.LookPath(path)
-		if err != nil {
-			return "", fmt.Errorf("%s does not point to an executable file", envName)
-		}
-		return resolved, nil
-	}
-	path, err := exec.LookPath(name)
-	if err != nil {
-		return "", fmt.Errorf("%s is not installed or is not on PATH", name)
-	}
-	return path, nil
 }
 
 // launchedRoutingKeyEnv marks a DARI_ROUTING_API_KEY that a Dari launch set
@@ -551,27 +514,16 @@ func buildAgentCommand(path string, launch agentLaunch, key, baseURL string, mod
 	command := agents.Command{Path: path, Args: launch.args, Env: agents.WithEnvironment(os.Environ(), map[string]string{
 		agents.RoutingAPIKeyEnv: key, agents.RoutingBaseURLEnv: baseURL, launchedRoutingKeyEnv: "1",
 	})}
-	switch launch.name {
-	case "claude":
-		if err := claude.Configure(&command, key, baseURL, models); err != nil {
-			return agents.Command{}, err
-		}
-	case "codex":
-		codex.Configure(&command, baseURL, models)
-	case "opencode":
-		if err := opencode.Configure(&command, baseURL, models); err != nil {
-			return agents.Command{}, err
-		}
-	case "pi":
-		if err := pi.Configure(&command, baseURL, models); err != nil {
-			return agents.Command{}, err
-		}
-	case "muse":
-		muse.Configure(&command, key, models)
-	case "openclaw", "hermes":
-		// Launches run on the setup `dari setup <agent> --cli` wrote into the agent's own config.
-	default:
+	agent, ok := agentNamed(launch.name)
+	if !ok {
 		return agents.Command{}, fmt.Errorf("unsupported coding agent %q", launch.name)
+	}
+	// Without Configure, launches run on the setup `dari setup <agent> --cli`
+	// wrote into the agent's own config.
+	if agent.Configure != nil {
+		if err := agent.Configure(&command, key, baseURL, models, launch.onComputer); err != nil {
+			return agents.Command{}, err
+		}
 	}
 	return command, nil
 }

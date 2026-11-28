@@ -1,12 +1,9 @@
 import { expect, test } from "bun:test";
 
-import {
-  chatCompletionsConversationIdentity,
-  claudeCodeConversationIdentity,
-  codexConversationIdentity,
-  codexRequestPurpose,
-  openCodeRequestContext,
-} from "./extract.js";
+import { claudeCodeConversationIdentity } from "../../harnesses/claude_code.js";
+import { codexConversationIdentity, codexRequestPurpose } from "../../harnesses/codex.js";
+import { openCodeRequestContext } from "../../harnesses/opencode.js";
+import { chatCompletionsConversationIdentity } from "./extract.js";
 
 const THREAD_ID = "019f930c-1ddf-7692-9c16-d09acb4e98fb";
 const OTHER_THREAD_ID = "019f930c-9394-7ca2-b53b-fde828de11ff";

@@ -17,7 +17,7 @@ func TestBuildClaudeAgentCommandPassesStatusLineInline(t *testing.T) {
 		t.Skip("settings go in a temporary file where the launcher cannot hand over its process")
 	}
 	command := agents.Command{Path: "/claude", Args: []string{"--print", "review"}}
-	if err := Configure(&command, "dari_route", "https://routing.dari.dev", agents.Models{Routing: true}); err != nil {
+	if err := Configure(&command, "dari_route", "https://routing.dari.dev", agents.Models{Routing: true}, false); err != nil {
 		t.Fatal(err)
 	}
 	// Inline settings leave no file behind, so the launcher has nothing to clean up.
@@ -75,9 +75,63 @@ func TestBuildClaudeAgentCommandPassesStatusLineInline(t *testing.T) {
 	}
 }
 
+// A launch through this computer's gateway has the gateway's own key, which
+// must win over the hosted key `dari setup claude --cli` saved in Claude
+// Code's settings, without showing in the process arguments.
+func TestBuildClaudeAgentCommandCarriesItsOwnKeyInAPrivateFile(t *testing.T) {
+	command := agents.Command{Path: "/claude", Args: []string{"--print", "review"}}
+	if err := Configure(&command, "dari_local", "http://127.0.0.1:7340/rtr_1", agents.Models{Routing: true}, true); err != nil {
+		t.Fatal(err)
+	}
+	if command.Cleanup == nil {
+		t.Fatal("the settings file holding the key must be removed after the launch")
+	}
+	settingsIndex := slices.Index(command.Args, "--settings")
+	if settingsIndex < 0 || settingsIndex+1 >= len(command.Args) {
+		t.Fatalf("args do not contain --settings: %q", command.Args)
+	}
+	if strings.Contains(strings.Join(command.Args, " "), "dari_local") {
+		t.Fatal("the key is in the process arguments")
+	}
+	path := command.Args[settingsIndex+1]
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("settings file mode = %v; want only this user to read it", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings.Env["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:7340/rtr_1" {
+		t.Fatalf("settings env = %v; want the launch's router", settings.Env)
+	}
+	// Each key field is set, so a saved one cannot be sent in its place.
+	for _, name := range []string{"ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", customHeadersEnv} {
+		if _, ok := settings.Env[name]; !ok {
+			t.Fatalf("settings env has no %s: %v", name, settings.Env)
+		}
+	}
+	if settings.Env["ANTHROPIC_AUTH_TOKEN"] != "dari_local" && !strings.Contains(settings.Env[customHeadersEnv], "Bearer dari_local") {
+		t.Fatalf("settings env does not carry the launch's key")
+	}
+	command.Cleanup()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("settings file still exists after cleanup: %v", err)
+	}
+}
+
 func TestBuildClaudeAgentCommandSkipsStatusLineWhenSettingsFlagPresent(t *testing.T) {
 	command := agents.Command{Path: "/claude", Args: []string{"--settings", "mine.json"}}
-	if err := Configure(&command, "dari_route", "https://routing.dari.dev", agents.Models{Routing: true}); err != nil {
+	if err := Configure(&command, "dari_route", "https://routing.dari.dev", agents.Models{Routing: true}, false); err != nil {
 		t.Fatal(err)
 	}
 	if command.Cleanup != nil {

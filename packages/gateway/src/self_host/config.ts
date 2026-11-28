@@ -5,7 +5,7 @@ import {
   type ReasoningEffort,
 } from "@mupt-ai/dari-router/policy-engine";
 
-import { CLIENT_HARNESSES } from "../ingress/client_harness.js";
+import { CLIENT_HARNESSES } from "../harnesses/index.js";
 import { checkSources, DEFAULT_RESET_MIN_HOURS, type Source } from "../models/sources.js";
 import { modelKeyProviders, otherModelProviders, providerModel } from "../models/canonical.js";
 import type { ClientHarness, RouterRole, RouterRoleModels, RouterRolePrompts } from "../types.js";
